@@ -29,6 +29,7 @@ from ..query import (
     OUTCOME_LABELS,
     OUTCOME_LABELS_SHORT,
     arrival_curve,
+    collection_status,
     default_sailing_time,
     query_distribution,
     sailing_times,
@@ -161,6 +162,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "strapline": f"{kind} · {bucket}",
                 "countdown": (
                     _countdown(config, chosen_date, chosen_time) if chosen_time else None
+                ),
+                # Shown when there is no distribution to show. A new install is correctly
+                # blank for weeks, which is indistinguishable from a broken scraper unless
+                # the page says what it has collected.
+                "collection": (
+                    collection_status(conn, config)
+                    if not (distribution and distribution["n"])
+                    else None
                 ),
                 "preview": index_preview(
                     request,

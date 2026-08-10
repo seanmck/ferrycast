@@ -166,10 +166,63 @@
   </details>
 
 {% elif selected_time %}
+  {% set c = collection %}
   <section class="card">
     <p class="label">No history yet</p>
-    <p class="note">No comparable sailings have been recorded for this slot. The dataset fills
-      in as capture and extraction run — check back after a few weeks of collection.</p>
+    <p class="note">This slot is answered from <em>past</em> comparable sailings, and there are
+      none yet. That is expected on a new install — the dataset needs a few weeks. Below is
+      what has been collected so far, so you can tell collection from breakage.</p>
+  </section>
+
+  {# ---- Proof of life. Never a distribution: a handful of sailings is not an answer. ---- #}
+  <section class="card">
+    <p class="label">Collecting</p>
+    {% if c and c.reading %}
+      <p class="note{% if not c.collecting %} flag{% endif %}">
+        Last reading {{ c.reading.minutes_ago }} min ago at {{ c.reading.observed_local }} —
+        {{ c.reading.terminal }}{% if c.reading.sailing_hhmm %}, the {{ c.reading.sailing_hhmm }}
+        sailing{% endif %}{% if c.reading.percent_available is not none %},
+        {{ c.reading.percent_available }}% space left{% endif %}.
+        {%- if not c.collecting %} That is older than expected — check
+        <a href="/health">pipeline health</a>.{% endif %}
+      </p>
+    {% else %}
+      <p class="note flag">No deck-space readings recorded yet. If this persists for more than
+        a scrape interval, check <a href="/health">pipeline health</a>.</p>
+    {% endif %}
+
+    {% if c and c.recorded %}
+      <p class="note">{{ c.recorded }} sailing{{ '' if c.recorded == 1 else 's' }} recorded
+        since {{ c.since }}{% if c.unknown %}; {{ c.unknown }} had no usable record{% endif %}.</p>
+    {% elif c and c.unknown %}
+      <p class="note">{{ c.unknown }} sailing{{ '' if c.unknown == 1 else 's' }} seen so far, none
+        with a usable record yet — normal until a sailing runs its full course while the
+        collector is up.</p>
+    {% endif %}
+
+    {% if c and c.recent %}
+      <hr class="rule">
+      <p class="label">Most recent</p>
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Time</th><th>From</th><th>Outcome</th></tr>
+        </thead>
+        <tbody>
+          {% for s in c.recent %}
+            <tr>
+              <td class="n">{{ s.service_date }}</td>
+              <td class="n">{{ s.depart_hhmm }}</td>
+              <td class="n">{{ s.origin }}</td>
+              <td class="outcome">
+                <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">These are individual sailings, not a forecast — too few, and not filtered
+        to days like this one.</p>
+    {% endif %}
   </section>
 {% else %}
   <section class="card">
