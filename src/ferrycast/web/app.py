@@ -1,8 +1,11 @@
 """R5 — the "day like today" web app.
 
 The page is server-rendered with the next departure already answered, so the first paint
-carries the answer rather than waiting on a round trip. Everything is inline: one request,
-no CDN, no fonts to fetch — it has to work on a phone with one bar at the side of Highway 101.
+carries the answer rather than waiting on a round trip. CSS stays inline: one request for
+the document, no CDN — it has to work on a phone with one bar at the side of Highway 101.
+The "Deep Water" theme's three typefaces are the one exception, and they are self-hosted
+and subset to the characters this app can render (58 KB in total) rather than fetched from
+a third party.
 """
 
 from __future__ import annotations
@@ -13,28 +16,68 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 
 from ..config import Config, load_config
 from ..db import connect
 from ..export import export
-from ..maintenance import health_report
+from ..maintenance import capture_strip, health_report, latest_observation
 from ..query import (
     OUTCOME_LABELS,
+    OUTCOME_LABELS_SHORT,
     arrival_curve,
     query_distribution,
     sailing_times,
     upcoming_sailings,
 )
+from ..schedule import day_type, season
+from ..timeutil import combine_local, local, now_utc, parse_hhmm
 
+STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+DAY_TYPE_SHORT = {
+    "weekday": "Weekday",
+    "friday": "Friday",
+    "saturday": "Saturday",
+    "sunday_holiday": "Sunday / holiday",
+}
+
+SEASON_SHORT = {"peak_summer": "peak summer", "shoulder": "shoulder", "winter": "winter"}
+
+
+def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | None:
+    """How long until a departure, or None once it is in the past.
+
+    The theme leads with this next to the departure time, so it has to stay readable at
+    every distance: minutes for the sailing you are running for, days for one you are
+    planning around. A stale countdown would be worse than none at all.
+    """
+    departure = combine_local(service_date, parse_hhmm(depart_hhmm), config.tz)
+    minutes = int((departure - local(now_utc(), config.tz)).total_seconds() // 60)
+    if minutes < 0:
+        return None
+    if minutes < 60:
+        return f"in {minutes} min"
+    if minutes < 24 * 60:
+        hours, rest = divmod(minutes, 60)
+        return f"in {hours} h" if rest == 0 else f"in {hours} h {rest} min"
+    days = minutes // (24 * 60)
+    return "tomorrow" if days == 1 else f"in {days} days"
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
     config = load_config(config_path)
     app = FastAPI(title="FerryCast", docs_url="/api/docs", redoc_url=None)
     app.state.config = config
+    # The theme's CSS is inline on every page, which keeps the document to one request but
+    # costs about 23 KB uncompressed. Gzip takes that to under 7 KB — the difference
+    # between the two on a single bar of signal is the whole <2s budget.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
     def get_config() -> Config:
         return app.state.config
@@ -94,6 +137,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 depart_hhmm=chosen_time,
             ).to_dict()
 
+        kind = DAY_TYPE_SHORT.get(day_type(chosen_date), day_type(chosen_date))
+        bucket = SEASON_SHORT.get(season(chosen_date), season(chosen_date))
+
         return TEMPLATES.TemplateResponse(
             request,
             "index.html",
@@ -106,6 +152,37 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "selected_time": chosen_time,
                 "distribution": distribution,
                 "labels": OUTCOME_LABELS,
+                "short_labels": OUTCOME_LABELS_SHORT,
+                "strapline": f"{kind} · {bucket}",
+                "countdown": (
+                    _countdown(config, chosen_date, chosen_time) if chosen_time else None
+                ),
+            },
+        )
+
+    @app.get("/health", response_class=HTMLResponse)
+    def health_page(
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        """The pipeline's own dashboard — `/api/health` is the same data as JSON.
+
+        A 30-day window rather than the digest's 7: this page is read to answer "is the
+        dataset healthy", where one bad afternoon should not swing the headline number.
+        """
+        return TEMPLATES.TemplateResponse(
+            request,
+            "health.html",
+            {
+                "report": health_report(conn, config, window_days=30),
+                "strip": capture_strip(conn, config),
+                "latest": latest_observation(conn, config),
+                "cadence": (
+                    f"{config.capture.interval_minutes} min cadence"
+                    if config.capture.scheduled
+                    else "capture on demand"
+                ),
             },
         )
 

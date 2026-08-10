@@ -104,3 +104,67 @@ def test_arrival_curve_endpoint(client):
     )
     assert response.status_code == 200
     assert "points" in response.json()
+
+
+def test_health_page_renders(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert "Pipeline" in response.text
+    assert "Season cover" in response.text
+
+
+def test_health_page_surfaces_every_problem(client, conn, config):
+    """An empty pipeline has problems, and each one must reach the page."""
+    from ferrycast.maintenance import health_report
+
+    report = health_report(conn, config, window_days=30)
+    assert report.problems, "expected an empty database to report problems"
+
+    response = client.get("/health")
+    for problem in report.problems:
+        assert problem.capitalize() in response.text
+
+
+def test_health_page_survives_an_empty_database(client):
+    """The strip and latest-frame panel must render before any data exists."""
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert "No frames have been extracted yet" in response.text
+
+
+def test_fonts_are_served_locally(client):
+    response = client.get("/static/fonts/ibmplexmono-400.woff2")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "font/woff2"
+
+
+def test_index_does_not_reference_a_font_cdn(client):
+    """The page must not fetch anything third-party — it loads at the roadside."""
+    response = client.get("/")
+    assert "fonts.googleapis.com" not in response.text
+    assert "fonts.gstatic.com" not in response.text
+
+
+def test_index_shows_the_share_that_waited(client, conn, config):
+    for day, outcome in zip(
+        fridays(4), ["boarded", "waited_1", "waited_1", "waited_2plus"], strict=True
+    ):
+        seed_record(conn, config, day, "12:30", outcome)
+    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    assert "75%" in response.text
+    assert "waited at least one sailing" in response.text
+
+
+def test_arrival_curve_exposes_both_band_edges(client, conn, config):
+    for day in fridays(3):
+        seed_record(conn, config, day, "12:30", "waited_1")
+    response = client.get("/api/arrival-curve", params={"origin": "SLT", "time": "12:30"})
+    points = response.json()["points"]
+    for point in points:
+        assert "p25" in point and "p75" in point
+
+
+def test_pages_are_compressed(client):
+    """Inline CSS is only affordable roadside if it goes over the wire compressed."""
+    response = client.get("/", headers={"Accept-Encoding": "gzip"})
+    assert response.headers.get("content-encoding") == "gzip"

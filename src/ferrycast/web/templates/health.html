@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}FerryCast — pipeline{% endblock %}
+{% block masthead %}Pipeline{% endblock %}
+{% block strapline %}{{ cadence }}{% endblock %}
+
+{% block style %}
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 0.875rem; margin: 1rem 0; }
+  .tile { padding: 1.125rem; border-radius: var(--radius); }
+  .tile.dark  { background: var(--hero-bg); color: var(--hero-ink); }
+  .tile.dark .label { color: var(--hero-label); }
+  .tile.light { background: var(--inset); }
+  .tile .stat { font-family: "Instrument Serif", Georgia, serif; font-size: 2.75rem;
+                line-height: 1.1; margin-top: 0.25rem; }
+
+  .strip { display: grid; grid-template-columns: repeat({{ strip | length }}, 1fr);
+           gap: 4px; margin-top: 0.625rem; }
+  .strip div { height: 34px; border-radius: 1px; }
+  .cell-good     { background: var(--kelp); }
+  .cell-degraded { background: var(--buoy); }
+  .cell-bad      { background: var(--cedar); }
+  .cell-none     { background: var(--line); }
+
+  .problems { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+  .problems li { font-size: 0.8125rem; line-height: 1.55; color: var(--muted); padding: 0.15rem 0; }
+
+  .frame {
+    height: 150px; border-radius: var(--radius); padding: 0.875rem;
+    display: flex; align-items: flex-end;
+    background: linear-gradient(#20414C, #0F252E);
+  }
+  .frame span { font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem; color: #7FA6A0; }
+{% endblock %}
+
+{% block content %}
+
+{#
+  Frame capture is only the headline when it is actually scheduled. With capture on demand
+  the deck-space scrape is the pipeline that has to stay healthy, so that is the number
+  shown instead — a 0% capture rate would otherwise read as a fault every single day.
+#}
+{% if report.expected_captures %}
+  {% set uptime = report.capture_success_rate %}
+  {% set uptime_label = "Uptime %sd" | format(report.window_days) %}
+{% else %}
+  {% set uptime = report.deckspace_success_rate %}
+  {% set uptime_label = "Deck feed %sd" | format(report.window_days) %}
+{% endif %}
+
+<div class="tiles">
+  <div class="tile dark">
+    <p class="label">{{ uptime_label }}</p>
+    {% if uptime is none %}
+      <div class="stat num">—</div>
+    {% else %}
+      {# Capturing more often than the schedule expects is not a fault, but "101%" reads as
+         a broken gauge. The raw ratio stays available on /api/health. #}
+      <div class="stat num"
+           style="color: var(--o-{{ 'boarded' if uptime >= 0.95 else 'waited_2plus' }})">
+        {{ ([uptime, 1.0] | min * 100) | round(1) }}%
+      </div>
+    {% endif %}
+  </div>
+  <div class="tile light">
+    <p class="label">Season cover</p>
+    <div class="stat num"
+         {% if report.coverage < 0.90 %}style="color: var(--o-waited_2plus)"{% endif %}>
+      {{ (report.coverage * 100) | round | int }}%
+    </div>
+  </div>
+</div>
+
+<p class="label">Frames · last {{ strip | length }} days</p>
+<div class="strip" role="img" aria-label="Daily capture health over the last {{ strip | length }} days">
+  {% for day in strip %}
+    <div class="cell-{{ day.state }}"
+         title="{{ day.day }} — {{ day.ok }} ok, {{ day.failed }} failed, {{ day.unusable }} unusable"></div>
+  {% endfor %}
+</div>
+
+{% if report.problems %}
+  <div class="card flag">
+    <p class="label" style="color: var(--accent)">
+      {{ report.problems | length }} thing{{ '' if report.problems | length == 1 else 's' }} to look at
+    </p>
+    <ul class="problems">
+      {% for problem in report.problems %}<li>{{ problem | capitalize }}</li>{% endfor %}
+    </ul>
+  </div>
+{% else %}
+  <div class="card">
+    <p class="label">All clear</p>
+    <p class="note">Nothing is failing: capture, extraction and coverage are all within target.</p>
+  </div>
+{% endif %}
+
+<section class="card">
+  <p class="label">Latest frame</p>
+  {% if latest %}
+    <div class="frame" style="margin-top: 0.625rem">
+      <span>
+        {{ latest.terminal | upper }} · {{ latest.captured_local }}
+        {%- if latest.vehicle_count is not none %} · {{ latest.vehicle_count }} VEH
+          {%- if latest.queue_beyond_frame %}+{% endif %}
+        {%- endif %}
+        {%- if latest.confidence is not none %} · CONF {{ '%.2f' | format(latest.confidence) }}{% endif %}
+        {%- if not latest.usable %} · UNUSABLE{% endif %}
+      </span>
+    </div>
+    <p class="note">The image itself is not served — this is the extracted reading.</p>
+  {% else %}
+    <p class="note">No frames have been extracted yet. The historical record is built from
+      deck space, which runs regardless.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="stack">
+    <div class="between">
+      <span class="note" style="margin: 0">Sailings with a record</span>
+      <span class="num">{{ report.sailings_with_record }} / {{ report.sailings_total }}</span>
+    </div>
+    {% if report.frames_awaiting_extraction %}
+      <div class="between">
+        <span class="note" style="margin: 0">Frames awaiting extraction</span>
+        <span class="num">{{ report.frames_awaiting_extraction }}</span>
+      </div>
+    {% endif %}
+    {% if report.unusable_share is not none %}
+      <div class="between">
+        <span class="note" style="margin: 0">Unusable frames</span>
+        <span class="num">{{ (report.unusable_share * 100) | round | int }}%</span>
+      </div>
+    {% endif %}
+    <hr class="rule">
+    <div class="between">
+      <span class="note" style="margin: 0">Cost this month</span>
+      <span class="num" {% if report.budget and report.month_to_date_cost > report.budget * 0.9 %}
+            style="color: var(--o-waited_2plus)"{% endif %}>
+        ${{ '%.2f' | format(report.month_to_date_cost) }}{% if report.budget %} / ${{ '%.2f' | format(report.budget) }}{% endif %}
+      </span>
+    </div>
+  </div>
+</section>
+
+<p class="note"><a href="/">← Day like today</a></p>
+{% endblock %}
