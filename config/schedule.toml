@@ -1,0 +1,46 @@
+# Sailing timetable for the Saltery Bay – Earls Cove route.
+#
+# ⚠️  THESE TIMES ARE STILL PLACEHOLDERS — AND THIS FILE IS WHAT GETS DEPLOYED.
+#     They are plausible for a ~2-hour-headway route but they are NOT copied from a
+#     published timetable. Check every one against the current BC Ferries schedule for
+#     Route 7. A wrong departure time silently mis-windows every observation around it:
+#     the collector runs happily and records the wrong thing. Correcting the times later
+#     does not repair sailings already aggregated against them.
+#
+# The schedule is seasonal, so it is expressed as dated blocks. Add a new block whenever
+# BC Ferries changes the timetable; blocks may overlap in date as long as they cover
+# different days of the week.
+#
+# Fields:
+#   terminal       terminal code the sailing departs FROM
+#   effective_from / effective_to   inclusive date range this block applies to
+#   days           "all", or a list from mon tue wed thu fri sat sun
+#   departures     local wall-clock HH:MM times
+#   route          optional. Omit it while there is one route (as below). Once this file
+#                  covers more than one, set it on every block; blocks naming a different
+#                  route are ignored rather than mixed in.
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-01-01
+effective_to   = 2026-12-31
+days           = "all"
+departures     = ["06:30", "08:30", "10:30", "12:30", "14:30", "16:30", "18:30", "20:30"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-01-01
+effective_to   = 2026-12-31
+days           = "all"
+departures     = ["05:35", "07:30", "09:30", "11:30", "13:30", "15:25", "17:30", "19:30", "21:20"]
+
+# Example of a summer-only extra sailing. Uncomment and correct once you have the
+# published peak-season timetable; a later block wins nothing automatically — every block
+# that covers a date contributes its departures, de-duplicated by time.
+#
+# [[block]]
+# terminal       = "SLT"
+# effective_from = 2026-06-25
+# effective_to   = 2026-09-08
+# days           = ["fri", "sat", "sun"]
+# departures     = ["22:15"]
