@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -40,6 +40,7 @@ from .preview import health_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
 
 DAY_TYPE_SHORT = {
     "weekday": "Weekday",
@@ -293,6 +294,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
             target_date=_parse_date(service_date) if service_date else None,
             depart_hhmm=time,
         )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        """Crawlers and older browsers ask for this path regardless of the <link> tag."""
+        return FileResponse(STATIC / "brand" / "favicon.ico", media_type="image/x-icon")
 
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():

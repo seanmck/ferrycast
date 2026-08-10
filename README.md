@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/ferrycast/web/static/brand/logo.png" alt="FerryCast" width="320">
+</p>
+
 # FerryCast
 
 Historical wait tracker for the **Saltery Bay ⇄ Earls Cove** ferry route.
@@ -166,6 +170,11 @@ device's light/dark setting. The three typefaces are self-hosted from
 `web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
 third-party requests, because the page has to paint at the side of Highway 101.
 
+The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon and
+the iOS home-screen icon. All of it is cut from one master render by
+`brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why the
+masthead uses the mark alone rather than the full lockup.
+
 #### Sending someone a link
 
 A FerryCast link is almost always sent about one sailing — "we're aiming for the 12:30,
@@ -177,9 +186,9 @@ Pasted into a message, `/?origin=SLT&service_date=2026-08-01&time=12:30` shows:
 > 40 min before departure — be in the lineup by 11:50.
 
 The person reading it in a car gets the answer without opening anything, and a thin sample
-says so in the preview rather than only on the page. The card image beneath it is static
-(`assets/README.md` covers re-rendering it); the title and description are built per request
-from the same distribution the page renders.
+says so in the preview rather than only on the page. The title and description are built per
+request from the same distribution the page renders; the card beneath them is the mark over
+the outcome ramp, static and rendered offline (`brand/README.md` covers re-rendering it).
 
 Both `og:url` and `og:image` have to be absolute, and behind a TLS-terminating proxy the app
 cannot always tell that it is being served over https — a card whose image is http on an
@@ -457,9 +466,10 @@ inference, the comparability fallback ladder, holiday and season bucketing, the 
 parser against several page phrasings, and the failure paths (dead camera, HTML served where
 an image was expected, unparseable page, low-confidence frame, exhausted budget).
 
-One asset is generated rather than written: `python assets/render_og.py` redraws the link
-preview card from `assets/og-card.html`. It needs Chrome or Chromium, is only run when the
-card changes, and its output is committed — see [assets/README.md](assets/README.md).
+The served artwork is generated rather than written, and committed: `brand/build_assets.py`
+cuts the icons out of the logo master with Pillow, and `brand/render_card.py` draws the
+share card with headless Chrome. Neither runs at deploy time — see
+[brand/README.md](brand/README.md).
 
 ---
 

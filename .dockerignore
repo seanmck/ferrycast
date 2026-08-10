@@ -17,6 +17,8 @@ data/
 
 tests/
 deploy/
-# Source for the share card. The rendered PNG lives under src/ and ships; the HTML it is
-# drawn from, and the Chrome that draws it, are not needed in the image.
-assets/
+
+# The logo master, the share-card source, and the scripts that cut them up. Everything they
+# produce is committed under src/ and ships with the package; the 1 MB source render, and
+# the Chrome that draws the card, have no business in the image.
+brand/

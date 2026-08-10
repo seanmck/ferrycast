@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Rasterise assets/og-card.html into the share card the web app serves.
+"""Rasterise brand/og-card.html into the share card the web app serves.
 
-    python assets/render_og.py
+    python brand/build_assets.py    # first: the mark the card places
+    python brand/render_card.py
 
-Run this only when the card design or the route it names changes; the PNG it writes is
-committed, because the running app has no rasteriser and a link preview cannot wait on one.
+Run this when the card design or the route it names changes; the PNG it writes is committed,
+because the running app has no rasteriser and a link preview cannot wait on one.
 
-Headless Chrome does the drawing rather than an image library: the card uses the same
+Separate from build_assets.py, which is pure Pillow and cuts the icons out of the master
+render. This one needs headless Chrome, because the card is typeset: it uses the same
 self-hosted woff2 faces as the app, and getting Instrument Serif to look like itself matters
-more here than avoiding a build-time dependency that nothing else needs.
+more than avoiding a build-time dependency that nothing else needs. It places the roundel
+that build_assets.py cuts, so run that first if the master has changed.
 """
 
 from __future__ import annotations
@@ -22,8 +25,8 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "assets" / "og-card.html"
-OUTPUT = ROOT / "src" / "ferrycast" / "web" / "static" / "og.png"
+SOURCE = ROOT / "brand" / "og-card.html"
+OUTPUT = ROOT / "src" / "ferrycast" / "web" / "static" / "brand" / "og.png"
 WIDTH, HEIGHT = 1200, 630
 
 # --window-size counts the browser's own furniture, so the live viewport is shorter than

@@ -8,7 +8,7 @@ without opening anything.
 
 The card image is static and served from /static: rasterising type is not something this
 deployment can do at request time, and a scraper that has to wait would show nothing at all.
-It is drawn offline from assets/og-card.html — see assets/README.md.
+It is drawn offline from brand/og-card.html — see brand/README.md.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from starlette.requests import Request
 
 from ..config import Config
 
-IMAGE_PATH = "/static/og.png"
+IMAGE_PATH = "/static/brand/og.png"
 IMAGE_WIDTH = 1200
 IMAGE_HEIGHT = 630
 
@@ -120,8 +120,8 @@ def _describe(distribution: dict | None, *, origin_name: str, when: str, has_sai
 def _image_alt(config: Config) -> str:
     """Describe the card, not the sailing — the image is the same on every page."""
     return (
-        f"The FerryCast card: {config.route.name} in cream on navy, above the colour ramp "
-        "the app uses to show how comparable past sailings went."
+        f"The FerryCast card: the clock-and-ferry mark, {config.route.name} in cream on "
+        "navy, and the colour ramp the app uses to show how comparable past sailings went."
     )
 
 

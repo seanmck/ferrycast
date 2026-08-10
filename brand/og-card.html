@@ -4,13 +4,19 @@
 <meta charset="utf-8">
 <title>FerryCast — share card</title>
 <!--
-  Source for src/ferrycast/web/static/og.png, the image a chat client shows when a
-  FerryCast link is pasted. It is rendered once, offline, by assets/render_og.py and the
+  Source for src/ferrycast/web/static/brand/og.png, the image a chat client shows when a
+  FerryCast link is pasted. It is rendered once, offline, by brand/render_card.py and the
   result is committed — the deployment has no rasteriser, and a link preview must not wait
   on one anyway.
 
   Same "Deep Water" palette and the same three typefaces as the app, so a preview and the
   page it opens read as one thing. 1200x630 is the size every scraper crops to.
+
+  The roundel is placed rather than the full lockup: "Ferry" is near-black navy and the
+  tagline mid-blue, and both vanish on this ground. The clock face is opaque, so the mark
+  alone carries — the same reason the masthead uses it. Everything the lockup would have
+  said is set in the app's own type instead, which is what lets the card also carry the
+  route and the outcome ramp.
 -->
 <style>
   @font-face {
@@ -64,12 +70,16 @@
     background: linear-gradient(180deg, var(--buoy), var(--cedar));
   }
 
+  /* Centred, not baseline: the roundel is a 64px block and has no baseline worth aligning. */
   .rule-top {
-    display: flex; justify-content: space-between; align-items: baseline;
+    display: flex; justify-content: space-between; align-items: center;
     padding-bottom: 22px; border-bottom: 1px solid rgba(232, 237, 236, 0.16);
   }
 
-  .mark {
+  .mark { display: flex; align-items: center; gap: 18px; }
+  /* Cut at 128 and placed at 64, so it is still sharp where a client shows the card at 2x. */
+  .mark img { width: 64px; height: 64px; display: block; }
+  .mark span {
     font-family: "IBM Plex Mono", monospace; font-weight: 500;
     font-size: 21px; letter-spacing: 0.34em; text-transform: uppercase; color: var(--chart);
   }
@@ -113,8 +123,12 @@
 <body>
 
 <div class="rule-top">
-  <span class="mark">FerryCast</span>
-  <span class="kicker">Historical wait record</span>
+  <span class="mark">
+    <img src="../src/ferrycast/web/static/brand/mark.png" alt="">
+    <span>FerryCast</span>
+  </span>
+  <!-- The lockup's own tagline, so the card and the logo say the same thing. -->
+  <span class="kicker">Historical wait tracker</span>
 </div>
 
 <div>

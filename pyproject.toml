@@ -33,8 +33,11 @@ where = ["src"]
 ferrycast = [
     "schema.sql",
     "web/templates/*.html",
-    "web/static/*.png",
     "web/static/fonts/*.woff2",
+    # The container installs the package rather than copying src/, so anything the pages
+    # link to has to be listed here or it is simply missing in production.
+    "web/static/brand/*.png",
+    "web/static/brand/*.ico",
 ]
 
 [tool.pytest.ini_options]

@@ -176,6 +176,39 @@ def test_fonts_are_served_locally(client):
     assert response.headers["content-type"] == "font/woff2"
 
 
+def test_brand_assets_are_served(client):
+    """Every file the pages link to. These ship as package data, and the container installs
+    the package rather than copying src/ — so a missing entry there is invisible until the
+    icons quietly 404 in production."""
+    for path, media in [
+        ("/static/brand/mark.png", "image/png"),
+        ("/static/brand/og.png", "image/png"),
+        ("/static/brand/apple-touch-icon.png", "image/png"),
+        ("/static/brand/favicon.ico", "image/vnd.microsoft.icon"),
+        ("/favicon.ico", "image/x-icon"),
+    ]:
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"] == media, path
+
+
+def test_every_page_carries_the_mark(client):
+    for path in ["/", "/health"]:
+        assert "/static/brand/mark.png" in client.get(path).text, path
+
+
+def test_link_preview_image_is_absolute(client):
+    response = client.get("/")
+    assert 'content="http://testserver/static/brand/og.png"' in response.text
+
+
+def test_link_preview_image_follows_the_forwarded_scheme(client):
+    """Behind a TLS-terminating proxy the app itself only ever sees http, and an http
+    og:image on an https page is dropped by several unfurlers."""
+    response = client.get("/", headers={"x-forwarded-proto": "https"})
+    assert 'content="https://testserver/static/brand/og.png"' in response.text
+
+
 def test_index_does_not_reference_a_font_cdn(client):
     """The page must not fetch anything third-party — it loads at the roadside."""
     response = client.get("/")
@@ -296,23 +329,18 @@ def test_preview_explains_the_app_when_there_is_no_history(client):
     assert "BC Ferries" in description
 
 
-def test_preview_urls_are_absolute_and_pin_the_sailing(client, conn, config):
+def test_preview_url_pins_the_sailing(client, conn, config):
+    """Absolute, and carrying the sailing — so resharing off the card keeps that sailing
+    rather than resolving to whatever is next whenever the link is opened."""
     html = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
 
     assert _meta(html, "og:url") == (
         "http://testserver/?origin=SLT&amp;service_date=2026-07-31&amp;time=12:30"
     )
-    assert _meta(html, "og:image") == "http://testserver/static/og.png"
-
-
-def test_preview_trusts_the_forwarded_scheme(client):
-    """Behind a TLS-terminating proxy the app sees http; an http card on an https page is
-    dropped as mixed content."""
-    html = client.get("/", headers={"x-forwarded-proto": "https"}).text
-    assert _meta(html, "og:image").startswith("https://testserver/")
 
 
 def test_configured_base_url_wins(client, conn, config):
+    """The forwarded scheme covers the common proxy; naming the origin settles the rest."""
     app = client.app
     app.state.config = replace(
         config, web=replace(config.web, base_url="https://ferrycast.example.com/")
@@ -320,16 +348,17 @@ def test_configured_base_url_wins(client, conn, config):
 
     html = client.get("/", headers={"x-forwarded-proto": "http"}).text
 
-    assert _meta(html, "og:image") == "https://ferrycast.example.com/static/og.png"
+    assert _meta(html, "og:image") == "https://ferrycast.example.com/static/brand/og.png"
     assert _meta(html, "og:url").startswith("https://ferrycast.example.com/?origin=")
 
 
 def test_the_share_card_is_served_at_the_size_it_claims(client):
+    """og:image:width and :height are a promise; a card cropped against them looks broken."""
     import io
 
     from PIL import Image
 
-    response = client.get("/static/og.png")
+    response = client.get("/static/brand/og.png")
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
