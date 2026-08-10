@@ -201,6 +201,9 @@ The web endpoints in step 5 are the other way in, and need no CLI at all.
 
 ## Notes and gotchas
 
+- **Do not put `VOLUME ["/data"]` back in the Dockerfile.** Railway fails the build with
+  *"docker VOLUME at Line N is not supported, use Railway Volumes"* — it manages the mount
+  itself. The Dockerfile just `mkdir -p /data` so the app can start before a volume exists.
 - **Keep it at one replica.** SQLite has a single writer; `railway.toml` sets
   `numReplicas = 1`. Scaling out will corrupt the database rather than speed anything up.
 - **Redeploys are safe for the schedule.** Due-ness is read from the `job_runs` table on the
