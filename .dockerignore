@@ -17,3 +17,7 @@ data/
 
 tests/
 deploy/
+
+# The logo master and the script that cuts it up. The assets it produces are committed
+# under src/ and ship with the package; the 1 MB source render has no business in the image.
+brand/

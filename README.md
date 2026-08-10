@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/ferrycast/web/static/brand/logo.png" alt="FerryCast" width="320">
+</p>
+
 # FerryCast
 
 Historical wait tracker for the **Saltery Bay ⇄ Earls Cove** ferry route.
@@ -165,6 +169,11 @@ accents, Instrument Serif for times and IBM Plex Mono for every number), and fol
 device's light/dark setting. The three typefaces are self-hosted from
 `web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
 third-party requests, because the page has to paint at the side of Highway 101.
+
+The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon,
+the iOS home-screen icon and the link-preview card. All of it is cut from one master render
+by `brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why
+the masthead uses the mark alone rather than the full lockup.
 
 Comparable means **same sailing time × day-type × season bucket**, with BC stat holidays
 mapped to Sunday-like. When that bucket is too thin, the search widens in defined steps

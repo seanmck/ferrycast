@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -39,6 +39,24 @@ from ..timeutil import combine_local, local, now_utc, parse_hhmm
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+
+def static_url(request: Request, path: str) -> str:
+    """Absolute URL for a static file, for the one tag that cannot take a relative one.
+
+    Open Graph requires `og:image` to be absolute, and behind a TLS-terminating proxy the
+    scheme the app itself sees is plain http — an http image on an https page is dropped by
+    several unfurlers. So the forwarded scheme is honoured here rather than being trusted
+    process-wide: this decides the text of a meta tag and nothing else.
+    """
+    url = request.url_for("static", path=path)
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if forwarded in ("http", "https"):
+        url = url.replace(scheme=forwarded)
+    return str(url)
+
+
+TEMPLATES.env.globals["static_url"] = static_url
 
 DAY_TYPE_SHORT = {
     "weekday": "Weekday",
@@ -283,6 +301,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
             target_date=_parse_date(service_date) if service_date else None,
             depart_hhmm=time,
         )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        """Crawlers and older browsers ask for this path regardless of the <link> tag."""
+        return FileResponse(STATIC / "brand" / "favicon.ico", media_type="image/x-icon")
 
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():

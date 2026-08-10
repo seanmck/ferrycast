@@ -5,6 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>{% block title %}FerryCast{% endblock %}</title>
+
+{# The roundel does all the icon duty. .ico for tabs (three sizes in the one file, which is
+   still the only format every desktop browser agrees on), a cream-backed PNG for iOS —
+   which composites its own ground behind a transparent icon and would otherwise pick it. #}
+<link rel="icon" href="/static/brand/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+<meta name="theme-color" content="#F4EFE4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1A22" media="(prefers-color-scheme: dark)">
+
+{# Link previews. og:image has to be absolute, and it points at the lockup on cream rather
+   than the mark: this is the one place the artwork is shown at a size that can carry the
+   wordmark, and it is composited onto a known ground so it never lands on a dark card. #}
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ self.title() }}">
+<meta property="og:description" content="{% block description %}On a day like today, what's the wait for the ferry?{% endblock %}">
+<meta property="og:image" content="{{ static_url(request, 'brand/og.png') }}">
+<meta name="twitter:card" content="summary_large_image">
 {#
   "Deep Water" — the theme is chart paper and painted steel: hull navy, chart cream,
   cedar and buoy lacquer. Light mode is the cream side, dark mode the hull side; both
@@ -170,6 +187,14 @@
   }
   .masthead .label { color: var(--label); }
 
+  /* The mark and the name are one target, and it goes home — which is the only way back
+     from /health. Ink rather than accent: this is the masthead, not a link in prose. */
+  .wordmark { display: flex; align-items: center; gap: 0.625rem; min-width: 0; color: var(--ink); }
+  .wordmark:hover { color: var(--ink); }
+  /* Sized in both axes rather than by aspect ratio, so the row's height is settled before
+     the PNG arrives and the masthead does not jump under the first card. */
+  .wordmark img { width: 2.25rem; height: 2.25rem; display: block; flex: none; }
+
   .note { font-size: 0.8125rem; line-height: 1.55; color: var(--muted); margin: 0.6rem 0 0; }
   .note strong { font-weight: 500; color: var(--ink); }
 
@@ -324,7 +349,11 @@
 <body>
 <main>
   <div class="masthead">
-    <h1>{% block masthead %}FerryCast{% endblock %}</h1>
+    {# The mark is decorative: the name it stands for is the h1 right beside it. #}
+    <a class="wordmark" href="/">
+      <img src="/static/brand/mark.png" width="128" height="128" alt="" decoding="async">
+      <h1>{% block masthead %}FerryCast{% endblock %}</h1>
+    </a>
     <p class="label label-tight">{% block strapline %}{% endblock %}</p>
   </div>
 {% block content %}{% endblock %}
