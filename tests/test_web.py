@@ -85,6 +85,89 @@ def test_the_first_sailing_still_leads_on_a_date_that_is_not_today(
     assert '<option value="09:30" selected>' in response.text
 
 
+# ---- The live camera -------------------------------------------------------------------
+#
+# A photograph is persuasive in a way a caption cannot undo, so the rule is narrow: the
+# terminal camera appears for the next departure and for nothing else.
+
+
+@pytest.fixture
+def at_ten_sharp(monkeypatch):
+    """As above, but the web layer reads the clock too — for "has this sailing gone"."""
+    monkeypatch.setattr(
+        "ferrycast.query.now_utc", lambda: datetime(2026, 8, 14, 17, 0, tzinfo=UTC)
+    )
+    monkeypatch.setattr(
+        "ferrycast.web.app.now_utc", lambda: datetime(2026, 8, 14, 17, 0, tzinfo=UTC)
+    )
+
+
+def test_the_camera_shows_for_the_next_sailing(client, at_ten_sharp):
+    """10:00, and Saltery Bay's next departure is the 12:30 — the one you could still make."""
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    assert "https://example.invalid/slt.jpg" in body
+    assert "Saltery Bay now" in body
+
+
+def test_the_camera_is_the_terminal_you_are_leaving_from(client, at_ten_sharp):
+    body = client.get("/?origin=ERL&service_date=2026-08-14&time=13:30").text
+    assert "https://example.invalid/erl.jpg" in body
+    assert "https://example.invalid/slt.jpg" not in body
+
+
+def test_no_camera_on_a_later_sailing_the_same_day(client, at_ten_sharp):
+    """16:30 is hours out. What the compound looks like now says nothing about it."""
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=16:30").text
+    assert "example.invalid" not in body
+
+
+def test_no_camera_on_a_sailing_that_has_gone(client, at_ten_sharp):
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=08:30").text
+    assert "example.invalid" not in body
+
+
+def test_no_camera_on_another_day(client, at_ten_sharp):
+    body = client.get("/?origin=SLT&service_date=2026-08-21&time=12:30").text
+    assert "example.invalid" not in body
+
+
+def test_no_camera_when_none_is_configured(client, config, at_ten_sharp):
+    """Blank webcam_url is a supported setup — the whole panel simply does not appear."""
+    from ferrycast.config import Terminal
+
+    app = client.app
+    app.state.config = replace(
+        config,
+        routes=(
+            replace(
+                config.route,
+                terminals=tuple(
+                    Terminal(
+                        code=t.code,
+                        name=t.name,
+                        destination=t.destination,
+                        webcam_url="",
+                        deck_space_url=t.deck_space_url,
+                    )
+                    for t in config.route.terminals
+                ),
+            ),
+        ),
+    )
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    assert "example.invalid" not in body
+    assert "Saltery Bay now" not in body
+
+
+def test_the_camera_url_is_cache_busted_on_the_minute(client, at_ten_sharp):
+    """Without this a browser serves the frame it cached, and "live" is a lie. Bucketed
+    rather than per-request so a reload storm does not become a fetch storm."""
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    expected = int(datetime(2026, 8, 14, 17, 0, tzinfo=UTC).timestamp()) // 60
+    assert f"https://example.invalid/slt.jpg?t={expected}" in body
+
+
 def test_api_query_returns_the_distribution(client, conn, config):
     for day in fridays(3):
         seed_record(conn, config, day, "12:30", "waited_1")
