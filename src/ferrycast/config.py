@@ -15,6 +15,12 @@ from zoneinfo import ZoneInfo
 DEFAULT_CONFIG_PATH = Path("config/ferrycast.toml")
 CONFIG_ENV_VAR = "FERRYCAST_CONFIG"
 
+# Deployment-specific overrides. A container gets its storage path and camera URLs from the
+# environment, so the same committed config works locally and on a host like Railway.
+DATA_DIR_ENV_VAR = "FERRYCAST_DATA_DIR"
+WEBCAM_ENV_PREFIX = "FERRYCAST_WEBCAM_"
+DECK_SPACE_ENV_PREFIX = "FERRYCAST_DECKSPACE_"
+
 
 class ConfigError(Exception):
     """Raised when configuration is missing or internally inconsistent."""
@@ -189,13 +195,18 @@ def _parse_route(raw: dict) -> Route:
         for required in ("code", "name", "destination"):
             if not entry.get(required):
                 raise ConfigError(f"terminal entry missing {required!r}")
+        code = entry["code"]
         terminals.append(
             Terminal(
-                code=entry["code"],
+                code=code,
                 name=entry["name"],
                 destination=entry["destination"],
-                webcam_url=entry.get("webcam_url", ""),
-                deck_space_url=entry.get("deck_space_url", ""),
+                webcam_url=os.environ.get(
+                    f"{WEBCAM_ENV_PREFIX}{code.upper()}", entry.get("webcam_url", "")
+                ),
+                deck_space_url=os.environ.get(
+                    f"{DECK_SPACE_ENV_PREFIX}{code.upper()}", entry.get("deck_space_url", "")
+                ),
             )
         )
     codes = {t.code for t in terminals}
@@ -270,7 +281,9 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
 
     app = raw.get("app", {})
     base = config_path.parent
-    data_dir = Path(app.get("data_dir", "data"))
+    # A mounted volume path comes from the environment, so the committed config does not
+    # have to know where it will be deployed.
+    data_dir = Path(os.environ.get(DATA_DIR_ENV_VAR) or app.get("data_dir", "data"))
     if not data_dir.is_absolute():
         data_dir = (base / data_dir).resolve()
 

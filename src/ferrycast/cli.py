@@ -541,20 +541,59 @@ def cmd_import_records(args) -> int:
     return 0
 
 
-def cmd_serve(args) -> int:
+def _serve(args, *, with_scheduler: bool) -> int:
     import uvicorn
 
     if args.config:
         os.environ["FERRYCAST_CONFIG"] = str(args.config)
-    _config(args)  # fail fast on a bad config rather than inside the worker
+    config = _config(args)  # fail fast on a bad config rather than inside the worker
+
+    # Container hosts hand the port over in the environment.
+    port = args.port or int(os.environ.get("PORT", 8000))
+
+    if with_scheduler:
+        from .db import init_db
+        from .scheduler import start_background
+
+        init_db(config.db_path)
+        config.frames_dir.mkdir(parents=True, exist_ok=True)
+        start_background(config)
+
     uvicorn.run(
         "ferrycast.web.app:get_app",
         factory=True,
         host=args.host,
-        port=args.port,
-        reload=args.reload,
+        port=port,
+        reload=getattr(args, "reload", False),
         log_level="info",
     )
+    return 0
+
+
+def cmd_serve(args) -> int:
+    return _serve(args, with_scheduler=args.with_scheduler)
+
+
+def cmd_run(args) -> int:
+    """Web UI plus the scheduler in one process — for hosts without cron."""
+    return _serve(args, with_scheduler=True)
+
+
+def cmd_schedule(args) -> int:
+    from .scheduler import describe, run_due
+
+    config = _config(args)
+    conn = _open(config, create=True)
+    if args.once:
+        ran = run_due(conn, config)
+        print(f"ran: {', '.join(ran) if ran else 'nothing was due'}")
+        return 0
+    for row in describe(conn, config):
+        marker = "due now" if row["due"] else f"next {row['next_due']}"
+        print(
+            f"{row['job']:<10} every {row['interval_minutes']:>5} min  "
+            f"last {row['last_run'] or 'never':<22} {marker}"
+        )
     return 0
 
 
@@ -667,9 +706,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="run the web UI")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--port", type=int, default=None, help="defaults to $PORT or 8000")
     serve.add_argument("--reload", action="store_true")
+    serve.add_argument(
+        "--with-scheduler",
+        action="store_true",
+        help="also run capture/scrape/aggregate on a timer in this process",
+    )
     serve.set_defaults(func=cmd_serve)
+
+    run = sub.add_parser(
+        "run", help="web UI plus the scheduler in one process (for hosts without cron)"
+    )
+    run.add_argument("--host", default="0.0.0.0")
+    run.add_argument("--port", type=int, default=None, help="defaults to $PORT or 8000")
+    run.set_defaults(func=cmd_run)
+
+    schedule = sub.add_parser("schedule", help="show or run the scheduled jobs")
+    schedule.add_argument(
+        "--once", action="store_true", help="run whatever is due now, then exit"
+    )
+    schedule.set_defaults(func=cmd_schedule)
 
     return parser
 

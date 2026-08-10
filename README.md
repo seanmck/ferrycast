@@ -171,6 +171,8 @@ underlying dates always travel with the answer.
 | `ferrycast query` | The day-like-today distribution (R5) |
 | `ferrycast next` | Upcoming scheduled sailings |
 | `ferrycast serve` | Run the web UI |
+| `ferrycast run` | Web UI **and** scheduler in one process (containers) |
+| `ferrycast schedule` | Show the job plan, or `--once` to run what is due |
 | `ferrycast health` | Feed uptime, sailing coverage and spend |
 | `ferrycast prune` | Apply the frame retention policy |
 | `ferrycast tag` | Manual event tags (festivals, closures) |
@@ -181,7 +183,28 @@ underlying dates always travel with the answer.
 
 ## Deployment
 
-A small VPS with cron is the recommended host — see `deploy/crontab.example`:
+### Container host (Railway, Fly, Render, Docker)
+
+One service runs the web UI and an in-process scheduler together, so the SQLite database
+has a single writer and only one volume is needed:
+
+```bash
+docker build -t ferrycast .
+docker run -p 8000:8000 -v ferrycast-data:/data \
+  -e ANTHROPIC_API_KEY=sk-ant-... ferrycast
+```
+
+**Railway: see [deploy/RAILWAY.md](deploy/RAILWAY.md)** for the full walkthrough — the repo
+already carries a `Dockerfile` and `railway.toml`. The one step that matters is attaching a
+volume at `/data` before the first real deploy; without it every redeploy destroys the
+collected history.
+
+`ferrycast schedule` shows what is scheduled and when each job last ran;
+`ferrycast schedule --once` runs whatever is due and exits.
+
+### VPS with cron
+
+See `deploy/crontab.example`:
 
 ```cron
 */15 * * * *  cd /srv/ferrycast && ferrycast capture && ferrycast scrape

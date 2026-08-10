@@ -204,6 +204,23 @@ def create_app(config_path: str | None = None) -> FastAPI:
             depart_hhmm=time,
         )
 
+    @app.get("/healthz", response_class=PlainTextResponse)
+    def healthz():
+        """Liveness only — deliberately does no database work.
+
+        A platform healthcheck must not fail just because no data has been collected yet,
+        or the first deploy would be marked unhealthy before the first scrape.
+        """
+        return "ok"
+
+    @app.get("/api/schedule")
+    def api_schedule(
+        conn: sqlite3.Connection = Depends(get_conn), config: Config = Depends(get_config)
+    ):
+        from ..scheduler import describe
+
+        return describe(conn, config)
+
     @app.get("/api/health")
     def api_health(
         conn: sqlite3.Connection = Depends(get_conn), config: Config = Depends(get_config)

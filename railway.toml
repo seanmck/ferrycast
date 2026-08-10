@@ -1,0 +1,24 @@
+# Railway service configuration.
+#
+# One service does everything: the web UI and the scheduler run in the same container, so
+# the SQLite database has a single writer and only one volume is needed.
+#
+# Set these in the Railway dashboard:
+#   Volume        mounted at /data          (required — without it, data is lost on deploy)
+#   ANTHROPIC_API_KEY                       (only needed for `ferrycast check`)
+#   FERRYCAST_WEBCAM_SLT / _ERL             (optional; overrides the committed config)
+#
+# PORT is injected by Railway and picked up automatically.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "ferrycast run"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+# SQLite has one writer, so never run two instances against the same volume.
+numReplicas = 1
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

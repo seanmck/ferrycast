@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .config import Config
+from .db import JobRun
 from .schedule import load_schedule_cached, sailings_for_day
 from .timeutil import iso, now_utc, parse_iso
 from .vision import month_to_date_cost
@@ -106,6 +107,18 @@ def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = Fa
     have never been extracted, and reports how many it held back. Set
     `keep_unextracted = false` if you would rather reclaim the disk and accept the gap.
     """
+    if not dry_run:
+        # Record the run like every other job, so a scheduler reading `job_runs` knows this
+        # one is done. Without it, prune looks perpetually overdue and repeats every tick.
+        with JobRun(conn, "prune") as run:
+            run.attempted = 1
+            result = _prune_frames(conn, config, dry_run=False)
+            run.succeeded = 1
+        return result
+    return _prune_frames(conn, config, dry_run=True)
+
+
+def _prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool) -> PruneResult:
     result = PruneResult(dry_run=dry_run)
     now = now_utc()
     retention = config.retention
