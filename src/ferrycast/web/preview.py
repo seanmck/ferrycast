@@ -1,21 +1,16 @@
 """Open Graph metadata — what a FerryCast link looks like when someone sends it.
 
-A link to this app is almost always sent about *one sailing*: "we're aiming for the 12:30,
-here". So the preview answers for that sailing rather than describing the app — the title
-carries the departure, the description carries the number, and both are built from the same
-distribution the page itself renders. Someone reading the message in a car gets the answer
-without opening anything.
+Deliberately generic: the same card and the same sentence whichever sailing the link happens
+to name. A preview is the app introducing itself to someone who may never have seen it, and
+the logo does that better than a rendering of the answer would. The answer is on the page.
 
-The card image is static and served from /static: rasterising type is not something this
-deployment can do at request time, and a scraper that has to wait would show nothing at all.
-It is drawn offline from brand/og-card.html — see brand/README.md.
+What is per-request is only the part that has to be: og:url and og:image must be absolute,
+and the app cannot always work out its own origin. See `absolute`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
-from urllib.parse import urlencode
 
 from starlette.requests import Request
 
@@ -25,16 +20,18 @@ IMAGE_PATH = "/static/brand/og.png"
 IMAGE_WIDTH = 1200
 IMAGE_HEIGHT = 630
 
-SITE_NAME = "FerryCast"
-
-# What the app is, in one clause, for the previews that have no sailing to report on.
-TAGLINE = (
-    "FerryCast records whether each sailing ran out of room, and when — the part BC Ferries' "
-    "deck space leaves out."
+# The lockup is drawn on cream by brand/build_assets.py, never composited at request time.
+IMAGE_ALT = (
+    "The FerryCast logo: a clock roundel with a ferry sailing across it, above the wordmark "
+    "and the route line."
 )
 
-# Chat clients truncate somewhere around here, and a sentence cut mid-word looks broken.
-MAX_DESCRIPTION = 300
+# A typographic apostrophe, not a straight one: the straight one is escaped to &#39; in the
+# attribute, and a few unfurlers print the entity rather than the character.
+DESCRIPTION = (
+    "On a day like today, what’s the wait for the ferry? FerryCast answers from comparable "
+    "past sailings — whether each one ran out of room, and when."
+)
 
 
 @dataclass(frozen=True)
@@ -66,100 +63,16 @@ def absolute(request: Request, config: Config, path: str) -> str:
     return f"{base}{path}"
 
 
-def _pretty_date(day: date) -> str:
-    """"Fri 31 Jul" — no %-d, which is not portable."""
-    return f"{day:%a} {day.day} {day:%b}"
-
-
-def _clamp(sentences: list[str]) -> str:
-    """Drop whole trailing sentences rather than let a client cut one in half."""
-    while len(" ".join(sentences)) > MAX_DESCRIPTION and len(sentences) > 1:
-        sentences.pop()
-    return " ".join(sentences)
-
-
-def _describe(distribution: dict | None, *, origin_name: str, when: str, has_sailing: bool) -> str:
-    if not has_sailing:
-        return f"No departures from {origin_name} on {when}. {TAGLINE}"
-    if not distribution or not distribution["n"]:
-        return f"No comparable sailings recorded for this one yet. {TAGLINE}"
-
-    n = distribution["n"]
-    sailings = "sailing" if n == 1 else "sailings"
-    shares = distribution["shares"]
-    waited = shares.get("waited_1", 0.0) + shares.get("waited_2plus", 0.0)
-    percent = round(waited * 100)
-
-    # Rounding is the enemy of trust here: "0% waited" next to a sailing that did wait, or
-    # "100%" next to one that didn't, is the kind of thing that gets an app deleted. Anchor
-    # the two absolute claims on the count, not on the rounded share.
-    waited_count = distribution["counts"].get("waited_1", 0) + distribution["counts"].get(
-        "waited_2plus", 0
-    )
-    if waited_count == 0:
-        opening = f"None of the {n} comparable {sailings} had to wait."
-    elif waited_count == n:
-        opening = f"All {n} comparable {sailings} waited at least one sailing."
-    else:
-        opening = f"{percent}% of {n} comparable {sailings} waited at least one sailing."
-
-    sentences = [opening]
-
-    minutes = distribution.get("typical_fill_minutes_before")
-    if minutes is not None and distribution.get("typical_fill_local"):
-        sentences.append(
-            f"They typically ran out of room {minutes} min before departure — "
-            f"be in the lineup by {distribution['typical_fill_local']}."
-        )
-    if not distribution.get("sufficient", True):
-        sentences.append("Small sample, so treat it as a hint rather than a forecast.")
-
-    return _clamp(sentences)
-
-
-def _image_alt(config: Config) -> str:
-    """Describe the card, not the sailing — the image is the same on every page."""
-    return (
-        f"The FerryCast card: the clock-and-ferry mark, {config.route.name} in cream on "
-        "navy, and the colour ramp the app uses to show how comparable past sailings went."
-    )
-
-
-def index_preview(
-    request: Request,
-    config: Config,
-    *,
-    origin: str,
-    service_date: str,
-    selected_time: str | None,
-    distribution: dict | None,
-) -> Preview:
-    route = config.route
-    origin_name = route.terminal(origin).name
-    destination_name = route.terminal(route.destinations[origin]).name
-    when = _pretty_date(date.fromisoformat(service_date))
-
-    query = {"origin": origin, "service_date": service_date}
-    if selected_time:
-        query["time"] = selected_time
-        title = f"{selected_time} {origin_name} → {destination_name} · {when}"
-    else:
-        title = f"{origin_name} → {destination_name} · {when}"
-
+def index_preview(request: Request, config: Config) -> Preview:
     return Preview(
-        title=title,
-        description=_describe(
-            distribution,
-            origin_name=origin_name,
-            when=when,
-            has_sailing=bool(selected_time),
-        ),
-        # Not request.url: the shared link is often bare "/", and pinning the preview to the
-        # sailing it actually describes means resharing from the card keeps that sailing.
-        # `safe=":"` leaves 12:30 legible in the clients that print the URL under the card.
-        url=absolute(request, config, "/?" + urlencode(query, safe=":")),
+        title=f"FerryCast — {config.route.name}",
+        description=DESCRIPTION,
+        # The bare page, not the sailing the request resolved to: a shared link should keep
+        # answering for whoever opens it rather than pinning whatever was next when it was
+        # sent, and a preview cached against one sailing's URL would go stale by the hour.
+        url=absolute(request, config, "/"),
         image=absolute(request, config, IMAGE_PATH),
-        image_alt=_image_alt(config),
+        image_alt=IMAGE_ALT,
     )
 
 
@@ -172,5 +85,5 @@ def health_preview(request: Request, config: Config) -> Preview:
         ),
         url=absolute(request, config, "/health"),
         image=absolute(request, config, IMAGE_PATH),
-        image_alt=_image_alt(config),
+        image_alt=IMAGE_ALT,
     )
