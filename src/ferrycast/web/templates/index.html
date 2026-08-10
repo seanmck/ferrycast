@@ -9,13 +9,15 @@
   :root {
     --bg: #f6f7f9; --card: #ffffff; --ink: #14181d; --muted: #5b6672;
     --line: #dfe3e8; --accent: #1f6f8b;
-    --boarded: #2e7d54; --waited1: #c98a1b; --waited2: #b4442f; --cancelled: #6b7280;
+    --boarded: #2e7d54; --filled: #c98a1b; --waited1: #c07a1e; --waited2: #b4442f;
+    --cancelled: #6b7280;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14181d; --card: #1c2229; --ink: #eef1f4; --muted: #9aa5b1;
       --line: #2c343d; --accent: #63b6d4;
-      --boarded: #4caf7d; --waited1: #e0a94a; --waited2: #e0705a; --cancelled: #8b95a1;
+      --boarded: #4caf7d; --filled: #e0a94a; --waited1: #d99a3d; --waited2: #e0705a;
+      --cancelled: #8b95a1;
     }
   }
   * { box-sizing: border-box; }
@@ -43,6 +45,7 @@
   .bar { display: flex; height: 1.6rem; border-radius: 6px; overflow: hidden; margin: 0.7rem 0 0.5rem; }
   .bar span { display: block; }
   .seg-boarded { background: var(--boarded); }
+  .seg-filled { background: var(--filled); }
   .seg-waited_1 { background: var(--waited1); }
   .seg-waited_2plus { background: var(--waited2); }
   .seg-cancelled { background: var(--cancelled); }
@@ -119,6 +122,15 @@
         {% endfor %}
       </ul>
 
+      {% if d.typical_fill_minutes_before is not none %}
+        <p class="note">
+          <strong>Typically ran out of room about {{ d.typical_fill_local }}</strong>
+          — {{ d.typical_fill_minutes_before }} minutes before departure.
+        </p>
+      {% endif %}
+      {% if d.evidence_note %}
+        <p class="note">{{ d.evidence_note }}</p>
+      {% endif %}
       {% if not d.sufficient %}
         <p class="note warn">Small sample ({{ d.n }}). Treat this as a hint, not a forecast.</p>
       {% endif %}
@@ -136,7 +148,7 @@
         <summary>Show the {{ d.samples | length }} sailings behind this</summary>
         <table>
           <thead>
-            <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Peak queue</th><th>Left behind</th></tr>
+            <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled at</th><th>Peak queue</th></tr>
           </thead>
           <tbody>
             {% for s in d.samples %}
@@ -144,13 +156,16 @@
                 <td>{{ s.service_date }}</td>
                 <td>{{ s.depart_hhmm }}</td>
                 <td>{{ labels[s.outcome] }}</td>
+                <td>{{ s.filled_at_local or '—' }}</td>
                 <td>{{ s.peak_queue if s.peak_queue is not none else '—' }}{% if s.queue_truncated %}+{% endif %}</td>
-                <td>{{ s.carryover if s.carryover is not none else '—' }}</td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
-        <p class="note">A “+” means the queue ran past the edge of the camera frame, so the real count was higher.</p>
+        <p class="note">
+          “Filled at” is when the vessel ran out of room. A “+” on a queue count means the
+          queue ran past the edge of the camera frame, so the real number was higher.
+        </p>
       </details>
 
       <details id="curve-box">
@@ -200,15 +215,18 @@
           body.innerHTML = '<p class="note">Not enough frames yet to chart the build-up.</p>';
           return;
         }
-        const peak = Math.max(...data.points.map(p => p.p75)) || 1;
+        const peak = Math.max(...data.points.map(p => p.median)) || 1;
         const bars = data.points.map(p =>
-          `<div style="height:${Math.max(2, (p.p75 / peak) * 100)}%" title="${p.minutes_before} min before: median ${p.median}, 75th pct ${p.p75}"></div>`
+          `<div style="height:${Math.max(2, (p.median / peak) * 100)}%" title="${p.minutes_before} min before: median ${p.median} ${data.unit}"></div>`
         ).join('');
         const first = data.points[0].minutes_before;
+        const caption = data.source === 'deck_space'
+          ? `Typical ${data.unit} across ${data.sailings} comparable sailings — where it reaches zero is the point you would no longer have got on.`
+          : `Typical ${data.unit} (median) across ${data.sailings} comparable sailings.`;
         body.innerHTML =
           `<div class="curve">${bars}</div>` +
           `<div class="curve-axis"><span>${first} min before</span><span>departure</span></div>` +
-          `<p class="note">Typical queue length (75th percentile) across ${data.sailings} comparable sailings.</p>`;
+          `<p class="note">${caption}</p>`;
       } catch (err) {
         body.innerHTML = '<p class="note">Could not load the arrival curve.</p>';
       }

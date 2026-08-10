@@ -5,9 +5,10 @@ Historical wait tracker for the **Saltery Bay ⇄ Earls Cove** ferry route.
 The route is first-come-first-served with ~2-hour headways, so missing a sailing costs 2+
 hours. BC Ferries publishes current deck space, but that number explicitly excludes vehicles
 still queued *outside* the terminal — the exact number a traveller needs. FerryCast builds
-the missing record: it watches both terminal webcams, extracts how many vehicles were
-actually waiting, and answers *"on a day like today, what's the wait?"* from comparable
-historical sailings.
+the missing record: it logs, for every sailing, whether the vessel ran out of room and when,
+and answers *"on a day like today, what's the wait?"* from comparable historical sailings.
+On the morning you travel, it can also read the terminal camera on demand to count the
+vehicles actually queued.
 
 It is a retrieval system, not a forecaster. Similarity search is the model.
 
@@ -17,9 +18,9 @@ It is a retrieval system, not a forecaster. Similarity search is the model.
 
 | Req | What it does | State |
 |-----|--------------|-------|
-| R1 | Frame capture from both terminal webcams, every 15 min | ✅ Built — **needs webcam URLs** |
-| R2 | Deck-space scrape, both directions, same cadence | ✅ Built |
-| R3 | Vision extraction to structured JSON, batchable and idempotent | ✅ Built |
+| R1 | Frame capture from both terminal webcams | ✅ Built — on demand by default; optional cron |
+| R2 | Deck-space scrape, both directions, every 15 min | ✅ Built — **the default history source** |
+| R3 | Vision extraction to structured JSON, batchable and idempotent | ✅ Built — runs when you ask |
 | R4 | Sailing-level aggregation: peak queue, carryover, overload | ✅ Built |
 | R5 | "Day like today" query UI, mobile-friendly | ✅ Built |
 | P1 | Arrival-curve view | ✅ Built |
@@ -27,8 +28,9 @@ It is a retrieval system, not a forecaster. Similarity search is the model.
 | P1 | Anomaly digest (`ferrycast health`) | ✅ Built |
 | P1 | Backfill from service notices | ⚠️ CSV importer only — see [Not built](#not-built) |
 
-**Two things must be filled in before this collects anything:** the webcam frame URLs and
-the real sailing timetable. Both are configuration, not code. See [Setup](#setup).
+**Before this collects anything you must fill in the real sailing timetable**, and the
+webcam URLs too if you want on-demand camera checks. Both are configuration, not code.
+See [Setup](#setup).
 
 ---
 
@@ -44,10 +46,10 @@ cp config/schedule.example.toml  config/schedule.toml
 Then edit both files:
 
 1. **`config/ferrycast.toml` → `webcam_url` for each terminal.**
-   This is the PRD's one blocking open question and nothing here guesses at it. You need a
-   URL that returns the camera *image* at a fixed address, not the page that embeds it.
-   Also satisfy yourself that low-rate archival is acceptable use; the default poll interval
-   is 15 minutes and the user agent identifies the project.
+   Needed only for `ferrycast check` — the historical record is built from deck space, so
+   everything else works without it. You need a URL that returns the camera *image* at a
+   fixed address, not the page that embeds it, and you should satisfy yourself that
+   low-rate access is acceptable use.
 
 2. **`config/schedule.toml` → the real departure times.**
    The shipped times are plausible placeholders, **not** a published timetable. A wrong
@@ -63,7 +65,8 @@ ferrycast doctor    # verify config, schedule, URLs, and API key
 `doctor` tells you whether each webcam URL actually returns an image, which is the fastest
 way to resolve the open question above.
 
-For extraction, set an API key (capture and scraping work without one):
+For `ferrycast check`, set an API key. Everything else — scraping, aggregation and the
+historical query — works without one:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -74,41 +77,49 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## How it works
 
 ```
-  webcams ──► capture ──► frames on disk ──┐
-                                           ├──► extract ──► observations ──┐
-  BC Ferries ─► scrape ──► deck space ─────┘   (vision, per frame)         │
-                                    │                                      │
-                                    └──────────────► aggregate ◄───────────┘
-                                                         │
-                                                  sailing records
-                                                         │
-                                                    query / web UI
+  BC Ferries ─► scrape ──► deck space ─────► aggregate ──► sailing records ──► query / UI
+   (every 15 min, free)                          ▲                              (free)
+                                                 │
+  webcam ──► capture ──► frame ──► extract ──────┘
+   (only when you run `check`, or opt into the cron)
 ```
+
+The free path across the top runs on a schedule and needs no camera. The vision path
+underneath runs when you ask, and its readings take precedence when present because they
+measure the queue outside the terminal rather than space aboard the vessel.
 
 Each stage is independent and re-runnable:
 
+- **scrape** degrades gracefully. A page whose layout changed records `unparsed` rather than
+  throwing, and never disturbs anything else.
 - **capture** never raises. A dead camera writes an `error` row, so a gap is visible in the
-  data instead of killing the cron job — and one dead camera never stops the other.
+  data instead of killing the job — and one dead camera never stops the other.
 - **extract** is keyed on `(frame, prompt_version)`. Bump `prompt_version` in the config and
-  re-run to re-extract the whole backlog with a better prompt; the old generation is kept.
-- **aggregate** is idempotent and can be re-run over any date range as extraction catches up.
+  re-run to re-extract stored frames with a better prompt; the old generation is kept.
+- **aggregate** is idempotent and can be re-run over any date range as evidence arrives.
 
 ### How an outcome is decided
 
-Per the PRD: given frames before and after a scheduled departure, if the queue doesn't drop
-near zero afterwards, the sailing was overloaded and what remains is the carryover.
+From deck space, a sailing whose available space reaches zero before departure `filled`,
+and the first zero reading is when it stopped being possible to get on.
 
-| Outcome | Meaning |
-|---|---|
-| `boarded` | The queue cleared — someone in it made this sailing |
-| `waited_1` | Overloaded, but the carryover fits the next sailing |
-| `waited_2plus` | Carryover exceeds one vessel's capacity |
-| `cancelled` | A queue persisted and no vessel ever appeared |
-| `unknown` | Not enough usable frames to say (night, fog, capture gap) |
+From camera frames, the PRD's rule applies: given frames before and after a departure, if
+the queue doesn't drop near zero afterwards the sailing was overloaded, and what remains is
+the carryover.
 
-`unknown` is deliberately common and never hidden. A dark frame that reports an empty
-compound is marked unusable rather than read as "the queue cleared" — the system says
-*"no usable record"* instead of guessing, and the UI reports how many it excluded.
+| Outcome | Meaning | Evidence needed |
+|---|---|---|
+| `boarded` | Space available right up to departure | either |
+| `filled` | Ran out of room before departure; how many were left behind is unknown | deck space |
+| `waited_1` | Overloaded, and the carryover fits the next sailing | frames |
+| `waited_2plus` | Carryover exceeds one vessel's capacity | frames |
+| `cancelled` | No vessel ever appeared / feed said cancelled | either |
+| `unknown` | Not enough evidence to say | — |
+
+Every answer carries the provenance of its evidence, because `filled` and `waited_1` are
+different claims and it would be dishonest to blur them. `unknown` is never hidden either:
+a dark frame reporting an empty compound is marked unusable rather than read as "the queue
+cleared", and the UI reports how many records it excluded.
 
 ---
 
@@ -129,10 +140,15 @@ ferrycast serve --host 0.0.0.0 --port 8000
 Earls Cove -> Saltery Bay
 2026-08-14 at 15:25 (friday, peak_summer)
 n = 7 comparable sailing(s), match: exact
-  Made it on             0     0%
-  Waited 1 sailing       7   100% ##############################
-  Waited 2+ sailings     0     0%
-  Cancelled              0     0%
+  Space the whole time         0     0%
+  Filled up before departure   7   100% ##############################
+  Waited 1 sailing             0     0%
+  Waited 2+ sailings           0     0%
+  Cancelled                    0     0%
+
+  typically ran out of room 30 min before departure (about 14:55)
+  From published deck space: it shows when the vessel ran out of room, not how many
+  vehicles were still queued outside the terminal.
 ```
 
 Comparable means **same sailing time × day-type × season bucket**, with BC stat holidays
@@ -147,15 +163,15 @@ underlying dates always travel with the answer.
 |---|---|
 | `ferrycast init` | Create the database and data directories |
 | `ferrycast doctor` | Check config, schedule, webcam/deck-space URLs, API key |
-| `ferrycast capture` | Capture one frame per terminal (R1) |
+| `ferrycast capture` | Capture one frame per terminal (R1); optional |
 | `ferrycast scrape` | Scrape current deck space (R2) |
 | `ferrycast extract` | Vision-extract frames (R3); `--essential` reads only what matters |
 | `ferrycast check` | On-demand: the queue right now, plus days like this one |
-| `ferrycast aggregate` | Roll frames up into sailing records (R4) |
+| `ferrycast aggregate` | Roll evidence up into sailing records (R4) |
 | `ferrycast query` | The day-like-today distribution (R5) |
 | `ferrycast next` | Upcoming scheduled sailings |
 | `ferrycast serve` | Run the web UI |
-| `ferrycast health` | Capture uptime, coverage and spend |
+| `ferrycast health` | Feed uptime, sailing coverage and spend |
 | `ferrycast prune` | Apply the frame retention policy |
 | `ferrycast tag` | Manual event tags (festivals, closures) |
 | `ferrycast export` | CSV/JSON export of raw observations |
@@ -168,15 +184,15 @@ underlying dates always travel with the answer.
 A small VPS with cron is the recommended host — see `deploy/crontab.example`:
 
 ```cron
-*/15 * * * *  cd /srv/ferrycast && ferrycast capture && ferrycast scrape
-17   2 * * *  cd /srv/ferrycast && ferrycast extract --essential --for-date yesterday
+*/15 * * * *  cd /srv/ferrycast && ferrycast scrape
 23   3 * * *  cd /srv/ferrycast && ferrycast aggregate --date yesterday
-41   4 * * 0  cd /srv/ferrycast && ferrycast prune && ferrycast health --window 7
+47   4 * * 0  cd /srv/ferrycast && ferrycast health --window 7 --strict
 ```
 
-Keep the capture line whatever else you do — it's free and its frames can't be recovered
-later. The extract line is the one that costs money; see [Cost](#cost-and-when-parsing-happens)
-for the alternatives, including running no scheduled extraction at all.
+That is the entire collection pipeline, and none of it spends money. Vision runs only when
+you type `ferrycast check`. To archive frames for queue-level accuracy as well, see the
+commented lines in `deploy/crontab.example` and
+[Cost](#cost-and-when-the-vision-model-runs).
 
 Phase 1 of the PRD is just the first line — get it running and data starts accruing while
 everything else is built.
@@ -189,34 +205,56 @@ have nowhere durable to live, which costs you the ability to re-extract the back
 
 ---
 
-## Cost, and when parsing happens
+## Cost, and when the vision model runs
 
-**Capture and extraction are separate steps, and only extraction costs money.** Capture is
-an HTTP GET and a file write — free, and irreplaceable, because a frame not captured at
-14:15 is gone forever. Extraction reads a stored frame with a vision model, and can happen
-whenever you like: an hour later, next month, or never.
+**The vision model runs only when you ask it to.** Nothing on a schedule spends money.
 
-That split is what makes on-demand parsing safe. Frames stay on disk, so deferring
-extraction defers the cost without losing the history — you can always go back and read
-2026-07-04 once you decide it was worth a few cents.
+The historical record is built from **deck space**, which is scraped every 15 minutes and
+costs nothing. The camera is read only by `ferrycast check`, on the mornings you actually
+travel — about **$0.004** a look. A household running the default setup and checking before
+a dozen trips a year spends **under five cents a year** on vision.
 
-Measured over a week of real capture cadence (both terminals, 05:00–22:00, 15 minutes):
+| What runs | When | Cost |
+|---|---|---|
+| `scrape` — deck space | every 15 min | free |
+| `aggregate` — build sailing records | nightly | free |
+| `check` — read the camera now | when you ask | ~$0.004 |
 
-| Policy | Frames read/week | ~$/month | Builds history? |
+### What deck space can and can't tell you
+
+This is the honest trade, and it's the same limitation the PRD identifies. Deck space
+describes space aboard the vessel — it excludes vehicles still queued on the approach road.
+
+| Question | Deck space | Camera frames |
+|---|---|---|
+| Did the sailing fill up? | ✅ | ✅ |
+| **When** did it fill — how late could I arrive? | ✅ | ✅ |
+| Was it a 1-sailing or a 3-sailing wait? | ❌ | ✅ |
+| How many vehicles were left behind? | ❌ | ✅ |
+| Does it work at night and in fog? | ✅ | ❌ |
+
+So a sailing that runs out of room is recorded as **`filled`**, not `waited_1` — claiming
+someone waited exactly one sailing would assert something this evidence can't support. In
+exchange, coverage is total: deck space doesn't care that it's dark, which resolves the
+PRD's open question about night sailings. Over a simulated 10-week season it produced a
+record for **1,190 of 1,190 sailings with zero unknowns**, where the camera path left 303
+night sailings unresolved.
+
+### Optional: queue-level accuracy
+
+If the 1-vs-3-sailing distinction matters, archive frames and read the few per sailing that
+decide the outcome. Set `capture.scheduled = true`, add the two commented cron lines in
+`deploy/crontab.example`, and it costs about **$2.65/month**:
+
+| Policy | Frames read/week | ~$/month | Gets you |
 |---|---:|---:|---|
-| `extract` everything | 966 | $5.38 | Yes, full detail |
-| `extract --essential` | 476 | **$2.65** | Yes |
-| `check` only, ~4 trips/month | 12 | $0.02 | **No** |
+| Deck space only *(default)* | 0 | **$0.00** | filled / not filled, and when |
+| `extract --essential` | 476 | $2.65 | queue counts, carryover, 1 vs 2+ |
+| `extract` everything | 966 | $5.38 | the above, plus finer arrival curves |
 
-**`--essential` is the recommended default.** Aggregation only needs the queue shortly
-before departure and what remained after the vessel left; reading all nine frames in a
-two-hour window buys arrival-curve detail the outcome doesn't depend on. Four frames per
-sailing roughly halves the bill (`essential_offsets_minutes` in the config).
-
-**On-demand is near-free but builds nothing.** Worth being explicit: if you *only* ever run
-`check`, you get a live queue reading and no historical distribution to compare it against
-— which is most of the product. The honest use is both: `--essential` nightly for the
-record, `check` on the mornings you travel.
+Capture without extraction is a reasonable middle: frames cost only disk, and can be read
+months later once you decide the detail was worth it
+(`ferrycast extract --essential --for-date 2026-07-04`).
 
 ### Checking on the morning of departure
 
@@ -230,17 +268,21 @@ now:  47 vehicles waiting (seen 09:12, 3 min ago)
 trend: 31 -> 39 -> 47 (oldest to newest)
 
 history for the 15:25 on days like this (n=7):
-  Made it on             0     0%
-  Waited 1 sailing       7   100%
+  Space the whole time         0     0%
+  Filled up before departure   7   100%
+  typically ran out of room 30 min before departure (about 14:55)
+
+cost: $0.0041 (1 frame(s) read)
 ```
 
-It captures a fresh frame first, so it works even with no cron running at all, and reads
-only the newest few frames — about **$0.004** a check. Frames already read cost nothing to
-re-report. The historical half is free: those are stored records, no model call.
+It captures a fresh frame itself, so it works with no capture cron running at all, and
+reads only the newest few frames. Frames already read cost nothing to re-report, and the
+historical half is free — stored records, no model call.
+
+The plain historical query needs no camera at all and costs nothing:
 
 ```bash
-ferrycast extract --essential --for-date 2026-07-04   # backfill one day
-ferrycast extract --for-date 2026-07-04 --origin ERL --time 15:25   # one sailing, full detail
+ferrycast query --origin ERL --date 2026-08-14 --time 15:25
 ```
 
 ### Other levers

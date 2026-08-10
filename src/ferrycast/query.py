@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 
 from .config import Config
 from .schedule import Sailing, day_tags, day_type, load_schedule_cached, sailings_for_day, season
-from .timeutil import iso, local, now_utc, parse_iso
+from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
 # Day types that stand in for one another when a bucket is too thin.
 DAY_TYPE_GROUPS = {
@@ -25,14 +25,26 @@ DAY_TYPE_GROUPS = {
     "sunday_holiday": ("sunday_holiday", "saturday"),
 }
 
-REPORTED_OUTCOMES = ("boarded", "waited_1", "waited_2plus", "cancelled")
+REPORTED_OUTCOMES = ("boarded", "filled", "waited_1", "waited_2plus", "cancelled")
 
 OUTCOME_LABELS = {
-    "boarded": "Made it on",
+    "boarded": "Space the whole time",
+    "filled": "Filled up before departure",
     "waited_1": "Waited 1 sailing",
     "waited_2plus": "Waited 2+ sailings",
     "cancelled": "Cancelled",
     "unknown": "No usable record",
+}
+
+# What the evidence behind an outcome can and cannot support, shown alongside the answer.
+EVIDENCE_NOTES = {
+    "deck_space": (
+        "From published deck space: it shows when the vessel ran out of room, not how many "
+        "vehicles were still queued outside the terminal."
+    ),
+    "frames": "From terminal camera frames, which count vehicles waiting outside the terminal.",
+    "mixed": "Part camera frames, part published deck space.",
+    "import": "Manually imported records.",
 }
 
 
@@ -48,6 +60,9 @@ class ComparableSailing:
     carryover: int | None
     confidence: float | None
     queue_truncated: bool
+    filled_at_local: str | None = None
+    fill_minutes_before: int | None = None
+    evidence: str = "unknown"
     tags: list[str] = field(default_factory=list)
 
 
@@ -68,6 +83,13 @@ class Distribution:
     samples: list[ComparableSailing]
     tags: list[str]
     sufficient: bool
+    evidence: str = "unknown"
+    evidence_note: str = ""
+    # Median minutes before departure at which comparable sailings ran out of room —
+    # the "how late could I turn up" answer, free from the deck-space feed.
+    typical_fill_minutes_before: int | None = None
+    typical_fill_local: str | None = None
+    filled_share: float = 0.0
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -117,9 +139,9 @@ def _fetch_candidates(
 ) -> list[sqlite3.Row]:
     placeholders = ",".join("?" for _ in day_types)
     sql = f"""
-        SELECT s.service_date, s.depart_hhmm, s.day_type, s.season,
+        SELECT s.service_date, s.depart_hhmm, s.day_type, s.season, s.scheduled_departure,
                r.outcome, r.peak_queue, r.queue_at_departure, r.carryover,
-               r.confidence, r.queue_truncated
+               r.confidence, r.queue_truncated, r.filled_at, r.method
           FROM sailings s
           JOIN sailing_records r ON r.sailing_id = s.id
          WHERE s.route = ?
@@ -209,22 +231,22 @@ def query_distribution(
     n = sum(counts.values())
     shares = {k: (round(v / n, 4) if n else 0.0) for k, v in counts.items()}
 
-    samples = [
-        ComparableSailing(
-            service_date=row["service_date"],
-            depart_hhmm=row["depart_hhmm"],
-            day_type=row["day_type"],
-            season=row["season"],
-            outcome=row["outcome"],
-            peak_queue=row["peak_queue"],
-            queue_at_departure=row["queue_at_departure"],
-            carryover=row["carryover"],
-            confidence=row["confidence"],
-            queue_truncated=bool(row["queue_truncated"]),
-            tags=_tags_for(conn, row["service_date"]),
-        )
-        for row in matches[:max_samples]
+    samples = [_sample(conn, config, row) for row in matches[:max_samples]]
+
+    fill_gaps = [
+        gap
+        for gap in (_fill_gap_minutes(row) for row in matches)
+        if gap is not None
     ]
+    typical_gap = _median_int(fill_gaps)
+    typical_local = None
+    if typical_gap is not None:
+        moment = combine_local(target_date, parse_hhmm(depart_hhmm), config.tz) - timedelta(
+            minutes=typical_gap
+        )
+        typical_local = moment.strftime("%H:%M")
+
+    evidence = _evidence_of({row["method"] for row in matches})
 
     return Distribution(
         origin=origin,
@@ -242,6 +264,72 @@ def query_distribution(
         samples=samples,
         tags=_tags_for(conn, target_date.isoformat()),
         sufficient=n >= config.query.min_sample,
+        evidence=evidence,
+        evidence_note=EVIDENCE_NOTES.get(evidence, ""),
+        typical_fill_minutes_before=typical_gap,
+        typical_fill_local=typical_local,
+        filled_share=round(
+            sum(counts[o] for o in ("filled", "waited_1", "waited_2plus")) / n, 4
+        )
+        if n
+        else 0.0,
+    )
+
+
+def _evidence_of(methods: set[str | None]) -> str:
+    kinds = set()
+    for method in methods:
+        if not method:
+            continue
+        if method.startswith("frames"):
+            kinds.add("frames")
+        elif method.startswith("import"):
+            kinds.add("import")
+        elif method.startswith("deck_space"):
+            kinds.add("deck_space")
+    if not kinds:
+        return "unknown"
+    if len(kinds) == 1:
+        return kinds.pop()
+    return "mixed"
+
+
+def _fill_gap_minutes(row: sqlite3.Row) -> int | None:
+    """Minutes between a sailing filling up and its scheduled departure."""
+    if not row["filled_at"]:
+        return None
+    departure = datetime.fromisoformat(row["scheduled_departure"])
+    gap = (departure - parse_iso(row["filled_at"])).total_seconds() / 60
+    return int(gap) if gap >= 0 else 0
+
+
+def _median_int(values: list[int]) -> int | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _sample(conn: sqlite3.Connection, config: Config, row: sqlite3.Row) -> ComparableSailing:
+    gap = _fill_gap_minutes(row)
+    filled_local = None
+    if row["filled_at"]:
+        filled_local = local(parse_iso(row["filled_at"]), config.tz).strftime("%H:%M")
+    return ComparableSailing(
+        service_date=row["service_date"],
+        depart_hhmm=row["depart_hhmm"],
+        day_type=row["day_type"],
+        season=row["season"],
+        outcome=row["outcome"],
+        peak_queue=row["peak_queue"],
+        queue_at_departure=row["queue_at_departure"],
+        carryover=row["carryover"],
+        confidence=row["confidence"],
+        queue_truncated=bool(row["queue_truncated"]),
+        filled_at_local=filled_local,
+        fill_minutes_before=gap,
+        evidence=_evidence_of({row["method"]}),
+        tags=_tags_for(conn, row["service_date"]),
     )
 
 
@@ -302,7 +390,7 @@ def arrival_curve(
     placeholders = ",".join("?" for _ in group)
 
     rows = conn.execute(
-        f"""SELECT s.id, s.scheduled_departure, s.depart_hhmm, s.season
+        f"""SELECT s.id, s.scheduled_departure, s.depart_hhmm, s.season, s.service_date
               FROM sailings s
               JOIN sailing_records r ON r.sailing_id = s.id
              WHERE s.route = ? AND s.origin = ? AND s.day_type IN ({placeholders})
@@ -321,9 +409,25 @@ def arrival_curve(
         relevant = same_season
 
     buckets: dict[int, list[int]] = {}
+    deck_buckets: dict[int, list[int]] = {}
     for row in relevant:
         departure = datetime.fromisoformat(row["scheduled_departure"])
         window_start = departure - timedelta(minutes=config.aggregate.lookback_minutes)
+
+        # Deck space costs nothing and is collected continuously, so it carries the curve
+        # whenever frames were not extracted for these sailings.
+        for deck in conn.execute(
+            """SELECT observed_at, percent_available FROM deck_space
+                WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
+                  AND percent_available IS NOT NULL AND fetch_status = 'ok'""",
+            (config.route.id, origin, row["service_date"], row["depart_hhmm"]),
+        ).fetchall():
+            observed = parse_iso(deck["observed_at"])
+            minutes_before = int((departure - observed).total_seconds() // 60)
+            if 0 <= minutes_before <= config.aggregate.lookback_minutes:
+                bucket = (minutes_before // bucket_minutes) * bucket_minutes
+                deck_buckets.setdefault(bucket, []).append(deck["percent_available"])
+
         observations = conn.execute(
             """SELECT f.captured_at, o.vehicle_count
                  FROM observations o
@@ -348,15 +452,26 @@ def arrival_curve(
             bucket = (minutes_before // bucket_minutes) * bucket_minutes
             buckets.setdefault(bucket, []).append(obs["vehicle_count"])
 
+    # Vehicle counts are the better signal when they exist; deck space is the free fallback.
+    if buckets:
+        source, unit, series, descending = "frames", "vehicles waiting", buckets, False
+    else:
+        source, unit, series, descending = (
+            "deck_space",
+            "% deck space left",
+            deck_buckets,
+            True,
+        )
+
     points = []
-    for bucket in sorted(buckets, reverse=True):
-        values = sorted(buckets[bucket])
+    for bucket in sorted(series, reverse=True):
+        values = sorted(series[bucket])
         points.append(
             {
                 "minutes_before": bucket,
                 "n": len(values),
                 "median": _percentile(values, 0.5),
-                "p75": _percentile(values, 0.75),
+                "p75": _percentile(values, 0.25 if descending else 0.75),
                 "max": values[-1],
             }
         )
@@ -367,6 +482,10 @@ def arrival_curve(
         "day_type": target_type,
         "season": target_season,
         "sailings": len(relevant),
+        "source": source,
+        "unit": unit,
+        # Deck space drains toward zero, so the pessimistic case is the low quartile.
+        "pessimistic_is_low": descending,
         "points": points,
     }
 

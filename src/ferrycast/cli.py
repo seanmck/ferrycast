@@ -286,7 +286,12 @@ def cmd_check(args) -> int:
         print(f"\nhistory for the {sailing['depart_hhmm']} on days like this (n={history['n']}):")
         for outcome, count in history["counts"].items():
             share = history["shares"][outcome]
-            print(f"  {OUTCOME_LABELS[outcome]:<20} {count:>3}  {share:>5.0%}")
+            print(f"  {OUTCOME_LABELS[outcome]:<26} {count:>3}  {share:>5.0%}")
+        if history.get("typical_fill_minutes_before") is not None:
+            print(
+                f"  typically ran out of room {history['typical_fill_minutes_before']} min "
+                f"before departure (about {history['typical_fill_local']})"
+            )
     elif history:
         print(f"\nno comparable history yet for the {sailing['depart_hhmm']}")
 
@@ -305,7 +310,7 @@ def cmd_aggregate(args) -> int:
     if args.all:
         observed = observed_date_range(conn, config)
         if not observed:
-            print("no frames captured yet; nothing to aggregate")
+            print("no frames or deck-space readings collected yet; nothing to aggregate")
             return 0
         start, end = observed
     elif args.start or args.end:
@@ -359,7 +364,14 @@ def cmd_query(args) -> int:
         for outcome, count in result.counts.items():
             share = result.shares[outcome]
             bar = "#" * round(share * 30)
-            print(f"  {OUTCOME_LABELS[outcome]:<20} {count:>3}  {share:>5.0%} {bar}")
+            print(f"  {OUTCOME_LABELS[outcome]:<26} {count:>3}  {share:>5.0%} {bar}")
+        if result.typical_fill_minutes_before is not None:
+            print(
+                f"\n  typically ran out of room {result.typical_fill_minutes_before} min "
+                f"before departure (about {result.typical_fill_local})"
+            )
+        if result.evidence_note:
+            print(f"  {result.evidence_note}")
         if args.verbose:
             print("  dates:")
             for sample in result.samples:

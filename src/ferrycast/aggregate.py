@@ -25,7 +25,10 @@ from .db import JobRun
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
 
-OUTCOMES = ("boarded", "waited_1", "waited_2plus", "cancelled", "unknown")
+OUTCOMES = ("boarded", "waited_1", "waited_2plus", "filled", "cancelled", "unknown")
+
+# Outcomes that mean "you would have waited if you turned up late", whatever the evidence.
+MISSED_OUTCOMES = ("waited_1", "waited_2plus", "filled")
 
 
 @dataclass
@@ -43,6 +46,7 @@ class SailingRecord:
     queue_truncated: bool
     deck_space_min: int | None
     method: str
+    filled_at: str | None = None
 
 
 @dataclass
@@ -126,6 +130,60 @@ def _deck_space_min(
         (route, terminal, service_date, hhmm),
     ).fetchone()
     return row[0] if row and row[0] is not None else None
+
+
+def _deck_space_series(
+    conn: sqlite3.Connection, route: str, terminal: str, service_date: str, hhmm: str
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """SELECT observed_at, percent_available, status_text FROM deck_space
+                WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
+                  AND fetch_status = 'ok'
+                ORDER BY observed_at""",
+            (route, terminal, service_date, hhmm),
+        ).fetchall()
+    )
+
+
+def classify_from_deck_space(
+    series: list[sqlite3.Row], departure: datetime
+) -> tuple[str, str | None, float | None]:
+    """Derive an outcome from the published deck-space feed alone.
+
+    Returns (outcome, filled_at, confidence).
+
+    This is the free signal, and it is weaker than counting the queue: deck space describes
+    space aboard the vessel, not vehicles still waiting on the approach road. So it can say
+    a sailing *filled* — and when — but never how many were left behind. That is why filling
+    gets its own outcome rather than being folded into `waited_1`: claiming someone waited
+    exactly one sailing would be asserting something this evidence cannot support.
+    """
+    readings = [row for row in series if row["percent_available"] is not None]
+    if any(
+        (row["status_text"] or "").lower() == "cancelled"
+        for row in series
+        if row["status_text"]
+    ):
+        return "cancelled", None, 0.6
+    if not readings:
+        return "unknown", None, None
+
+    before = [row for row in readings if parse_iso(row["observed_at"]) <= departure]
+    if not before:
+        return "unknown", None, None
+
+    full = [row for row in before if row["percent_available"] <= 0]
+    if full:
+        return "filled", full[0]["observed_at"], 0.7
+
+    # Never observed full. How confident that is depends on how close the last reading
+    # sits to departure — a feed that stopped an hour early proves much less.
+    last_gap = (departure - parse_iso(before[-1]["observed_at"])).total_seconds() / 60
+    if last_gap > 45:
+        return "unknown", None, None
+    confidence = 0.65 if last_gap <= 20 else 0.5
+    return "boarded", None, confidence
 
 
 def classify(
@@ -215,6 +273,27 @@ def compute_record(
 
     used = counted_before + after
     confidence = round(sum(o.confidence for o in used) / len(used), 3) if used else None
+    method = f"frames:{config.vision.prompt_version}"
+    filled_at = None
+
+    # Frames, when we have them, measure the thing that actually matters — vehicles waiting
+    # outside the terminal. Falling back to deck space keeps the historical record alive
+    # for every other sailing at no cost, at the price of a coarser answer.
+    if outcome == "unknown":
+        series = _deck_space_series(
+            conn,
+            sailing_row["route"],
+            sailing_row["origin"],
+            sailing_row["service_date"],
+            sailing_row["depart_hhmm"],
+        )
+        derived, filled_at, derived_confidence = classify_from_deck_space(series, departure)
+        if derived != "unknown":
+            outcome = derived
+            cancelled = derived == "cancelled"
+            overload = derived == "filled"
+            confidence = derived_confidence
+            method = "deck_space"
 
     return SailingRecord(
         sailing_id=sailing_row["id"],
@@ -229,7 +308,8 @@ def compute_record(
         confidence=confidence,
         queue_truncated=any(o.beyond_frame for o in counted_before),
         deck_space_min=deck_min,
-        method=f"frames:{config.vision.prompt_version}",
+        method=method,
+        filled_at=filled_at,
     )
 
 
@@ -238,8 +318,8 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
         """INSERT OR REPLACE INTO sailing_records
                (sailing_id, peak_queue, queue_at_departure, residual_queue, carryover,
                 overload, cancelled, outcome, n_frames, confidence, queue_truncated,
-                deck_space_min, method, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                deck_space_min, filled_at, method, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.sailing_id,
             record.peak_queue,
@@ -253,6 +333,7 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
             record.confidence,
             int(record.queue_truncated),
             record.deck_space_min,
+            record.filled_at,
             record.method,
             iso(now_utc()),
         ),
@@ -319,12 +400,30 @@ def aggregate_range(
 
 
 def observed_date_range(conn: sqlite3.Connection, config: Config) -> tuple[date, date] | None:
-    row = conn.execute(
+    """The span of days with any evidence at all.
+
+    Deck space counts as much as frames here: with extraction on demand, deck space may be
+    the only thing collected, and `aggregate --all` still has real work to do.
+    """
+    bounds: list[tuple[date, date]] = []
+
+    frames = conn.execute(
         "SELECT MIN(captured_at), MAX(captured_at) FROM frames WHERE status = 'ok'"
     ).fetchone()
-    if not row or not row[0]:
+    if frames and frames[0]:
+        bounds.append(
+            (
+                local(parse_iso(frames[0]), config.tz).date(),
+                local(parse_iso(frames[1]), config.tz).date(),
+            )
+        )
+
+    deck = conn.execute(
+        "SELECT MIN(service_date), MAX(service_date) FROM deck_space WHERE fetch_status = 'ok'"
+    ).fetchone()
+    if deck and deck[0]:
+        bounds.append((date.fromisoformat(deck[0]), date.fromisoformat(deck[1])))
+
+    if not bounds:
         return None
-    return (
-        local(parse_iso(row[0]), config.tz).date(),
-        local(parse_iso(row[1]), config.tz).date(),
-    )
+    return (min(b[0] for b in bounds), max(b[1] for b in bounds))

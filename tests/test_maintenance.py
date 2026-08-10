@@ -83,20 +83,39 @@ def test_prune_dry_run_touches_nothing(conn, config):
     assert conn.execute("SELECT path FROM frames").fetchone()["path"] is not None
 
 
+def _with_scheduled_capture(config):
+    """Capture health only applies to installs that actually schedule capture."""
+    return replace(config, capture=replace(config.capture, scheduled=True))
+
+
 def test_health_flags_a_stalled_pipeline(conn, config):
     add_observation(conn, config, "SLT", now_utc() - timedelta(days=3), 10)
-    report = health_report(conn, config)
+    report = health_report(conn, _with_scheduled_capture(config))
     assert not report.healthy
     assert any("no successful capture since" in p for p in report.problems)
 
 
+def test_health_ignores_capture_when_it_is_not_scheduled(conn, config):
+    """In the default on-demand mode, a quiet camera is not a fault."""
+    report = health_report(conn, config)
+    assert not any("capture" in p for p in report.problems)
+
+
+def test_health_flags_a_silent_deck_space_feed(conn, config):
+    """Deck space is the historical record now, so its silence is the real alarm."""
+    report = health_report(conn, config)
+    assert any("deck-space readings" in p for p in report.problems)
+
+
 def test_health_flags_missing_camera_configuration(conn, config):
-    blind = replace(
-        config,
-        routes=tuple(
-            replace(r, terminals=tuple(replace(t, webcam_url="") for t in r.terminals))
-            for r in config.routes
-        ),
+    blind = _with_scheduled_capture(
+        replace(
+            config,
+            routes=tuple(
+                replace(r, terminals=tuple(replace(t, webcam_url="") for t in r.terminals))
+                for r in config.routes
+            ),
+        )
     )
     report = health_report(conn, blind)
     assert any("no webcam URLs" in p for p in report.problems)

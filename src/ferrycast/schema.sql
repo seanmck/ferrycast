@@ -103,7 +103,10 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     confidence         REAL,
     queue_truncated    INTEGER NOT NULL DEFAULT 0,
     deck_space_min     INTEGER,
-    method             TEXT,
+    -- When the deck-space feed first reported no space left for this sailing (UTC).
+    -- This is the "how late could I have arrived" signal, and it costs nothing to collect.
+    filled_at          TEXT,
+    method             TEXT,                 -- frames:<prompt_version> | deck_space | import:<source>
     computed_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_records_outcome ON sailing_records (outcome);

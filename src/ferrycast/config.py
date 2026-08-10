@@ -61,6 +61,10 @@ class CaptureConfig:
     timeout_seconds: float = 20.0
     max_retries: int = 2
     user_agent: str = "ferrycast/0.1 (personal archival project; low rate)"
+    # Whether frames are captured on a schedule. Off by default: the historical record is
+    # built from deck space, and `ferrycast check` captures its own frame when asked. Turn
+    # on only to archive frames for queue-level accuracy (see the README).
+    scheduled: bool = False
 
 
 @dataclass(frozen=True)

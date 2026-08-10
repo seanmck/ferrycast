@@ -54,7 +54,13 @@ def test_distribution_counts_and_shares(conn, config):
     )
 
     assert result.n == 4
-    assert result.counts == {"boarded": 1, "waited_1": 2, "waited_2plus": 1, "cancelled": 0}
+    assert result.counts == {
+        "boarded": 1,
+        "filled": 0,
+        "waited_1": 2,
+        "waited_2plus": 1,
+        "cancelled": 0,
+    }
     assert result.shares["waited_1"] == 0.5
     assert result.match_level == "exact"
     assert result.relaxations == []

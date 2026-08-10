@@ -236,18 +236,31 @@ def health_report(
     spend = month_to_date_cost(conn)
 
     problems: list[str] = []
-    if cameras == 0:
-        problems.append("no webcam URLs are configured, so no frames are being captured")
-    if expected and rate < 0.95:
-        problems.append(f"capture success rate {rate:.0%} is below the 95% target")
+    scheduled_capture = config.capture.scheduled
+
+    # With capture on demand, the deck-space feed is the pipeline that must stay healthy —
+    # it is what the historical record is built from. Frame capture is only judged when it
+    # is actually meant to be running.
+    if scheduled_capture:
+        if cameras == 0:
+            problems.append("no webcam URLs are configured, so no frames are being captured")
+        if expected and rate < 0.95:
+            problems.append(f"capture success rate {rate:.0%} is below the 95% target")
+        if last_capture and (now - parse_iso(last_capture)) > timedelta(
+            minutes=config.capture.interval_minutes * 4
+        ):
+            problems.append(f"no successful capture since {last_capture}")
+        if awaiting > config.vision.max_frames_per_run * 4:
+            problems.append(f"{awaiting} frames are waiting on extraction")
+    else:
+        expected = 0  # nothing was scheduled, so a rate against it would be meaningless
+
     if deck_rate is not None and deck_rate < 0.95:
         problems.append(f"deck-space scrape success rate {deck_rate:.0%} is below 95%")
-    if last_capture and (now - parse_iso(last_capture)) > timedelta(
-        minutes=config.capture.interval_minutes * 4
-    ):
-        problems.append(f"no successful capture since {last_capture}")
-    if awaiting > config.vision.max_frames_per_run * 4:
-        problems.append(f"{awaiting} frames are waiting on extraction")
+    if deck_total == 0:
+        problems.append(
+            "no deck-space readings in this window — that feed is the historical record"
+        )
     if config.vision.monthly_budget_usd and spend > config.vision.monthly_budget_usd * 0.9:
         problems.append(
             f"vision spend ${spend:.2f} is near the ${config.vision.monthly_budget_usd:.2f} budget"

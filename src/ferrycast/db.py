@@ -7,7 +7,7 @@ small enough that an ORM would be pure overhead.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
@@ -16,10 +16,23 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-# Maps the version being upgraded *from* to the SQL that moves it forward one step.
-MIGRATIONS: dict[int, str] = {}
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def _add_filled_at(conn: sqlite3.Connection) -> None:
+    """v1 -> v2: record when the deck-space feed showed a sailing had filled."""
+    if not _column_exists(conn, "sailing_records", "filled_at"):
+        conn.execute("ALTER TABLE sailing_records ADD COLUMN filled_at TEXT")
+
+
+# Maps the version being upgraded *from* to the step that moves it forward one version.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _add_filled_at,
+}
 
 
 class SchemaTooNewError(RuntimeError):
@@ -53,6 +66,14 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
     so this is the idempotent entry point that `capture` and friends can lean on.
     """
     conn = connect(db_path)
+    # A brand-new database gets the current schema outright, so it must not then be walked
+    # through migrations that assume the older shape.
+    fresh = (
+        conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sailings'"
+        ).fetchone()[0]
+        == 0
+    )
     conn.executescript(schema_sql())
 
     current = schema_version(conn)
@@ -61,10 +82,14 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
             f"{db_path} is at schema version {current}, but this FerryCast understands "
             f"{SCHEMA_VERSION}. Upgrade FerryCast rather than downgrading the database."
         )
+
+    if fresh:
+        current = SCHEMA_VERSION
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     while current < SCHEMA_VERSION:
         migration = MIGRATIONS.get(current)
         if migration:
-            conn.executescript(migration)
+            migration(conn)
         current += 1
         conn.execute(f"PRAGMA user_version = {current}")
 
