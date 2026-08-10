@@ -5,8 +5,10 @@ cancelled 12:20 sailing — at both terminals, every fifteen minutes, 22 rows, n
 real, and every liveness signal green throughout. These tests are built from the real page
 text so that failure cannot come back.
 
-The page carries no fill percentage for this route. It carries a status board, and the note
-line ("Peak travel. Loading maximum number of vehicles") is the overload signal.
+The page carries no fill percentage for this route — only a status board. The note line
+("Peak travel. Loading maximum number of vehicles") is recorded because it is the only
+per-sailing text available, NOT because it proves a sailing overloaded: it names a cause
+the operator published, not a count of the queue.
 """
 
 from datetime import UTC, datetime
@@ -62,7 +64,8 @@ def test_the_footer_cancelled_link_does_not_cancel_the_last_sailing():
 
 
 def test_the_overload_note_is_captured():
-    """No percentage exists for this route, so this note is the whole signal."""
+    """The only per-sailing text on the page. Recorded verbatim, interpreted by nobody:
+    turning this into an outcome would be inventing evidence."""
     assert "Peak travel" in parsed()["09:25"].status_text
 
 

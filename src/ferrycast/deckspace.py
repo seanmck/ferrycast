@@ -88,12 +88,17 @@ def parse_deck_space(html: str, expected: Sequence[str] | None = None) -> list[D
     (plausible nonsense). Passing `expected=None` keeps the old permissive behaviour and is
     only for tests.
 
-    What the page actually carries for a first-come-first-served route is a departures
-    board — scheduled time, Departed/Upcoming, and a note like "Peak travel. Loading
-    maximum number of vehicles". That note is a better overload signal than a fill
-    percentage, so it is recorded even when no percentage exists. Some routes do publish
-    one, and BC Ferries has worded it both ways over the years ("45% full" and "45%
-    available"), so the surrounding wording decides the polarity.
+    What the page carries for a first-come-first-served route is a departures board —
+    scheduled time, Departed/Upcoming, and an operator note like "Peak travel. Loading
+    maximum number of vehicles". The note is recorded even when no percentage exists,
+    because it is the only per-sailing text this page has.
+
+    It is **not** evidence of overload, and must not be treated as such. It states a cause
+    the operator chose to publish, not a measurement of the queue: loading to capacity does
+    not mean the lot failed to clear, and a late departure could be weather or crewing. Only
+    a percentage reaching zero, a counted queue, or a human report establishes that a
+    vehicle was turned away. Some routes do publish a percentage, worded both ways over the
+    years ("45% full" and "45% available"), so the surrounding wording decides the polarity.
     """
     text = visible_text(html)
     accepted: list[tuple[re.Match, str]] = []
