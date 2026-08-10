@@ -30,12 +30,14 @@ days           = ["mon"]
 departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
 
 # VERIFIED — same source and date range, "Sunshine Coast (Earls Cove) to Powell River
-# (Saltery Bay)", Monday.
+# (Saltery Bay)", Monday and Friday. Friday is identical to Monday, checked departure by
+# departure: this route adds no extra Friday sailings in this direction, which is the
+# opposite of what the peak-season assumption would have predicted. One block, not two.
 [[block]]
 terminal       = "ERL"
 effective_from = 2026-05-14
 effective_to   = 2026-10-12
-days           = ["mon"]
+days           = ["mon", "fri"]
 departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
 
 # The two directions above interleave as one vessel making eight round trips: every SLT
@@ -47,13 +49,15 @@ departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05",
 # STILL MISSING. Deliberately left blank rather than guessed: a departure time that is
 # merely plausible mis-windows every observation around it, silently.
 #
-#   1. SLT, Tue–Sun. Tuesday's first sailing is also 05:35, so Mon–Thu may well be
-#      identical — but "may well be" is not a timetable. Check each day.
-#   2. ERL → SLT, every day. The whole reverse direction is unknown; the old placeholder
-#      block for it has been deleted rather than left in place, because no sailings is a
-#      visible gap and wrong sailings is invisible corruption.
-#   3. The off-season timetable, Oct 13 2026 – May 13 2027. The block above covers only
+#   1. SLT → ERL: Tue, Wed, Thu, Fri, Sat, Sun. Only Monday is confirmed. Note that
+#      Friday matched Monday exactly in the ERL direction, so the same is plausible here
+#      — but that is a reason to check it, not to assume it.
+#   2. ERL → SLT: Tue, Wed, Thu, Sat, Sun. Mon and Fri are confirmed identical.
+#   3. The off-season timetable, Oct 13 2026 – May 13 2027. The blocks above cover only
 #      the summer range, so the schedule goes empty on Oct 13 until it is added.
+#
+# Until (1) catches up, Friday has ERL sailings but no SLT ones. That asymmetry is real
+# and visible, which is the point — it is a gap you can see, not a wrong answer.
 #
 # Add each as its own [[block]], matching the form above.
 # ────────────────────────────────────────────────────────────────────────────────────────
