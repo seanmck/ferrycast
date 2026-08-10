@@ -40,9 +40,15 @@ class ScheduleBlock:
     effective_to: date
     days: frozenset[int]
     departures: tuple[time, ...]
+    # Optional so a single-route schedule needs no boilerplate. Set it once a schedule file
+    # covers more than one route; blocks naming a different route are then ignored.
+    route: str | None = None
 
     def covers(self, day: date) -> bool:
         return self.effective_from <= day <= self.effective_to and day.weekday() in self.days
+
+    def applies_to(self, route_id: str) -> bool:
+        return self.route is None or self.route == route_id
 
 
 @dataclass(frozen=True)
@@ -115,6 +121,7 @@ def load_schedule(path: str | Path) -> tuple[ScheduleBlock, ...]:
                 effective_to=_parse_date(entry["effective_to"]),
                 days=_parse_days(entry.get("days")),
                 departures=departures,
+                route=entry.get("route"),
             )
         )
     return tuple(blocks)
@@ -182,6 +189,8 @@ def sailings_for_day(
     seen: set[tuple[str, str]] = set()
     result: list[Sailing] = []
     for block in blocks:
+        if not block.applies_to(route_id):
+            continue
         if origin and block.terminal != origin:
             continue
         if not block.covers(day):

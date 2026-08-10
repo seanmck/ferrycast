@@ -207,6 +207,47 @@ is lost — you just catch up later.
 
 ---
 
+## Adding a route later
+
+**v1 tracks Saltery Bay ⇄ Earls Cove and nothing else** — one route, two cameras, as the
+PRD scopes it. But the parts that are expensive to change once real data exists are already
+route-aware, so adding Langdale or Texada later is a config edit rather than a migration.
+
+What's already done:
+
+- **Database keys include the route.** `sailings` is unique on `(route, origin,
+  scheduled_departure)` and `deck_space` on `(route, terminal, observed_at, sailing_hhmm)`.
+  This matters because a terminal can serve several routes at the same minute — Horseshoe
+  Bay routinely does. Keyed only on origin and time, the second sailing would be silently
+  dropped, and fixing it later means migrating a live table.
+- **Every query filters by route.** Aggregation and the comparability search are scoped, so
+  two routes can't blend into one distribution. That failure mode is worse than an error:
+  it returns a confident, wrong answer.
+- **Frames are deliberately *not* route-keyed.** A camera belongs to a terminal, so a shared
+  terminal yields one frame per capture rather than a duplicate image per route.
+- **The config format already accepts several routes** (`[[route]]`), and schedule blocks
+  accept an optional `route`.
+- **Schema versioning** (`PRAGMA user_version`) gives future migrations a defined home.
+
+To add one:
+
+1. Switch `[route]` to the `[[route]]` array form, append the new route, and set
+   `[app] active_route`.
+2. Add its schedule blocks with `route = "..."` set on each.
+3. Run `ferrycast init` (idempotent), then `doctor`, `capture`, `aggregate` as usual.
+
+What is **not** solved, and would need thought:
+
+- **Collecting two routes at once.** `active_route` selects one, so a second route means a
+  second install (its own config and database) or teaching the CLI to loop over routes.
+  The latter is a small change to `capture`/`scrape`/`aggregate`; it isn't written because
+  nothing exercises it yet.
+- **A terminal whose one camera overlooks two routes' queues.** At Horseshoe Bay the
+  compound serves several destinations, so a vehicle count from one frame can't be
+  attributed to a route. That is a modelling problem, not a schema one, and guessing at it
+  now would be speculative. Saltery Bay and Earls Cove each serve a single route, so v1
+  doesn't encounter it.
+
 ## Data
 
 SQLite, keyed on `(route, terminal, sailing)` from day one so a second route can be added

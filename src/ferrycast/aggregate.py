@@ -62,7 +62,7 @@ def upsert_sailings(conn: sqlite3.Connection, sailings: list[Sailing]) -> int:
                    (route, origin, destination, service_date, scheduled_departure,
                     depart_hhmm, day_type, season)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (origin, scheduled_departure) DO UPDATE SET
+               ON CONFLICT (route, origin, scheduled_departure) DO UPDATE SET
                    day_type = excluded.day_type,
                    season   = excluded.season""",
             (
@@ -117,13 +117,13 @@ def _load_observations(
 
 
 def _deck_space_min(
-    conn: sqlite3.Connection, terminal: str, service_date: str, hhmm: str
+    conn: sqlite3.Connection, route: str, terminal: str, service_date: str, hhmm: str
 ) -> int | None:
     row = conn.execute(
         """SELECT MIN(percent_available) FROM deck_space
-            WHERE terminal = ? AND service_date = ? AND sailing_hhmm = ?
+            WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
               AND percent_available IS NOT NULL""",
-        (terminal, service_date, hhmm),
+        (route, terminal, service_date, hhmm),
     ).fetchone()
     return row[0] if row and row[0] is not None else None
 
@@ -197,7 +197,11 @@ def compute_record(
     dock_before = any(o.ferry_at_dock for o in before if o.at >= grace_from)
     dock_after = any(o.ferry_at_dock for o in observations if o.at >= settle_from)
     deck_min = _deck_space_min(
-        conn, sailing_row["origin"], sailing_row["service_date"], sailing_row["depart_hhmm"]
+        conn,
+        sailing_row["route"],
+        sailing_row["origin"],
+        sailing_row["service_date"],
+        sailing_row["depart_hhmm"],
     )
     departure_seen = (dock_before and not dock_after) or deck_min is not None
 
@@ -258,16 +262,18 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
 
 def aggregate_day(conn: sqlite3.Connection, config: Config, day: date) -> dict[str, int]:
     """Materialise the schedule for `day` and compute a record for every sailing on it."""
+    route = config.route
     blocks = load_schedule_cached(config.schedule_path)
-    destinations = {t.code: t.destination for t in config.route.terminals}
-    sailings = sailings_for_day(blocks, day, config.route.id, destinations, config.tz)
+    sailings = sailings_for_day(blocks, day, route.id, route.destinations, config.tz)
     upsert_sailings(conn, sailings)
 
+    # Scoped to the active route, so a database that later holds several routes still
+    # aggregates each one against only its own sailings.
     rows = list(
         conn.execute(
-            """SELECT * FROM sailings WHERE service_date = ?
+            """SELECT * FROM sailings WHERE route = ? AND service_date = ?
                 ORDER BY origin, scheduled_departure""",
-            (day.isoformat(),),
+            (route.id, day.isoformat()),
         ).fetchall()
     )
 

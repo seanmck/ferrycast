@@ -109,6 +109,7 @@ def _levels(config: Config, target_day_type: str) -> list[_Level]:
 
 def _fetch_candidates(
     conn: sqlite3.Connection,
+    route: str,
     origin: str,
     day_types: tuple[str, ...],
     season_bucket: str | None,
@@ -121,11 +122,12 @@ def _fetch_candidates(
                r.confidence, r.queue_truncated
           FROM sailings s
           JOIN sailing_records r ON r.sailing_id = s.id
-         WHERE s.origin = ?
+         WHERE s.route = ?
+           AND s.origin = ?
            AND s.day_type IN ({placeholders})
            AND r.outcome != 'unknown'
     """
-    params: list = [origin, *day_types]
+    params: list = [route, origin, *day_types]
     if season_bucket:
         sql += " AND s.season = ?"
         params.append(season_bucket)
@@ -136,13 +138,16 @@ def _fetch_candidates(
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
-def _count_unknown(conn: sqlite3.Connection, origin: str, day_types: tuple[str, ...]) -> int:
+def _count_unknown(
+    conn: sqlite3.Connection, route: str, origin: str, day_types: tuple[str, ...]
+) -> int:
     placeholders = ",".join("?" for _ in day_types)
     row = conn.execute(
         f"""SELECT COUNT(*) FROM sailings s
               JOIN sailing_records r ON r.sailing_id = s.id
-             WHERE s.origin = ? AND s.day_type IN ({placeholders}) AND r.outcome = 'unknown'""",
-        (origin, *day_types),
+             WHERE s.route = ? AND s.origin = ? AND s.day_type IN ({placeholders})
+               AND r.outcome = 'unknown'""",
+        (route, origin, *day_types),
     ).fetchone()
     return int(row[0] or 0)
 
@@ -163,8 +168,10 @@ def query_distribution(
     target_date: date,
     depart_hhmm: str,
     max_samples: int = 40,
+    route_id: str | None = None,
 ) -> Distribution:
-    terminal = config.route.terminal(origin)
+    route = config.route_by_id(route_id) if route_id else config.route
+    terminal = route.terminal(origin)
     target_type = day_type(target_date)
     target_season = season(target_date)
     target_minutes = _hhmm_to_minutes(depart_hhmm)
@@ -176,6 +183,7 @@ def query_distribution(
     for level in _levels(config, target_type):
         rows = _fetch_candidates(
             conn,
+            route.id,
             origin,
             level.day_types,
             target_season if level.same_season else None,
@@ -228,7 +236,7 @@ def query_distribution(
         n=n,
         counts=counts,
         shares=shares,
-        unknown_excluded=_count_unknown(conn, origin, used.day_types),
+        unknown_excluded=_count_unknown(conn, route.id, origin, used.day_types),
         match_level=used.name,
         relaxations=relaxations if used.name != "exact" else [],
         samples=samples,
@@ -246,13 +254,13 @@ def upcoming_sailings(
 ) -> list[Sailing]:
     """Scheduled sailings from now forward — used to default the UI to the next departure."""
     blocks = load_schedule_cached(config.schedule_path)
-    destinations = {t.code: t.destination for t in config.route.terminals}
+    route = config.route
     reference = local(at or now_utc(), config.tz)
     found: list[Sailing] = []
     day = reference.date()
     for _ in range(8):  # look ahead a week for a schedule block that covers a day
         for sailing in sailings_for_day(
-            blocks, day, config.route.id, destinations, config.tz, origin=origin
+            blocks, day, route.id, route.destinations, config.tz, origin=origin
         ):
             if sailing.scheduled_departure >= reference:
                 found.append(sailing)
@@ -264,11 +272,11 @@ def upcoming_sailings(
 
 def sailing_times(config: Config, origin: str, target_date: date) -> list[str]:
     blocks = load_schedule_cached(config.schedule_path)
-    destinations = {t.code: t.destination for t in config.route.terminals}
+    route = config.route
     return [
         s.depart_hhmm
         for s in sailings_for_day(
-            blocks, target_date, config.route.id, destinations, config.tz, origin=origin
+            blocks, target_date, route.id, route.destinations, config.tz, origin=origin
         )
     ]
 
@@ -297,9 +305,9 @@ def arrival_curve(
         f"""SELECT s.id, s.scheduled_departure, s.depart_hhmm, s.season
               FROM sailings s
               JOIN sailing_records r ON r.sailing_id = s.id
-             WHERE s.origin = ? AND s.day_type IN ({placeholders})
+             WHERE s.route = ? AND s.origin = ? AND s.day_type IN ({placeholders})
                AND r.outcome != 'unknown'""",
-        (origin, *group),
+        (config.route.id, origin, *group),
     ).fetchall()
 
     relevant = [

@@ -14,6 +14,17 @@ from pathlib import Path
 
 from .timeutil import iso, now_utc
 
+# Bump when schema.sql changes in a way existing databases must be migrated through, and
+# add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
+SCHEMA_VERSION = 1
+
+# Maps the version being upgraded *from* to the SQL that moves it forward one step.
+MIGRATIONS: dict[int, str] = {}
+
+
+class SchemaTooNewError(RuntimeError):
+    """The database was written by a newer FerryCast than the one running."""
+
 
 def connect(db_path: str | Path, *, create: bool = True) -> sqlite3.Connection:
     path = Path(db_path)
@@ -31,10 +42,32 @@ def schema_sql() -> str:
     return resources.files("ferrycast").joinpath("schema.sql").read_text(encoding="utf-8")
 
 
+def schema_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
 def init_db(db_path: str | Path) -> sqlite3.Connection:
-    """Create the schema if absent. Safe to call on an existing database."""
+    """Create the schema if absent, and migrate it forward if needed.
+
+    Safe to call on an existing database — every statement in schema.sql is IF NOT EXISTS,
+    so this is the idempotent entry point that `capture` and friends can lean on.
+    """
     conn = connect(db_path)
     conn.executescript(schema_sql())
+
+    current = schema_version(conn)
+    if current > SCHEMA_VERSION:
+        raise SchemaTooNewError(
+            f"{db_path} is at schema version {current}, but this FerryCast understands "
+            f"{SCHEMA_VERSION}. Upgrade FerryCast rather than downgrading the database."
+        )
+    while current < SCHEMA_VERSION:
+        migration = MIGRATIONS.get(current)
+        if migration:
+            conn.executescript(migration)
+        current += 1
+        conn.execute(f"PRAGMA user_version = {current}")
+
     conn.commit()
     return conn
 

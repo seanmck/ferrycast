@@ -80,9 +80,9 @@ def test_health_flags_a_stalled_pipeline(conn, config):
 def test_health_flags_missing_camera_configuration(conn, config):
     blind = replace(
         config,
-        route=replace(
-            config.route,
-            terminals=tuple(replace(t, webcam_url="") for t in config.route.terminals),
+        routes=tuple(
+            replace(r, terminals=tuple(replace(t, webcam_url="") for t in r.terminals))
+            for r in config.routes
         ),
     )
     report = health_report(conn, blind)

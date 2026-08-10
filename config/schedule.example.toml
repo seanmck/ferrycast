@@ -17,6 +17,9 @@
 #   effective_from / effective_to   inclusive date range this block applies to
 #   days           "all", or a list from mon tue wed thu fri sat sun
 #   departures     local wall-clock HH:MM times
+#   route          optional. Omit it while there is one route (as below). Once this file
+#                  covers more than one, set it on every block; blocks naming a different
+#                  route are ignored rather than mixed in.
 
 [[block]]
 terminal       = "SLT"

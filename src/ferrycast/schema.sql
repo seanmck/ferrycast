@@ -18,10 +18,15 @@ CREATE TABLE IF NOT EXISTS frames (
     height        INTEGER,
     status        TEXT    NOT NULL,          -- ok | error
     error         TEXT,
+    -- Deliberately NOT keyed by route. A camera belongs to a terminal, not to a route, so
+    -- a terminal serving two routes (Horseshoe Bay, if this ever grows) should yield one
+    -- shared frame per capture rather than a duplicate image per route. `route` below
+    -- records which route's capture run fetched it.
     UNIQUE (terminal, captured_at)
 );
 CREATE INDEX IF NOT EXISTS idx_frames_terminal_time ON frames (terminal, captured_at);
 CREATE INDEX IF NOT EXISTS idx_frames_service_date  ON frames (service_date);
+CREATE INDEX IF NOT EXISTS idx_frames_route         ON frames (route, captured_at);
 
 CREATE TABLE IF NOT EXISTS deck_space (
     id                INTEGER PRIMARY KEY,
@@ -36,9 +41,12 @@ CREATE TABLE IF NOT EXISTS deck_space (
     fetch_status      TEXT    NOT NULL,      -- ok | error | unparsed
     error             TEXT,
     raw               TEXT,
-    UNIQUE (terminal, observed_at, sailing_hhmm)
+    -- Route is part of the key: the conditions page is published per route-direction, so
+    -- one terminal can report a 15:25 sailing on two different routes.
+    UNIQUE (route, terminal, observed_at, sailing_hhmm)
 );
-CREATE INDEX IF NOT EXISTS idx_deck_space_lookup ON deck_space (terminal, service_date, sailing_hhmm);
+CREATE INDEX IF NOT EXISTS idx_deck_space_lookup
+    ON deck_space (route, terminal, service_date, sailing_hhmm);
 
 -- One row per (frame, prompt version). Re-running extraction with an improved prompt
 -- adds rows rather than destroying the old ones, which keeps R3 idempotent.
@@ -74,10 +82,13 @@ CREATE TABLE IF NOT EXISTS sailings (
     depart_hhmm         TEXT NOT NULL,
     day_type            TEXT NOT NULL,
     season              TEXT NOT NULL,
-    UNIQUE (origin, scheduled_departure)
+    -- Route is part of the key. Without it, a terminal serving two routes could not hold
+    -- two sailings departing at the same minute (Horseshoe Bay routinely does), and the
+    -- second would be silently dropped.
+    UNIQUE (route, origin, scheduled_departure)
 );
 CREATE INDEX IF NOT EXISTS idx_sailings_bucket
-    ON sailings (origin, depart_hhmm, day_type, season);
+    ON sailings (route, origin, depart_hhmm, day_type, season);
 
 CREATE TABLE IF NOT EXISTS sailing_records (
     sailing_id         INTEGER PRIMARY KEY REFERENCES sailings (id) ON DELETE CASCADE,

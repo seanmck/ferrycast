@@ -49,6 +49,11 @@ class Route:
     def codes(self) -> tuple[str, ...]:
         return tuple(t.code for t in self.terminals)
 
+    @property
+    def destinations(self) -> dict[str, str]:
+        """origin terminal code -> destination terminal code."""
+        return {t.code: t.destination for t in self.terminals}
+
 
 @dataclass(frozen=True)
 class CaptureConfig:
@@ -103,7 +108,8 @@ class Config:
     db_path: Path
     frames_dir: Path
     schedule_path: Path
-    route: Route
+    routes: tuple[Route, ...]
+    active_route_id: str
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
     aggregate: AggregateConfig = field(default_factory=AggregateConfig)
@@ -115,6 +121,18 @@ class Config:
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
 
+    @property
+    def route(self) -> Route:
+        """The route this install collects for. v1 is deliberately single-route."""
+        return self.route_by_id(self.active_route_id)
+
+    def route_by_id(self, route_id: str) -> Route:
+        for route in self.routes:
+            if route.id == route_id:
+                return route
+        known = ", ".join(r.id for r in self.routes)
+        raise ConfigError(f"unknown route {route_id!r}; known routes: {known}")
+
 
 def _dataclass_from(cls, raw: dict, section: str):
     known = {f.name for f in cls.__dataclass_fields__.values()}
@@ -125,8 +143,6 @@ def _dataclass_from(cls, raw: dict, section: str):
 
 
 def _parse_route(raw: dict) -> Route:
-    if not raw:
-        raise ConfigError("missing [route] section")
     terminals_raw = raw.get("terminals") or []
     if len(terminals_raw) != 2:
         raise ConfigError("[route] must define exactly two terminals (one per direction)")
@@ -160,6 +176,41 @@ def _parse_route(raw: dict) -> Route:
     )
 
 
+def _parse_routes(raw: dict, active_id: str | None) -> tuple[tuple[Route, ...], str]:
+    """Parse the route section(s) and decide which one this install tracks.
+
+    v1 tracks a single route, but the file format already accepts several — TOML's
+    `[[route]]` array form — so adding one later is a config edit rather than a format
+    change. Everything downstream is keyed by route id, so the routes that are defined but
+    not active simply have no data collected against them.
+    """
+    section = raw.get("route")
+    if not section:
+        raise ConfigError("missing [route] section")
+
+    entries = section if isinstance(section, list) else [section]
+    routes = tuple(_parse_route(entry) for entry in entries)
+
+    ids = [r.id for r in routes]
+    duplicates = {i for i in ids if ids.count(i) > 1}
+    if duplicates:
+        raise ConfigError(f"duplicate route id(s): {', '.join(sorted(duplicates))}")
+
+    if active_id:
+        if active_id not in ids:
+            raise ConfigError(
+                f"active_route {active_id!r} is not defined; known routes: {', '.join(ids)}"
+            )
+        return routes, active_id
+
+    if len(routes) > 1:
+        raise ConfigError(
+            "several routes are defined, so [app] active_route must name the one to track "
+            f"(one of: {', '.join(ids)}). v1 collects for a single route at a time."
+        )
+    return routes, routes[0].id
+
+
 def resolve_config_path(explicit: str | os.PathLike | None = None) -> Path:
     if explicit:
         return Path(explicit)
@@ -189,13 +240,16 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     if not schedule_path.is_absolute():
         schedule_path = (base / schedule_path).resolve()
 
+    routes, active_route_id = _parse_routes(raw, app.get("active_route"))
+
     return Config(
         timezone_name=app.get("timezone", "America/Vancouver"),
         data_dir=data_dir,
         db_path=data_dir / app.get("db_name", "ferrycast.db"),
         frames_dir=data_dir / app.get("frames_dirname", "frames"),
         schedule_path=schedule_path,
-        route=_parse_route(raw.get("route", {})),
+        routes=routes,
+        active_route_id=active_route_id,
         capture=_dataclass_from(CaptureConfig, raw.get("capture", {}), "capture"),
         vision=_dataclass_from(VisionConfig, raw.get("vision", {}), "vision"),
         aggregate=_dataclass_from(AggregateConfig, raw.get("aggregate", {}), "aggregate"),

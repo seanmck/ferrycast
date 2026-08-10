@@ -16,6 +16,13 @@ db_name        = "ferrycast.db"
 frames_dirname = "frames"
 schedule_path  = "schedule.toml"    # relative to this file
 
+# v1 tracks one route. If you ever define more than one below, name the active one here:
+# active_route = "route7"
+
+# One route, defined as a single [route] table. Adding a second route later is a config
+# edit, not a format change: switch these to the [[route]] array form (double brackets),
+# append another, and set active_route above. Everything downstream is already keyed by
+# route id — see "Adding a route later" in the README.
 [route]
 id   = "route7"
 name = "Saltery Bay – Earls Cove"
