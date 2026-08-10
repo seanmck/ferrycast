@@ -73,6 +73,14 @@
 
     --shadow: 0 1px 2px rgba(11, 26, 34, 0.06);
     --radius: 2px;
+
+    /* One height for every form control on the page. The date field and the sailing
+       select sit side by side, so anything that lets them size themselves independently
+       shows up immediately as a step between them. */
+    --control-h: 2.875rem;
+    /* The select chevron, drawn rather than fetched. Stroke is baked into the data URI,
+       so the dark side redefines the whole variable below. */
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%230B1A22' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 
   @media (prefers-color-scheme: dark) {
@@ -100,6 +108,8 @@
       --o-cancelled: #93A7AB;
 
       --shadow: none;
+
+      --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23E8EDEC' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     }
   }
 
@@ -204,11 +214,33 @@
   .field { display: block; }
   .field > .label { margin-bottom: 0.35rem; }
 
+  /* Date and Sailing are a matched pair, and a native control will not stay matched: every
+     engine adds its own intrinsic height on top of whatever padding is set, and mobile
+     Safari additionally centres a date value that the select beside it left-aligns. So the
+     native look is dropped on both and the box is stated outright — fixed height, no
+     vertical padding, explicit alignment. Nothing here is left to the engine to decide. */
   select, input[type="date"] {
-    width: 100%; padding: 0.65rem 0.6rem; font: inherit; font-size: 1rem;
-    color: var(--ink); background: var(--bg);
+    -webkit-appearance: none; appearance: none;
+    display: block; width: 100%; height: var(--control-h);
+    padding: 0 2rem 0 0.6rem; font: inherit; font-size: 1rem; line-height: normal;
+    /* Values a traveller squints at are mono and tabular, as everywhere else on the page. */
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    text-align: left; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line-strong); border-radius: var(--radius);
   }
+  /* appearance:none takes the native arrow with it, so the select brings its own. */
+  select {
+    background-image: var(--chevron);
+    background-repeat: no-repeat; background-position: right 0.7rem center;
+    background-size: 12px 8px;
+  }
+  /* Chromium keeps its calendar button after appearance:none; park it where the select's
+     chevron sits so the two controls line up on the right edge as well as the left. */
+  input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 -1.4rem 0 0; }
+  /* Mobile Safari lays the value out in its own inner element; without this it keeps the
+     centred alignment the native control uses. */
+  input[type="date"]::-webkit-date-and-time-value { text-align: left; }
   select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
