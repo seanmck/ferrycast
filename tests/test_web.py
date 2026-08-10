@@ -174,6 +174,39 @@ def test_fonts_are_served_locally(client):
     assert response.headers["content-type"] == "font/woff2"
 
 
+def test_brand_assets_are_served(client):
+    """Every file the pages link to. These ship as package data, and the container installs
+    the package rather than copying src/ — so a missing entry there is invisible until the
+    icons quietly 404 in production."""
+    for path, media in [
+        ("/static/brand/mark.png", "image/png"),
+        ("/static/brand/og.png", "image/png"),
+        ("/static/brand/apple-touch-icon.png", "image/png"),
+        ("/static/brand/favicon.ico", "image/vnd.microsoft.icon"),
+        ("/favicon.ico", "image/x-icon"),
+    ]:
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["content-type"] == media, path
+
+
+def test_every_page_carries_the_mark(client):
+    for path in ["/", "/health"]:
+        assert "/static/brand/mark.png" in client.get(path).text, path
+
+
+def test_link_preview_image_is_absolute(client):
+    response = client.get("/")
+    assert 'content="http://testserver/static/brand/og.png"' in response.text
+
+
+def test_link_preview_image_follows_the_forwarded_scheme(client):
+    """Behind a TLS-terminating proxy the app itself only ever sees http, and an http
+    og:image on an https page is dropped by several unfurlers."""
+    response = client.get("/", headers={"x-forwarded-proto": "https"})
+    assert 'content="https://testserver/static/brand/og.png"' in response.text
+
+
 def test_index_does_not_reference_a_font_cdn(client):
     """The page must not fetch anything third-party — it loads at the roadside."""
     response = client.get("/")
