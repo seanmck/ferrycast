@@ -76,6 +76,24 @@ class VisionConfig:
     skip_dark_frames: bool = True
     dark_luma_threshold: float = 24.0
 
+    # Which frames are worth paying for when classifying a sailing, as minutes relative to
+    # its scheduled departure (negative = before). Aggregation needs the queue shortly
+    # before departure and what was left after it settles — not every frame in the window.
+    essential_offsets_minutes: tuple[int, ...] = (-30, -10, 15, 30)
+    essential_tolerance_minutes: int = 10
+
+    # `ferrycast check` — the on-demand path.
+    on_demand_max_frames: int = 3
+    on_demand_max_age_minutes: int = 90
+
+
+@dataclass(frozen=True)
+class WebConfig:
+    # A web request that spends money is a footgun, so on-demand checks from the browser
+    # are opt-in and separately capped even though the UI is household-only.
+    allow_on_demand_checks: bool = False
+    on_demand_daily_cap: int = 40
+
 
 @dataclass(frozen=True)
 class AggregateConfig:
@@ -99,6 +117,9 @@ class RetentionConfig:
     keep_frames_days: int = 400
     downsample_after_days: int = 120
     downsample_keep_per_hour: int = 1
+    # With extraction deferred, an unread frame is the only record of that moment. Pruning
+    # skips those by default so a cheap extraction policy can't quietly destroy history.
+    keep_unextracted: bool = True
 
 
 @dataclass(frozen=True)
@@ -115,6 +136,7 @@ class Config:
     aggregate: AggregateConfig = field(default_factory=AggregateConfig)
     query: QueryConfig = field(default_factory=QueryConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
+    web: WebConfig = field(default_factory=WebConfig)
     source_path: Path | None = None
 
     @property
@@ -135,11 +157,18 @@ class Config:
 
 
 def _dataclass_from(cls, raw: dict, section: str):
-    known = {f.name for f in cls.__dataclass_fields__.values()}
-    unknown = set(raw) - known
+    fields = cls.__dataclass_fields__
+    unknown = set(raw) - set(fields)
     if unknown:
         raise ConfigError(f"unknown key(s) in [{section}]: {', '.join(sorted(unknown))}")
-    return cls(**raw)
+    # TOML has no tuple type, so coerce lists for fields that want one.
+    coerced = {
+        key: tuple(value)
+        if isinstance(value, list) and isinstance(fields[key].default, tuple)
+        else value
+        for key, value in raw.items()
+    }
+    return cls(**coerced)
 
 
 def _parse_route(raw: dict) -> Route:
@@ -255,5 +284,6 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         aggregate=_dataclass_from(AggregateConfig, raw.get("aggregate", {}), "aggregate"),
         query=_dataclass_from(QueryConfig, raw.get("query", {}), "query"),
         retention=_dataclass_from(RetentionConfig, raw.get("retention", {}), "retention"),
+        web=_dataclass_from(WebConfig, raw.get("web", {}), "web"),
         source_path=config_path,
     )

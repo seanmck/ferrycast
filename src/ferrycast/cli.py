@@ -176,7 +176,7 @@ def cmd_scrape(args) -> int:
 
 def cmd_extract(args) -> int:
     from .timeutil import iso, now_utc
-    from .vision import extract_pending
+    from .vision import extract_frames, extract_pending
 
     config = _config(args)
     conn = _open(config)
@@ -191,14 +191,34 @@ def cmd_extract(args) -> int:
     elif args.days:
         since = iso(now_utc() - timedelta(days=args.days))
 
-    stats = extract_pending(
-        conn,
-        config,
-        limit=args.limit,
-        since=since,
-        terminal=args.terminal,
-        dry_run=args.dry_run,
-    )
+    if args.essential or args.for_date:
+        from .selection import essential_frames_for_day, frames_for_sailing
+        from .timeutil import combine_local, parse_hhmm
+
+        day = _parse_day(args.for_date or "yesterday")
+        if args.time:
+            if not args.origin:
+                print("--time needs --origin as well", file=sys.stderr)
+                return 2
+            departure = combine_local(day, parse_hhmm(args.time), config.tz)
+            frames = frames_for_sailing(conn, config, origin=args.origin, departure=departure)
+            scope = f"the {args.origin} {args.time} sailing on {day}"
+        else:
+            frames = essential_frames_for_day(conn, config, day, origin=args.origin)
+            scope = f"key frames for {day}" + (f" from {args.origin}" if args.origin else "")
+        if args.limit:
+            frames = frames[: args.limit]
+        print(f"selected {len(frames)} frame(s) — {scope}")
+        stats = extract_frames(conn, config, frames, dry_run=args.dry_run)
+    else:
+        stats = extract_pending(
+            conn,
+            config,
+            limit=args.limit,
+            since=since,
+            terminal=args.terminal,
+            dry_run=args.dry_run,
+        )
     if args.dry_run:
         print(f"{stats.considered} frame(s) awaiting extraction (dry run, nothing sent)")
         return 0
@@ -212,6 +232,68 @@ def cmd_extract(args) -> int:
     if len(stats.errors) > 10:
         print(f"  ! ... and {len(stats.errors) - 10} more")
     return 1 if stats.failed and not stats.extracted else 0
+
+
+def cmd_check(args) -> int:
+    """On-demand: read the queue right now and pair it with days like this one."""
+    from .query import OUTCOME_LABELS
+    from .status import check_and_compare
+
+    config = _config(args)
+    conn = _open(config)
+
+    origin = args.origin
+    if not origin:
+        from .query import upcoming_sailings
+
+        upcoming = upcoming_sailings(config, limit=1)
+        if not upcoming:
+            print("no upcoming sailings; pass --origin", file=sys.stderr)
+            return 1
+        origin = upcoming[0].origin
+
+    result = check_and_compare(
+        conn,
+        config,
+        origin=origin,
+        target_date=_parse_day(args.date) if args.date else None,
+        depart_hhmm=args.time,
+        capture_fresh=not args.no_capture,
+    )
+
+    status = result["status"]
+    sailing = result["sailing"]
+    terminal = config.route.terminal(origin)
+    print(f"{terminal.name} -> {config.route.terminal(sailing['destination']).name}")
+
+    latest = status["latest"]
+    if latest and latest["usable"]:
+        beyond = "+" if latest["queue_beyond_frame"] else ""
+        dock = ", vessel at dock" if latest["ferry_at_dock"] else ""
+        print(
+            f"now:  {latest['vehicle_count']}{beyond} vehicles waiting "
+            f"(seen {latest['observed_at_local']}, {latest['age_minutes']} min ago{dock})"
+        )
+        trend = [r for r in status["trend"] if r["usable"]][::-1]
+        if len(trend) > 1:
+            counts = " -> ".join(f"{r['vehicle_count']}" for r in trend)
+            print(f"trend: {counts} (oldest to newest)")
+    else:
+        print("now:  no usable reading")
+
+    history = result.get("history")
+    if history and history["n"]:
+        print(f"\nhistory for the {sailing['depart_hhmm']} on days like this (n={history['n']}):")
+        for outcome, count in history["counts"].items():
+            share = history["shares"][outcome]
+            print(f"  {OUTCOME_LABELS[outcome]:<20} {count:>3}  {share:>5.0%}")
+    elif history:
+        print(f"\nno comparable history yet for the {sailing['depart_hhmm']}")
+
+    for note in status["notes"]:
+        print(f"note: {note}")
+    print(f"\ncost: ${result['cost_usd']:.4f} ({status['frames_read']} frame(s) read)")
+    return 0
 
 
 def cmd_aggregate(args) -> int:
@@ -337,6 +419,11 @@ def cmd_prune(args) -> int:
         f"{prefix} {result.deleted} expired frame file(s) and thinned "
         f"{result.downsampled}, freeing {result.bytes_freed / 1e6:.1f} MB"
     )
+    if result.kept_unextracted:
+        print(
+            f"kept {result.kept_unextracted} unextracted frame(s) that were otherwise due "
+            "for pruning — extract them, or set retention.keep_unextracted = false"
+        )
     return 0
 
 
@@ -478,7 +565,32 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--days", type=int, help="only frames from the last N days")
     extract.add_argument("--terminal", help="restrict to one terminal code")
     extract.add_argument("--dry-run", action="store_true", help="report the backlog only")
+    extract.add_argument(
+        "--essential",
+        action="store_true",
+        help="read only the few frames per sailing that determine its outcome",
+    )
+    extract.add_argument(
+        "--for-date", help="target one service date (implies --essential; default yesterday)"
+    )
+    extract.add_argument("--origin", help="with --for-date, restrict to one terminal")
+    extract.add_argument(
+        "--time", help="with --for-date and --origin, read one sailing's full window"
+    )
     extract.set_defaults(func=cmd_extract)
+
+    check = sub.add_parser(
+        "check", help="on-demand: read the queue now and compare with days like this"
+    )
+    check.add_argument("--origin", help="terminal code you are leaving from")
+    check.add_argument("--date", help="target date (default: today)")
+    check.add_argument("--time", help="sailing time HH:MM (default: next departure)")
+    check.add_argument(
+        "--no-capture",
+        action="store_true",
+        help="use stored frames only; do not fetch a fresh one",
+    )
+    check.set_defaults(func=cmd_check)
 
     aggregate = sub.add_parser("aggregate", help="roll frames up into sailing records (R4)")
     aggregate.add_argument("--date", help="a single service date (default: today)")

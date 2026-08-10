@@ -149,7 +149,8 @@ underlying dates always travel with the answer.
 | `ferrycast doctor` | Check config, schedule, webcam/deck-space URLs, API key |
 | `ferrycast capture` | Capture one frame per terminal (R1) |
 | `ferrycast scrape` | Scrape current deck space (R2) |
-| `ferrycast extract` | Vision-extract pending frames (R3) |
+| `ferrycast extract` | Vision-extract frames (R3); `--essential` reads only what matters |
+| `ferrycast check` | On-demand: the queue right now, plus days like this one |
 | `ferrycast aggregate` | Roll frames up into sailing records (R4) |
 | `ferrycast query` | The day-like-today distribution (R5) |
 | `ferrycast next` | Upcoming scheduled sailings |
@@ -168,10 +169,14 @@ A small VPS with cron is the recommended host — see `deploy/crontab.example`:
 
 ```cron
 */15 * * * *  cd /srv/ferrycast && ferrycast capture && ferrycast scrape
-7    * * * *  cd /srv/ferrycast && ferrycast extract --limit 60
+17   2 * * *  cd /srv/ferrycast && ferrycast extract --essential --for-date yesterday
 23   3 * * *  cd /srv/ferrycast && ferrycast aggregate --date yesterday
 41   4 * * 0  cd /srv/ferrycast && ferrycast prune && ferrycast health --window 7
 ```
+
+Keep the capture line whatever else you do — it's free and its frames can't be recovered
+later. The extract line is the one that costs money; see [Cost](#cost-and-when-parsing-happens)
+for the alternatives, including running no scheduled extraction at all.
 
 Phase 1 of the PRD is just the first line — get it running and data starts accruing while
 everything else is built.
@@ -184,26 +189,82 @@ have nowhere durable to live, which costs you the ability to re-extract the back
 
 ---
 
-## Cost
+## Cost, and when parsing happens
 
-Comfortably inside the PRD's ~$5/month target, using Claude Haiku 4.5 at $1/$5 per Mtok:
+**Capture and extraction are separate steps, and only extraction costs money.** Capture is
+an HTTP GET and a file write — free, and irreplaceable, because a frame not captured at
+14:15 is gone forever. Extraction reads a stored frame with a vision model, and can happen
+whenever you like: an hour later, next month, or never.
+
+That split is what makes on-demand parsing safe. Frames stay on disk, so deferring
+extraction defers the cost without losing the history — you can always go back and read
+2026-07-04 once you decide it was worth a few cents.
+
+Measured over a week of real capture cadence (both terminals, 05:00–22:00, 15 minutes):
+
+| Policy | Frames read/week | ~$/month | Builds history? |
+|---|---:|---:|---|
+| `extract` everything | 966 | $5.38 | Yes, full detail |
+| `extract --essential` | 476 | **$2.65** | Yes |
+| `check` only, ~4 trips/month | 12 | $0.02 | **No** |
+
+**`--essential` is the recommended default.** Aggregation only needs the queue shortly
+before departure and what remained after the vessel left; reading all nine frames in a
+two-hour window buys arrival-curve detail the outcome doesn't depend on. Four frames per
+sailing roughly halves the bill (`essential_offsets_minutes` in the config).
+
+**On-demand is near-free but builds nothing.** Worth being explicit: if you *only* ever run
+`check`, you get a live queue reading and no historical distribution to compare it against
+— which is most of the product. The honest use is both: `--essential` nightly for the
+record, `check` on the mornings you travel.
+
+### Checking on the morning of departure
+
+```bash
+ferrycast check --origin ERL --time 15:25
+```
+
+```
+Earls Cove -> Saltery Bay
+now:  47 vehicles waiting (seen 09:12, 3 min ago)
+trend: 31 -> 39 -> 47 (oldest to newest)
+
+history for the 15:25 on days like this (n=7):
+  Made it on             0     0%
+  Waited 1 sailing       7   100%
+```
+
+It captures a fresh frame first, so it works even with no cron running at all, and reads
+only the newest few frames — about **$0.004** a check. Frames already read cost nothing to
+re-report. The historical half is free: those are stored records, no model call.
+
+```bash
+ferrycast extract --essential --for-date 2026-07-04   # backfill one day
+ferrycast extract --for-date 2026-07-04 --origin ERL --time 15:25   # one sailing, full detail
+```
+
+### Other levers
 
 | Lever | Effect |
 |---|---|
-| Frames downscaled to 896px before upload | Image tokens scale with area — the single biggest saver |
+| Frames downscaled to 896px before upload | Image tokens scale with area — the biggest per-frame saver |
 | Dark frames flagged without a model call | Night sailings cost nothing to mark unusable |
 | `monthly_budget_usd` | Extraction stops when the month's spend hits the cap |
 
-Roughly ~1k input tokens per frame: about **$2–4/month** at 15-minute cadence across two
-cameras, with dark hours skipped. Every call's token usage and cost is recorded per
-observation, so `ferrycast health` reports real spend rather than an estimate:
+Every call's tokens and cost are recorded per observation, so `ferrycast health` reports
+real spend rather than an estimate:
 
 ```
 vision spend     $1.09 of $5.00 this month
 ```
 
-If the budget is hit, extraction stops cleanly and says so; capture keeps running, so nothing
-is lost — you just catch up later.
+If the budget is hit, extraction stops cleanly and says so; capture keeps running, so
+nothing is lost.
+
+> **Retention interacts with this.** Because a deferred frame may be the only record of its
+> moment, `ferrycast prune` skips frames that have never been extracted and tells you how
+> many it held back. Otherwise a cheap extraction policy would quietly destroy the history
+> it was deferring. Set `retention.keep_unextracted = false` to reclaim the disk anyway.
 
 ---
 

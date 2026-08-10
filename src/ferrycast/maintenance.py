@@ -24,6 +24,7 @@ class PruneResult:
     downsampled: int = 0
     bytes_freed: int = 0
     dry_run: bool = False
+    kept_unextracted: int = 0
 
 
 def _unlink(config: Config, relative_path: str | None) -> int:
@@ -45,15 +46,30 @@ def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = Fa
 
     Only the image files go — the frame rows and their observations stay, because the
     extracted numbers are the actual dataset and cost almost nothing to keep.
+
+    With extraction deferred (on-demand or sparse), an unread frame is not redundant — it
+    is the only remaining record of that moment. So by default pruning skips frames that
+    have never been extracted, and reports how many it held back. Set
+    `keep_unextracted = false` if you would rather reclaim the disk and accept the gap.
     """
     result = PruneResult(dry_run=dry_run)
     now = now_utc()
     retention = config.retention
 
+    # An unread frame is not redundant — it is the only remaining record of that moment.
+    extracted_only = (
+        """ AND EXISTS (SELECT 1 FROM observations o
+                         WHERE o.frame_id = frames.id AND o.prompt_version = ?)"""
+        if retention.keep_unextracted
+        else ""
+    )
+    guard_params = [config.vision.prompt_version] if retention.keep_unextracted else []
+
     delete_before = iso(now - timedelta(days=retention.keep_frames_days))
     rows = conn.execute(
-        "SELECT id, path FROM frames WHERE path IS NOT NULL AND captured_at < ?",
-        (delete_before,),
+        f"""SELECT id, path FROM frames
+             WHERE path IS NOT NULL AND captured_at < ?{extracted_only}""",
+        (delete_before, *guard_params),
     ).fetchall()
     for row in rows:
         if not dry_run:
@@ -63,10 +79,11 @@ def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = Fa
 
     downsample_before = iso(now - timedelta(days=retention.downsample_after_days))
     candidates = conn.execute(
-        """SELECT id, path, terminal, captured_at FROM frames
-            WHERE path IS NOT NULL AND captured_at < ? AND captured_at >= ?
-            ORDER BY terminal, captured_at""",
-        (downsample_before, delete_before),
+        f"""SELECT id, path, terminal, captured_at FROM frames
+             WHERE path IS NOT NULL AND captured_at < ? AND captured_at >= ?
+               {extracted_only}
+             ORDER BY terminal, captured_at""",
+        (downsample_before, delete_before, *guard_params),
     ).fetchall()
 
     kept_per_hour: dict[tuple[str, str], int] = {}
@@ -80,6 +97,18 @@ def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = Fa
             result.bytes_freed += _unlink(config, row["path"])
             conn.execute("UPDATE frames SET path = NULL WHERE id = ?", (row["id"],))
         result.downsampled += 1
+
+    if retention.keep_unextracted:
+        result.kept_unextracted = (
+            conn.execute(
+                """SELECT COUNT(*) FROM frames
+                    WHERE path IS NOT NULL AND captured_at < ?
+                      AND NOT EXISTS (SELECT 1 FROM observations o
+                                       WHERE o.frame_id = frames.id AND o.prompt_version = ?)""",
+                (downsample_before, config.vision.prompt_version),
+            ).fetchone()[0]
+            or 0
+        )
 
     if not dry_run:
         conn.commit()

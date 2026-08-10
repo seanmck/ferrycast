@@ -167,6 +167,43 @@ def create_app(config_path: str | None = None) -> FastAPI:
             for s in upcoming_sailings(config, origin=origin)
         ]
 
+    @app.post("/api/check")
+    def api_check(
+        origin: str,
+        service_date: str | None = None,
+        time: str | None = None,
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        """On-demand read of the current queue. Costs money, so it is opt-in and capped."""
+        from ..status import check_and_compare
+
+        if not config.web.allow_on_demand_checks:
+            raise HTTPException(
+                403,
+                "on-demand checks are disabled; set [web] allow_on_demand_checks = true "
+                "to enable them (each one spends a small amount on vision calls)",
+            )
+        _validate_origin(config, origin)
+
+        today = date.today().isoformat()
+        used_today = conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE created_at >= ?", (today,)
+        ).fetchone()[0]
+        if used_today >= config.web.on_demand_daily_cap:
+            raise HTTPException(
+                429,
+                f"daily on-demand cap of {config.web.on_demand_daily_cap} frames reached",
+            )
+
+        return check_and_compare(
+            conn,
+            config,
+            origin=origin,
+            target_date=_parse_date(service_date) if service_date else None,
+            depart_hhmm=time,
+        )
+
     @app.get("/api/health")
     def api_health(
         conn: sqlite3.Connection = Depends(get_conn), config: Config = Depends(get_config)

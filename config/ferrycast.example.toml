@@ -60,6 +60,25 @@ min_confidence      = 0.35    # below this, the frame is flagged rather than tru
 skip_dark_frames    = true    # night frames are marked unusable without spending a call
 dark_luma_threshold = 24.0
 
+# Which frames `ferrycast extract --essential` pays to read, in minutes relative to a
+# scheduled departure (negative = before it). The outcome depends on the queue shortly
+# before departure and what remained once the vessel had gone — not on every frame in the
+# window. Four offsets roughly halves the cost of building history. Widen for a richer
+# arrival curve, narrow to save more.
+essential_offsets_minutes  = [-30, -10, 15, 30]
+essential_tolerance_minutes = 10
+
+# `ferrycast check` — the on-demand path. How many recent frames one check may read, and
+# how old a frame may be and still count as "now".
+on_demand_max_frames     = 3
+on_demand_max_age_minutes = 90
+
+[web]
+# An HTTP request that spends money deserves a guard, even on a household LAN. Turn this
+# on to enable the "check now" button and POST /api/check.
+allow_on_demand_checks = false
+on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
+
 [aggregate]
 vessel_capacity         = 125  # Island Sky, approx. vehicle equivalents — verify
 lookback_minutes        = 120  # how far before a departure to look for queue build-up
@@ -77,3 +96,6 @@ relaxed_time_tolerance_minutes = 60
 keep_frames_days        = 400  # a full season plus margin, per R1
 downsample_after_days   = 120
 downsample_keep_per_hour = 1
+# With extraction deferred, an unread frame is the only record of that moment — so pruning
+# leaves it alone by default. Set false to reclaim the disk and accept the permanent gap.
+keep_unextracted        = true

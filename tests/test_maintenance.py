@@ -9,11 +9,17 @@ from .conftest import add_observation
 from .test_query import seed_record
 
 
-def _add_frame_file(conn, config, terminal, moment, content=b"x" * 100):
+def _add_frame_file(conn, config, terminal, moment, content=b"x" * 100, *, extracted=True):
+    """A captured frame, extracted by default.
+
+    Retention only reclaims frames that have already been read — an unread frame is the
+    only record of its moment — so these tests describe the normal, extracted case.
+    Un-extracted pruning behaviour is covered in test_ondemand.py.
+    """
     path = config.frames_dir / terminal / f"{iso(moment).replace(':', '-')}.jpg"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
-    conn.execute(
+    cur = conn.execute(
         """INSERT INTO frames (route, terminal, captured_at, service_date, path, bytes, status)
            VALUES (?, ?, ?, ?, ?, ?, 'ok')""",
         (
@@ -25,6 +31,13 @@ def _add_frame_file(conn, config, terminal, moment, content=b"x" * 100):
             len(content),
         ),
     )
+    if extracted:
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, usable, created_at)
+               VALUES (?, ?, 'test', 20, 1, ?)""",
+            (cur.lastrowid, config.vision.prompt_version, iso(moment)),
+        )
     conn.commit()
     return path
 
@@ -91,7 +104,9 @@ def test_health_flags_missing_camera_configuration(conn, config):
 
 def test_health_reports_the_extraction_backlog(conn, config):
     for i in range(5):
-        _add_frame_file(conn, config, "SLT", now_utc() - timedelta(minutes=15 * i))
+        _add_frame_file(
+            conn, config, "SLT", now_utc() - timedelta(minutes=15 * i), extracted=False
+        )
     report = health_report(conn, config)
     assert report.frames_awaiting_extraction == 5
 

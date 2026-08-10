@@ -142,12 +142,25 @@ def store_frame(
     return CaptureOutcome(terminal=terminal, ok=True, frame_id=frame_id, path=path)
 
 
-def capture_once(conn: sqlite3.Connection, config: Config) -> list[CaptureOutcome]:
-    """Capture one frame from every configured terminal camera."""
-    captured_at = now_utc()
+def capture_once(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    terminals: list[str] | None = None,
+    at: datetime | None = None,
+) -> list[CaptureOutcome]:
+    """Capture one frame per configured camera, or just the terminals named.
+
+    Targeting a single terminal is what an on-demand status check uses — there is no point
+    waking the far-side camera to answer "how is the queue where I'm standing".
+    """
+    captured_at = at or now_utc()
     outcomes: list[CaptureOutcome] = []
+    wanted = set(terminals) if terminals else None
     with JobRun(conn, "capture") as run:
         for terminal in config.route.terminals:
+            if wanted is not None and terminal.code not in wanted:
+                continue
             if not terminal.configured_for_capture:
                 outcomes.append(
                     CaptureOutcome(

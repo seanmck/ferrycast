@@ -13,8 +13,23 @@ PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
 # Keep this at 15 minutes or slower: be a polite scraper.
 */15 * * * *  ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
 
-# R3 — extract hourly in bounded batches. The monthly budget in the config is the backstop.
-7 * * * *     ferrycast extract --limit 60 >> /var/log/ferrycast/extract.log 2>&1
+# R3 — extraction is the only step that costs money, so pick a policy:
+#
+#   (a) Cheapest history. Once a day, read only the few frames per sailing that determine
+#       its outcome. Roughly halves the bill versus reading everything. This is the
+#       default recommendation.
+17 2 * * *    ferrycast extract --essential --for-date yesterday >> /var/log/ferrycast/extract.log 2>&1
+#
+#   (b) Full detail. Read every captured frame — richer arrival curves, about double the
+#       cost. Swap this in for (a) if you want the finer-grained record.
+# 7 * * * *   ferrycast extract --limit 60 >> /var/log/ferrycast/extract.log 2>&1
+#
+#   (c) Nothing scheduled at all. Comment out (a) and (b), and rely on `ferrycast check`
+#       on the mornings you actually travel. Near-zero cost, but no history accumulates
+#       until you backfill — frames are kept on disk, so you can change your mind later:
+#           ferrycast extract --essential --for-date 2026-07-04
+#
+# The monthly budget in the config is the backstop under every policy.
 
 # R4 — aggregate yesterday once the day is complete and extraction has caught up.
 23 3 * * *    ferrycast aggregate --date yesterday >> /var/log/ferrycast/aggregate.log 2>&1

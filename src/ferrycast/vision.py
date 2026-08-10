@@ -282,11 +282,29 @@ def extract_pending(
     client=None,
     dry_run: bool = False,
 ) -> ExtractionStats:
-    stats = ExtractionStats()
+    """Extract every frame that has no observation yet, oldest first."""
     limit = limit or config.vision.max_frames_per_run
     frames = pending_frames(
         conn, config.vision.prompt_version, limit, since=since, terminal=terminal
     )
+    return extract_frames(conn, config, frames, client=client, dry_run=dry_run)
+
+
+def extract_frames(
+    conn: sqlite3.Connection,
+    config: Config,
+    frames: list[sqlite3.Row],
+    *,
+    client=None,
+    dry_run: bool = False,
+    job_name: str = "extract",
+) -> ExtractionStats:
+    """Extract a caller-chosen set of frames.
+
+    Separating *which* frames to read from *how* to read them is what makes on-demand and
+    sparse extraction possible: the expensive step is unchanged, only the selection differs.
+    """
+    stats = ExtractionStats()
     stats.considered = len(frames)
     if not frames or dry_run:
         return stats
@@ -301,7 +319,7 @@ def extract_pending(
     client = client or build_client()
     terminal_names = {t.code: t.name for t in config.route.terminals}
 
-    with JobRun(conn, "extract") as run:
+    with JobRun(conn, job_name) as run:
         for frame in frames:
             if budget and spent + stats.cost_usd >= budget:
                 stats.budget_stopped = True
