@@ -1,204 +1,197 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>FerryCast — {{ route.name }}</title>
-<style>
-  :root {
-    --bg: #f6f7f9; --card: #ffffff; --ink: #14181d; --muted: #5b6672;
-    --line: #dfe3e8; --accent: #1f6f8b;
-    --boarded: #2e7d54; --filled: #c98a1b; --waited1: #c07a1e; --waited2: #b4442f;
-    --cancelled: #6b7280;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14181d; --card: #1c2229; --ink: #eef1f4; --muted: #9aa5b1;
-      --line: #2c343d; --accent: #63b6d4;
-      --boarded: #4caf7d; --filled: #e0a94a; --waited1: #d99a3d; --waited2: #e0705a;
-      --cancelled: #8b95a1;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 1rem 0.9rem 3rem; background: var(--bg); color: var(--ink);
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 34rem; margin: 0 auto; }
-  h1 { font-size: 1.15rem; margin: 0 0 0.15rem; }
-  .sub { color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 0.9rem; margin-bottom: 0.9rem;
-  }
-  form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
-  form .wide { grid-column: 1 / -1; }
-  label { display: block; font-size: 0.75rem; text-transform: uppercase;
-          letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.25rem; }
-  select, input[type=date], button {
-    width: 100%; padding: 0.65rem; font-size: 1rem; border-radius: 8px;
-    border: 1px solid var(--line); background: var(--card); color: var(--ink);
-  }
-  button { background: var(--accent); color: #fff; border: none; font-weight: 600; }
-  .headline { font-size: 1.5rem; font-weight: 650; margin: 0 0 0.15rem; }
-  .bar { display: flex; height: 1.6rem; border-radius: 6px; overflow: hidden; margin: 0.7rem 0 0.5rem; }
-  .bar span { display: block; }
-  .seg-boarded { background: var(--boarded); }
-  .seg-filled { background: var(--filled); }
-  .seg-waited_1 { background: var(--waited1); }
-  .seg-waited_2plus { background: var(--waited2); }
-  .seg-cancelled { background: var(--cancelled); }
-  ul.legend { list-style: none; padding: 0; margin: 0; }
-  ul.legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; }
-  .dot { width: 0.7rem; height: 0.7rem; border-radius: 2px; flex: none; }
-  .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
-  .note { font-size: 0.82rem; color: var(--muted); margin: 0.6rem 0 0; }
-  .warn { border-left: 3px solid var(--waited1); padding-left: 0.6rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-  th, td { text-align: left; padding: 0.35rem 0.3rem; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; }
-  details { margin-top: 0.6rem; }
-  summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
-  .curve { display: flex; align-items: flex-end; gap: 3px; height: 110px; margin-top: 0.7rem; }
-  .curve div { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
-  .curve-axis { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted); }
-</style>
-</head>
-<body>
-<main>
-  <h1>FerryCast</h1>
-  <p class="sub">{{ route.name }} — how comparable past sailings actually went.</p>
+{% extends "base.html" %}
+{% block title %}FerryCast — {{ route.name }}{% endblock %}
+{% block strapline %}{{ strapline }}{% endblock %}
 
-  <div class="card">
-    <form method="get" action="/">
-      <div>
-        <label for="origin">Leaving from</label>
-        <select id="origin" name="origin" onchange="this.form.submit()">
-          {% for t in terminals %}
-            <option value="{{ t.code }}" {% if t.code == origin %}selected{% endif %}>{{ t.name }}</option>
-          {% endfor %}
-        </select>
+{% block style %}
+  .depart { display: flex; align-items: baseline; gap: 0.875rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .depart .time { font-family: "Instrument Serif", Georgia, serif; font-size: 4.5rem; line-height: 0.9; }
+  .depart .in { font-family: "IBM Plex Mono", monospace; font-size: 1rem; color: var(--muted); }
+
+  .headline { display: flex; align-items: baseline; gap: 0.625rem; flex-wrap: wrap; margin-top: 0.75rem; }
+  .headline .pct { font-family: "Instrument Serif", Georgia, serif; font-size: 3.75rem;
+                   line-height: 0.85; color: var(--buoy); }
+  .headline .of  { font-size: 0.9375rem; color: var(--hero-muted); line-height: 1.35; max-width: 16ch; }
+
+  .arrive { display: flex; align-items: baseline; gap: 0.625rem; flex-wrap: wrap; }
+  .arrive .time { font-family: "Instrument Serif", Georgia, serif; font-size: 2.375rem; line-height: 1; }
+  .arrive .qual { font-size: 0.875rem; color: var(--muted); }
+
+  td.outcome { white-space: nowrap; }
+  td.outcome .dot { display: inline-block; width: 9px; height: 9px;
+                    vertical-align: baseline; margin-right: 0.4rem; }
+
+  .curve-wrap { margin-top: 0.75rem; }
+  .curve-axis { display: flex; justify-content: space-between; margin-top: 0.35rem;
+                font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem; color: var(--label); }
+{% endblock %}
+
+{% block content %}
+
+{# ---- Pick the sailing. Two terminals become a segmented control, as on the board. ---- #}
+<form method="get" action="/" class="card">
+  <div class="row">
+    <div class="wide">
+      <span class="label">Leaving from</span>
+      <div class="segmented" role="radiogroup" aria-label="Leaving from">
+        {% for t in terminals %}
+          <input type="radio" id="origin-{{ t.code }}" name="origin" value="{{ t.code }}"
+                 {% if t.code == origin %}checked{% endif %} onchange="this.form.submit()">
+          <label for="origin-{{ t.code }}">{{ t.name }}</label>
+        {% endfor %}
       </div>
-      <div>
-        <label for="service_date">Date</label>
-        <input type="date" id="service_date" name="service_date" value="{{ service_date }}"
-               onchange="this.form.submit()">
-      </div>
-      <div class="wide">
-        <label for="time">Sailing</label>
-        <select id="time" name="time" onchange="this.form.submit()">
-          {% for t in times %}
-            <option value="{{ t }}" {% if t == selected_time %}selected{% endif %}>{{ t }}</option>
-          {% else %}
-            <option value="">No sailings scheduled</option>
-          {% endfor %}
-        </select>
-      </div>
-      <noscript><div class="wide"><button type="submit">Show</button></div></noscript>
-    </form>
+    </div>
+
+    <label class="field">
+      <span class="label">Date</span>
+      <input type="date" name="service_date" value="{{ service_date }}" onchange="this.form.submit()">
+    </label>
+
+    <label class="field">
+      <span class="label">Sailing</span>
+      <select name="time" onchange="this.form.submit()">
+        {% for t in times %}
+          <option value="{{ t }}" {% if t == selected_time %}selected{% endif %}>{{ t }}</option>
+        {% else %}
+          <option value="">None scheduled</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <noscript><div class="wide"><button type="submit">Show</button></div></noscript>
   </div>
+</form>
 
-  {% if distribution and distribution.n %}
-    {% set d = distribution %}
-    <div class="card">
-      {% set top = d.counts | dictsort(by='value') | last %}
-      <p class="headline">{{ labels[top[0]] }} — {{ (d.shares[top[0]] * 100) | round | int }}%</p>
-      <p class="sub">most likely outcome across {{ d.n }} comparable sailing{{ '' if d.n == 1 else 's' }}</p>
+{% if selected_time %}
+  <p class="label">Departure</p>
+  <div class="depart">
+    <span class="time">{{ selected_time }}</span>
+    {% if countdown %}<span class="in">{{ countdown }}</span>{% endif %}
+  </div>
+{% endif %}
 
-      <div class="bar" role="img" aria-label="Outcome distribution">
-        {% for key, count in d.counts.items() if count %}
-          <span class="seg-{{ key }}" style="width: {{ (d.shares[key] * 100) }}%"
-                title="{{ labels[key] }}: {{ count }}"></span>
-        {% endfor %}
+{% if distribution and distribution.n %}
+  {% set d = distribution %}
+  {% set waited = (d.shares.get('waited_1', 0) + d.shares.get('waited_2plus', 0)) %}
+  {% set top = d.counts | dictsort(by='value') | last %}
+
+  {# ---- The answer, on the one inverted panel. ---- #}
+  <section class="hero">
+    <p class="label">{{ d.n }} comparable sailing{{ '' if d.n == 1 else 's' }}</p>
+
+    <div class="headline">
+      <span class="pct">{{ (waited * 100) | round | int }}%</span>
+      <span class="of">waited at least one sailing</span>
+    </div>
+
+    <div class="bar" role="img"
+         aria-label="Outcome distribution across {{ d.n }} comparable sailings">
+      {% for key, count in d.counts.items() if count %}
+        <span class="seg-{{ key }}" style="flex: {{ count }}"
+              title="{{ labels[key] }}: {{ count }}"></span>
+      {% endfor %}
+    </div>
+
+    <div class="tally">
+      {% for key, count in d.counts.items() if count %}
+        <div><b style="color: var(--o-{{ key }})">{{ count }}</b>{{ short_labels[key] }}</div>
+      {% endfor %}
+    </div>
+
+    <p class="note">Most likely: {{ labels[top[0]] }} — {{ (d.shares[top[0]] * 100) | round | int }}%.</p>
+  </section>
+
+  {# ---- What to do about it. ---- #}
+  <section class="card">
+    {% if d.typical_fill_minutes_before is not none %}
+      <p class="label">Arrive before</p>
+      <div class="arrive">
+        <span class="time">{{ d.typical_fill_local }}</span>
+        <span class="qual">{{ d.typical_fill_minutes_before }} min before departure — when
+          these sailings typically ran out of room</span>
       </div>
+      <hr class="rule">
+    {% endif %}
 
-      <ul class="legend">
-        {% for key, count in d.counts.items() %}
-          <li>
-            <span class="dot seg-{{ key }}"></span>{{ labels[key] }}
-            <span class="pct">{{ count }} &middot; {{ (d.shares[key] * 100) | round | int }}%</span>
-          </li>
+    <ul class="legend">
+      {% for key, count in d.counts.items() %}
+        <li>
+          <span class="dot seg-{{ key }}"></span>{{ labels[key] }}
+          <span class="count">{{ count }} · {{ (d.shares[key] * 100) | round | int }}%</span>
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% if d.evidence_note %}<p class="note">{{ d.evidence_note }}</p>{% endif %}
+    {% if not d.sufficient %}
+      <p class="note flag">Small sample ({{ d.n }}). Treat this as a hint, not a forecast.</p>
+    {% endif %}
+    {% if d.relaxations %}
+      <p class="note flag">Not enough exact matches, so the search was
+        {{ d.relaxations | join('; then ') }}.</p>
+    {% endif %}
+    {% if d.tags %}<p class="note">Tags for this date: {{ d.tags | join(', ') }}</p>{% endif %}
+    {% if d.unknown_excluded %}
+      <p class="note">{{ d.unknown_excluded }} sailing(s) had no usable record and are excluded.</p>
+    {% endif %}
+  </section>
+
+  {# ---- The evidence: never just the summary. ---- #}
+  <details>
+    <summary class="btn">See the {{ d.samples | length }} dates</summary>
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled</th><th>Peak</th></tr>
+      </thead>
+      <tbody>
+        {% for s in d.samples %}
+          <tr>
+            <td class="n">{{ s.service_date }}</td>
+            <td class="n">{{ s.depart_hhmm }}</td>
+            <td class="outcome">
+              <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
+            </td>
+            <td class="n">{{ s.filled_at_local or '—' }}</td>
+            <td class="n">{{ s.peak_queue if s.peak_queue is not none else '—' }}{% if s.queue_truncated %}+{% endif %}</td>
+          </tr>
         {% endfor %}
-      </ul>
+      </tbody>
+    </table>
+    <p class="note">“Filled” is when the vessel ran out of room. A “+” on a queue count means the
+      queue ran past the edge of the camera frame, so the real number was higher.</p>
+  </details>
 
-      {% if d.typical_fill_minutes_before is not none %}
-        <p class="note">
-          <strong>Typically ran out of room about {{ d.typical_fill_local }}</strong>
-          — {{ d.typical_fill_minutes_before }} minutes before departure.
-        </p>
-      {% endif %}
-      {% if d.evidence_note %}
-        <p class="note">{{ d.evidence_note }}</p>
-      {% endif %}
-      {% if not d.sufficient %}
-        <p class="note warn">Small sample ({{ d.n }}). Treat this as a hint, not a forecast.</p>
-      {% endif %}
-      {% if d.relaxations %}
-        <p class="note warn">
-          Not enough exact matches, so the search was {{ d.relaxations | join('; then ') }}.
-        </p>
-      {% endif %}
-      {% if d.tags %}<p class="note">Tags for this date: {{ d.tags | join(', ') }}</p>{% endif %}
-      {% if d.unknown_excluded %}
-        <p class="note">{{ d.unknown_excluded }} sailing(s) had no usable record and are excluded.</p>
-      {% endif %}
+  <details id="curve-box">
+    <summary class="btn btn-quiet">When did the queue build?</summary>
+    <div id="curve-body"><p class="note">Loading…</p></div>
+  </details>
 
-      <details>
-        <summary>Show the {{ d.samples | length }} sailings behind this</summary>
-        <table>
-          <thead>
-            <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled at</th><th>Peak queue</th></tr>
-          </thead>
-          <tbody>
-            {% for s in d.samples %}
-              <tr>
-                <td>{{ s.service_date }}</td>
-                <td>{{ s.depart_hhmm }}</td>
-                <td>{{ labels[s.outcome] }}</td>
-                <td>{{ s.filled_at_local or '—' }}</td>
-                <td>{{ s.peak_queue if s.peak_queue is not none else '—' }}{% if s.queue_truncated %}+{% endif %}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <p class="note">
-          “Filled at” is when the vessel ran out of room. A “+” on a queue count means the
-          queue ran past the edge of the camera frame, so the real number was higher.
-        </p>
-      </details>
+{% elif selected_time %}
+  <section class="card">
+    <p class="label">No history yet</p>
+    <p class="note">No comparable sailings have been recorded for this slot. The dataset fills
+      in as capture and extraction run — check back after a few weeks of collection.</p>
+  </section>
+{% else %}
+  <section class="card">
+    <p class="label">No sailings scheduled</p>
+    <p class="note">The timetable has no departures from this terminal on this date.</p>
+  </section>
+{% endif %}
 
-      <details id="curve-box">
-        <summary>When did the queue build?</summary>
-        <div id="curve-body"><p class="note">Loading…</p></div>
-      </details>
-    </div>
-  {% elif selected_time %}
-    <div class="card">
-      <p class="headline">No history yet</p>
-      <p class="sub">
-        No comparable sailings have been recorded for this slot. The dataset fills in as
-        capture and extraction run — check back after a few weeks of collection.
-      </p>
-    </div>
-  {% else %}
-    <div class="card">
-      <p class="headline">No sailings scheduled</p>
-      <p class="sub">The timetable has no departures from this terminal on this date.</p>
-    </div>
-  {% endif %}
+<p class="note">Deck space published by BC Ferries excludes vehicles still queued outside the
+  terminal. These outcomes are counted from terminal webcam frames, which include them.</p>
+<p class="note"><a href="/health">Pipeline health</a></p>
+{% endblock %}
 
-  <p class="note">
-    Deck space published by BC Ferries excludes vehicles still queued outside the terminal.
-    These outcomes are counted from terminal webcam frames, which include them.
-  </p>
-</main>
-
+{% block script %}
 <script>
   // The arrival curve is the one thing fetched lazily: it is a "nice to know", and the
   // headline answer must not wait on it.
   const box = document.getElementById('curve-box');
   if (box) {
+    // Where the vessel typically ran out of room — the cutline on the chart.
+    const CUTLINE = {{ (distribution.typical_fill_minutes_before if distribution else none) | tojson }};
+
     box.addEventListener('toggle', async () => {
       if (!box.open || box.dataset.loaded) return;
       box.dataset.loaded = '1';
@@ -211,27 +204,60 @@
       try {
         const res = await fetch('/api/arrival-curve?' + params);
         const data = await res.json();
-        if (!data.points || !data.points.length) {
+        const pts = data.points || [];
+        if (!pts.length) {
           body.innerHTML = '<p class="note">Not enough frames yet to chart the build-up.</p>';
           return;
         }
-        const peak = Math.max(...data.points.map(p => p.median)) || 1;
-        const bars = data.points.map(p =>
-          `<div style="height:${Math.max(2, (p.median / peak) * 100)}%" title="${p.minutes_before} min before: median ${p.median} ${data.unit}"></div>`
-        ).join('');
-        const first = data.points[0].minutes_before;
+
+        // Geometry. x runs from the earliest bucket on the left to departure on the right.
+        const W = 342, H = 190, PAD_L = 8, PAD_R = 8, PAD_T = 14, PAD_B = 26;
+        const first = pts[0].minutes_before;
+        const hi = Math.max(1, ...pts.map(p => Math.max(p.median, p.p75, p.p25)));
+        const x = m => PAD_L + (1 - m / (first || 1)) * (W - PAD_L - PAD_R);
+        const y = v => PAD_T + (1 - v / hi) * (H - PAD_T - PAD_B);
+
+        const line = key => pts.map(p => `${x(p.minutes_before).toFixed(1)} ${y(p[key]).toFixed(1)}`);
+        // Band: optimistic quartile out, pessimistic quartile back — one closed path.
+        const band = `M${line('p25').join(' L')} L${line('p75').reverse().join(' L')} Z`;
+        const median = `M${line('median').join(' L')}`;
+
+        const gridlines = [0, 0.33, 0.66, 1]
+          .map(f => { const gy = (PAD_T + f * (H - PAD_T - PAD_B)).toFixed(1);
+                      return `<line x1="0" y1="${gy}" x2="${W}" y2="${gy}"></line>`; })
+          .join('');
+
+        let cut = '';
+        if (CUTLINE !== null && CUTLINE <= first) {
+          const cx = x(CUTLINE).toFixed(1);
+          cut =
+            `<line x1="${cx}" y1="${PAD_T - 4}" x2="${cx}" y2="${H - PAD_B + 6}"
+                   stroke="var(--cedar)" stroke-width="1.5" stroke-dasharray="4 4"></line>` +
+            `<text x="${cx}" y="${H - 6}" text-anchor="middle" fill="var(--cedar)"
+                   font-family="IBM Plex Mono, monospace" font-size="10">−${CUTLINE} cutline</text>`;
+        }
+
         const caption = data.source === 'deck_space'
           ? `Typical ${data.unit} across ${data.sailings} comparable sailings — where it reaches zero is the point you would no longer have got on.`
           : `Typical ${data.unit} (median) across ${data.sailings} comparable sailings.`;
+
         body.innerHTML =
-          `<div class="curve">${bars}</div>` +
-          `<div class="curve-axis"><span>${first} min before</span><span>departure</span></div>` +
-          `<p class="note">${caption}</p>`;
+          `<div class="curve-wrap">
+             <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block"
+                  role="img" aria-label="${caption}">
+               <g stroke="var(--line)" stroke-width="1">${gridlines}</g>
+               <path d="${band}" fill="var(--buoy)" fill-opacity="0.18"></path>
+               <path d="${median}" fill="none" stroke="var(--buoy)" stroke-width="2.5"
+                     stroke-linecap="round" stroke-linejoin="round"></path>
+               ${cut}
+             </svg>
+             <div class="curve-axis"><span>−${first} min</span><span>departure</span></div>
+           </div>
+           <p class="note">${caption} Shaded band is P25–P75.</p>`;
       } catch (err) {
         body.innerHTML = '<p class="note">Could not load the arrival curve.</p>';
       }
     });
   }
 </script>
-</body>
-</html>
+{% endblock %}

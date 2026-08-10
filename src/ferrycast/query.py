@@ -36,6 +36,17 @@ OUTCOME_LABELS = {
     "unknown": "No usable record",
 }
 
+# Same vocabulary at a glance, for the counts under the distribution bar where the full
+# labels would wrap. Read as a ramp: made it, only just, waited, waited more.
+OUTCOME_LABELS_SHORT = {
+    "boarded": "made it",
+    "filled": "filled up",
+    "waited_1": "waited 1",
+    "waited_2plus": "waited 2+",
+    "cancelled": "cancelled",
+    "unknown": "no record",
+}
+
 # What the evidence behind an outcome can and cannot support, shown alongside the answer.
 EVIDENCE_NOTES = {
     "deck_space": (
@@ -471,6 +482,9 @@ def arrival_curve(
                 "minutes_before": bucket,
                 "n": len(values),
                 "median": _percentile(values, 0.5),
+                # p25/p75 are named for the optimistic/pessimistic edge of the band, not the
+                # raw percentile: deck space drains downward, so its quartiles are mirrored.
+                "p25": _percentile(values, 0.75 if descending else 0.25),
                 "p75": _percentile(values, 0.25 if descending else 0.75),
                 "max": values[-1],
             }

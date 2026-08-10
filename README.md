@@ -151,6 +151,21 @@ n = 7 comparable sailing(s), match: exact
   vehicles were still queued outside the terminal.
 ```
 
+### The web UI
+
+`ferrycast serve` puts two pages on the configured port:
+
+| Path | What it is |
+|---|---|
+| `/` | The day-like-today answer: pick a direction, date and sailing; get the distribution, when to arrive, and the dates behind it |
+| `/health` | Pipeline health — uptime, season coverage, a 14-day capture strip, and spend against budget |
+
+Both are styled with the **Deep Water** theme (hull navy and chart cream, cedar and buoy
+accents, Instrument Serif for times and IBM Plex Mono for every number), and follow the
+device's light/dark setting. The three typefaces are self-hosted from
+`web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
+third-party requests, because the page has to paint at the side of Highway 101.
+
 Comparable means **same sailing time × day-type × season bucket**, with BC stat holidays
 mapped to Sunday-like. When that bucket is too thin, the search widens in defined steps
 (all seasons → ±60 min → similar day types) and **says which step it used** — a distribution

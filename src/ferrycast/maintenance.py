@@ -15,7 +15,7 @@ from pathlib import Path
 from .config import Config
 from .db import JobRun
 from .schedule import load_schedule_cached, sailings_for_day
-from .timeutil import iso, now_utc, parse_iso
+from .timeutil import iso, local, now_utc, parse_iso
 from .vision import month_to_date_cost
 
 
@@ -355,6 +355,97 @@ def health_report(
         last_capture_at=last_capture,
         problems=problems,
     )
+
+
+@dataclass
+class CaptureDay:
+    """One cell of the daily capture strip."""
+
+    day: str
+    ok: int
+    failed: int
+    unusable: int
+    state: str  # none | good | degraded | bad
+
+
+def capture_strip(
+    conn: sqlite3.Connection, config: Config, *, days: int = 14
+) -> list[CaptureDay]:
+    """Per-day capture health, oldest first — the strip on the pipeline page.
+
+    A day is degraded when some captures failed or some frames came back unusable (night,
+    fog, lens rain), and bad when most of the expected captures never landed. Days with no
+    expected captures at all read as `none` rather than as a failure, so a pipeline that was
+    deliberately not scheduled does not look broken.
+    """
+    today = local(now_utc(), config.tz).date()
+    start = today - timedelta(days=days - 1)
+
+    cameras = sum(1 for t in config.route.terminals if t.configured_for_capture)
+    per_day = (24 * 60) // max(1, config.capture.interval_minutes)
+    expected = per_day * max(1, cameras) if config.capture.scheduled and cameras else 0
+
+    rows = conn.execute(
+        """SELECT f.service_date AS day,
+                  SUM(f.status = 'ok')    AS ok,
+                  SUM(f.status = 'error') AS failed,
+                  SUM(COALESCE(o.usable, 1) = 0) AS unusable
+             FROM frames f
+             LEFT JOIN observations o
+               ON o.frame_id = f.id AND o.prompt_version = ?
+            WHERE f.service_date >= ?
+            GROUP BY f.service_date""",
+        (config.vision.prompt_version, start.isoformat()),
+    ).fetchall()
+    by_day = {r["day"]: r for r in rows}
+
+    strip = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        row = by_day.get(day.isoformat())
+        ok = (row["ok"] or 0) if row else 0
+        failed = (row["failed"] or 0) if row else 0
+        unusable = (row["unusable"] or 0) if row else 0
+
+        if not expected and not ok and not failed:
+            state = "none"
+        elif expected and ok < expected * 0.5:
+            state = "bad"
+        elif failed or unusable:
+            state = "degraded"
+        elif ok:
+            state = "good"
+        else:
+            state = "none"
+        strip.append(CaptureDay(day.isoformat(), ok, failed, unusable, state))
+    return strip
+
+
+def latest_observation(conn: sqlite3.Connection, config: Config) -> dict | None:
+    """The most recent extracted frame, for the latest-frame caption."""
+    row = conn.execute(
+        """SELECT f.terminal, f.captured_at, o.vehicle_count, o.confidence,
+                  o.usable, o.visibility, o.queue_beyond_frame
+             FROM observations o
+             JOIN frames f ON f.id = o.frame_id
+            WHERE o.prompt_version = ?
+            ORDER BY f.captured_at DESC
+            LIMIT 1""",
+        (config.vision.prompt_version,),
+    ).fetchone()
+    if row is None:
+        return None
+    names = {t.code: t.name for t in config.route.terminals}
+    return {
+        "terminal": names.get(row["terminal"], row["terminal"]),
+        "captured_at": row["captured_at"],
+        "captured_local": local(parse_iso(row["captured_at"]), config.tz).strftime("%-I:%M %p"),
+        "vehicle_count": row["vehicle_count"],
+        "confidence": row["confidence"],
+        "usable": bool(row["usable"]),
+        "visibility": row["visibility"],
+        "queue_beyond_frame": bool(row["queue_beyond_frame"]),
+    }
 
 
 def format_health(report: HealthReport) -> str:
