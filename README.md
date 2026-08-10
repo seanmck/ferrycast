@@ -31,6 +31,7 @@ It is a retrieval system, not a forecaster. Similarity search is the model.
 | P1 | Event calendar tags (auto long weekends + manual) | ✅ Built |
 | P1 | Anomaly digest (`ferrycast health`) | ✅ Built |
 | P1 | Backfill from service notices | ⚠️ CSV importer only — see [Not built](#not-built) |
+| — | First-hand reports from the line | ✅ Built — see [Reporting a sailing](#reporting-a-sailing-you-were-on) |
 
 **Before this collects anything you must fill in the real sailing timetable**, and the
 webcam URLs too if you want on-demand camera checks. Both are configuration, not code.
@@ -111,13 +112,16 @@ From camera frames, the PRD's rule applies: given frames before and after a depa
 the queue doesn't drop near zero afterwards the sailing was overloaded, and what remains is
 the carryover.
 
+From a report, whoever filed it says outright whether they got on, which no camera or feed
+can. See [Reporting a sailing](#reporting-a-sailing-you-were-on).
+
 | Outcome | Meaning | Evidence needed |
 |---|---|---|
-| `boarded` | Space available right up to departure | either |
-| `filled` | Ran out of room before departure; how many were left behind is unknown | deck space |
+| `boarded` | Space available right up to departure | any |
+| `filled` | Ran out of room before departure; how many were left behind is unknown | deck space, or a report |
 | `waited_1` | Overloaded, and the carryover fits the next sailing | frames |
 | `waited_2plus` | Carryover exceeds one vessel's capacity | frames |
-| `cancelled` | No vessel ever appeared / feed said cancelled | either |
+| `cancelled` | No vessel ever appeared / feed said cancelled | frames or deck space |
 | `unknown` | Not enough evidence to say | — |
 
 Every answer carries the provenance of its evidence, because `filled` and `waited_1` are
@@ -174,6 +178,50 @@ The masthead carries the clock-and-ferry mark, and the same artwork supplies the
 the iOS home-screen icon. All of it is cut from one master render by
 `brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why the
 masthead uses the mark alone rather than the full lockup.
+
+#### Reporting a sailing you were on
+
+Deck space knows how much room was left aboard; the camera counts the vehicles waiting
+outside. Neither knows whether *you* got on. So under every sailing that has already
+departed there is a short form:
+
+| Field | Required | Why it is asked |
+|---|---|---|
+| Did you get on? | yes | The outcome. Nothing else in the pipeline observes it directly |
+| Joined the line | no | Bounds when the cutoff was — see below |
+| Ferry left | no | Actual against scheduled departure |
+| How full was the deck? | no | Four steps, not a percentage: nobody on a car deck can tell 60% from 70% |
+
+Only the first answer is needed, because a half-remembered trip is still worth more than no
+record. Nothing identifies the person filing it, and submitting **re-derives that sailing
+immediately** rather than waiting for the nightly aggregation — otherwise the page would go
+on contradicting what you just told it.
+
+A report outranks both automatic sources when the outcome is decided, since it is the only
+direct observation of the thing the app exists to answer. One person left behind sets the
+sailing to `filled` however many others got on: several people boarding is not evidence that
+nobody was turned away after them. It is `filled` rather than `waited_1` because how long
+that person actually waited is a different question, and one report cannot answer it.
+
+**A report is not allowed to move the "arrive before" time.** Somebody who joined at 11:50
+and did not get on proves the cutoff was *earlier* than 11:50; recording their arrival as
+the moment it filled would tell the next traveller they can turn up later than they really
+can, which is the one direction this app must not be wrong in. Deck space keeps that job,
+and the bound the report does establish is stated on the page instead:
+
+> Someone joined the line at **11:50** and did not get on, so the cutoff was earlier than that.
+> There was still room for someone who joined at **11:05**.
+
+The same thing over the API, for scripting or a bulk backfill:
+
+```bash
+curl -X POST "$HOST/api/report?origin=SLT&service_date=2026-07-03&time=12:30&boarded=false&joined=11:50&deck_fullness=full"
+curl "$HOST/api/reports?origin=SLT&service_date=2026-07-03&time=12:30"
+ferrycast export reports --format csv --out reports.csv
+```
+
+Reports live in their own table, so **an install created before this feature needs one
+`ferrycast init`** to add it (idempotent, and `ferrycast run` does it at startup anyway).
 
 #### Sending someone a link
 
@@ -438,7 +486,7 @@ What is **not** solved, and would need thought:
 
 SQLite, keyed on `(route, terminal, sailing)` from day one so a second route can be added
 without a migration. Tables: `frames`, `deck_space`, `observations`, `sailings`,
-`sailing_records`, `event_tags`, `job_runs`.
+`sailing_records`, `sailing_reports`, `event_tags`, `job_runs`.
 
 Everything is exportable:
 
@@ -457,7 +505,7 @@ actual dataset and cost almost nothing to keep forever.
 
 ```bash
 pip install -e ".[dev]"
-pytest        # 99 tests
+pytest        # 230 tests
 ruff check src tests
 ```
 
@@ -481,8 +529,11 @@ share card with headless Chrome. Neither runs at deploy time — see
   (`service_date,origin,depart_hhmm,outcome[,peak_queue,carryover,source]`) instead, which
   is the same seeding path with a human in the loop. Worth revisiting once the live
   pipeline has established what a real overload signature looks like.
-- Everything in the PRD's Non-Goals and P2 lists: no push alerts, no other routes, no
-  accounts or crowdsourced reporting, no trained forecaster, no native app.
+- Everything else in the PRD's Non-Goals and P2 lists: no push alerts, no other routes, no
+  accounts, no trained forecaster, no native app. Sailings *can* now be reported by hand
+  ([above](#reporting-a-sailing-you-were-on)), but there is nobody to attribute a report to
+  and no reputation attached to one — it is a household filling in its own record, not a
+  crowdsourcing platform.
 
 ## Open questions still owned by you
 

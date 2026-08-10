@@ -38,10 +38,17 @@ DECK_SPACE_EXPORT_SQL = """
       FROM deck_space
 """
 
+REPORT_EXPORT_SQL = """
+    SELECT id, route, origin, service_date, depart_hhmm, joined_queue_at, departed_at,
+           boarded, deck_fullness, source, submitted_at
+      FROM sailing_reports
+"""
+
 DATASETS = {
     "frames": (FRAME_EXPORT_SQL, "f.captured_at", "f.captured_at"),
     "sailings": (SAILING_EXPORT_SQL, "s.service_date", "s.scheduled_departure"),
     "deck_space": (DECK_SPACE_EXPORT_SQL, "observed_at", "observed_at"),
+    "reports": (REPORT_EXPORT_SQL, "service_date", "service_date"),
 }
 
 

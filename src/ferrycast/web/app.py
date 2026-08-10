@@ -13,9 +13,10 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, Form, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -34,6 +35,14 @@ from ..query import (
     query_distribution,
     sailing_times,
     upcoming_sailings,
+)
+from ..reports import (
+    DECK_FULLNESS,
+    ReportError,
+    describe_reports,
+    fetch_reports,
+    parse_clock,
+    submit_report,
 )
 from ..schedule import day_type, season
 from ..timeutil import combine_local, local, now_utc, parse_hhmm
@@ -108,14 +117,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
             )
         return origin
 
-    @app.get("/", response_class=HTMLResponse)
-    def index(
+    def _render_index(
         request: Request,
-        origin: str | None = None,
-        service_date: str | None = None,
-        time: str | None = None,
-        conn: sqlite3.Connection = Depends(get_conn),
-        config: Config = Depends(get_config),
+        conn: sqlite3.Connection,
+        config: Config,
+        origin: str | None,
+        service_date: str | None,
+        time: str | None,
+        *,
+        report_error: str | None = None,
+        report_values: dict | None = None,
+        report_saved: bool = False,
+        status_code: int = 200,
     ):
         upcoming = upcoming_sailings(config, origin=origin, limit=1)
         default = upcoming[0] if upcoming else None
@@ -145,6 +158,26 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
         kind = DAY_TYPE_SHORT.get(day_type(chosen_date), day_type(chosen_date))
         bucket = SEASON_SHORT.get(season(chosen_date), season(chosen_date))
+
+        # What people in the line said about this exact sailing. Only a sailing that has
+        # gone can be reported on, so the form appears once it has departed and the panel
+        # explains itself before then rather than vanishing.
+        reports = None
+        departed = False
+        if chosen_time:
+            departure = combine_local(chosen_date, parse_hhmm(chosen_time), config.tz)
+            departed = departure <= local(now_utc(), config.tz)
+            reports = describe_reports(
+                config,
+                fetch_reports(
+                    conn,
+                    config.route.id,
+                    chosen_origin,
+                    chosen_date.isoformat(),
+                    chosen_time,
+                ),
+                departure,
+            )
 
         return TEMPLATES.TemplateResponse(
             request,
@@ -179,8 +212,169 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     selected_time=chosen_time,
                     distribution=distribution,
                 ),
+                "reports": reports,
+                "has_departed": departed,
+                "fullness_options": DECK_FULLNESS,
+                "report_error": report_error,
+                "report_form": report_values or {},
+                "report_saved": report_saved,
             },
+            status_code=status_code,
         )
+
+    @app.get("/", response_class=HTMLResponse)
+    def index(
+        request: Request,
+        origin: str | None = None,
+        service_date: str | None = None,
+        time: str | None = None,
+        reported: str | None = None,
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        return _render_index(
+            request,
+            conn,
+            config,
+            origin,
+            service_date,
+            time,
+            report_saved=reported == "1",
+        )
+
+    def _store_report(
+        conn: sqlite3.Connection,
+        config: Config,
+        *,
+        origin: str,
+        service_date: str,
+        time: str,
+        boarded: str,
+        joined: str = "",
+        departed: str = "",
+        deck_fullness: str = "",
+    ) -> int:
+        """Everything the two submission paths agree on, in one place."""
+        try:
+            day = date.fromisoformat(service_date)
+        except ValueError as exc:
+            raise ReportError(f"bad date {service_date!r}; expected YYYY-MM-DD") from exc
+        if boarded not in ("yes", "no"):
+            raise ReportError("say whether you got on")
+        return submit_report(
+            conn,
+            config,
+            origin=origin,
+            service_date=day,
+            depart_hhmm=time,
+            boarded=boarded == "yes",
+            joined=parse_clock(joined),
+            departed=parse_clock(departed),
+            deck_fullness=deck_fullness or None,
+        )
+
+    @app.post("/report", response_class=HTMLResponse)
+    def post_report(
+        request: Request,
+        origin: str = Form(...),
+        service_date: str = Form(...),
+        time: str = Form(...),
+        # Not `Form(...)`: an unanswered radio group is the one mistake a submitter can
+        # actually make here, and it deserves the page's own message rather than a 422.
+        boarded: str = Form(""),
+        joined: str = Form(""),
+        departed: str = Form(""),
+        deck_fullness: str = Form(""),
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        """A sailing report from the page. Post/redirect/get, so a refresh cannot file it twice."""
+        try:
+            _store_report(
+                conn,
+                config,
+                origin=origin,
+                service_date=service_date,
+                time=time,
+                boarded=boarded,
+                joined=joined,
+                departed=departed,
+                deck_fullness=deck_fullness,
+            )
+        except ReportError as exc:
+            # Back to the same page with the form still filled in — a rejected report that
+            # loses what was typed is a report that never gets filed again.
+            return _render_index(
+                request,
+                conn,
+                config,
+                origin,
+                service_date,
+                time,
+                report_error=str(exc),
+                report_values={
+                    "boarded": boarded,
+                    "joined": joined,
+                    "departed": departed,
+                    "deck_fullness": deck_fullness,
+                },
+                status_code=400,
+            )
+
+        query = urlencode(
+            {"origin": origin, "service_date": service_date, "time": time, "reported": "1"}
+        )
+        return RedirectResponse(f"/?{query}#report", status_code=303)
+
+    def _reports_payload(
+        conn: sqlite3.Connection, config: Config, origin: str, service_date: str, time: str
+    ) -> dict:
+        _validate_origin(config, origin)
+        target = _parse_date(service_date)
+        try:
+            departure = combine_local(target, parse_hhmm(time), config.tz)
+        except ValueError as exc:
+            raise HTTPException(400, f"bad time {time!r}; expected HH:MM") from exc
+        rows = fetch_reports(conn, config.route.id, origin, target.isoformat(), time)
+        return describe_reports(config, rows, departure) or {"n": 0, "entries": []}
+
+    @app.post("/api/report")
+    def api_report(
+        origin: str,
+        service_date: str,
+        time: str,
+        boarded: bool,
+        joined: str = "",
+        departed: str = "",
+        deck_fullness: str = "",
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        try:
+            report_id = _store_report(
+                conn,
+                config,
+                origin=origin,
+                service_date=service_date,
+                time=time,
+                boarded="yes" if boarded else "no",
+                joined=joined,
+                departed=departed,
+                deck_fullness=deck_fullness,
+            )
+        except ReportError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"id": report_id, **_reports_payload(conn, config, origin, service_date, time)}
+
+    @app.get("/api/reports")
+    def api_reports(
+        origin: str,
+        service_date: str,
+        time: str,
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        return _reports_payload(conn, config, origin, service_date, time)
 
     @app.get("/health", response_class=HTMLResponse)
     def health_page(

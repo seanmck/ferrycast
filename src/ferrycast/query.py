@@ -54,7 +54,11 @@ EVIDENCE_NOTES = {
         "vehicles were still queued outside the terminal."
     ),
     "frames": "From terminal camera frames, which count vehicles waiting outside the terminal.",
-    "mixed": "Part camera frames, part published deck space.",
+    "report": (
+        "Reported by people who were in the line: the only evidence that says outright "
+        "whether someone got on."
+    ),
+    "mixed": "More than one kind of evidence — camera frames, deck space or first-hand reports.",
     "import": "Manually imported records.",
 }
 
@@ -294,6 +298,8 @@ def _evidence_of(methods: set[str | None]) -> str:
             continue
         if method.startswith("frames"):
             kinds.add("frames")
+        elif method.startswith("report"):
+            kinds.add("report")
         elif method.startswith("import"):
             kinds.add("import")
         elif method.startswith("deck_space"):
