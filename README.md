@@ -177,10 +177,10 @@ device's light/dark setting. The three typefaces are self-hosted from
 the page has to paint at the side of Highway 101. The only third-party request the page can
 make is the terminal camera below, and it is lazy, so nothing above it waits on BC Ferries.
 
-The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon and
-the iOS home-screen icon. All of it is cut from one master render by
-`brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why the
-masthead uses the mark alone rather than the full lockup.
+The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon,
+the iOS home-screen icon and the link-preview card. All of it is cut from one master render
+by `brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why
+the masthead uses the mark alone rather than the full lockup.
 
 #### The terminal right now
 
@@ -250,18 +250,17 @@ Reports live in their own table, so **an install created before this feature nee
 
 #### Sending someone a link
 
-A FerryCast link is almost always sent about one sailing — "we're aiming for the 12:30,
-here" — so the Open Graph preview answers for *that* sailing rather than describing the app.
-Pasted into a message, `/?origin=SLT&service_date=2026-08-01&time=12:30` shows:
+Pasted into a message, a FerryCast link unfurls as the logo, the route, and one line about
+what the app is:
 
-> **12:30 Saltery Bay → Earls Cove · Sat 1 Aug**
-> 75% of 12 comparable sailings waited at least one sailing. They typically ran out of room
-> 40 min before departure — be in the lineup by 11:50.
+> **FerryCast — Saltery Bay – Earls Cove**
+> On a day like today, what’s the wait for the ferry? FerryCast answers from comparable past
+> sailings — whether each one ran out of room, and when.
 
-The person reading it in a car gets the answer without opening anything, and a thin sample
-says so in the preview rather than only on the page. The title and description are built per
-request from the same distribution the page renders; the card beneath them is the mark over
-the outcome ramp, static and rendered offline (`brand/README.md` covers re-rendering it).
+Deliberately the same whichever sailing the link happens to name. A preview is the app
+introducing itself to someone who has probably never seen it, and it is cached by whoever
+unfurls it — so a specific sailing's numbers in the card would be stale by the next morning
+and wrong for the next person to open the link. The answer belongs on the page.
 
 Both `og:url` and `og:image` have to be absolute, and behind a TLS-terminating proxy the app
 cannot always tell that it is being served over https — a card whose image is http on an
@@ -540,9 +539,8 @@ parser against several page phrasings, and the failure paths (dead camera, HTML 
 an image was expected, unparseable page, low-confidence frame, exhausted budget).
 
 The served artwork is generated rather than written, and committed: `brand/build_assets.py`
-cuts the icons out of the logo master with Pillow, and `brand/render_card.py` draws the
-share card with headless Chrome. Neither runs at deploy time — see
-[brand/README.md](brand/README.md).
+cuts the icons and the share card out of the logo master. It does not run at deploy time —
+see [brand/README.md](brand/README.md).
 
 ---
 

@@ -15,9 +15,9 @@
 <meta name="theme-color" content="#0B1A22" media="(prefers-color-scheme: dark)">
 
 {#
-  How the link looks when it is sent to someone. A FerryCast link is shared about one
-  sailing, so the title and description are that sailing's answer rather than a description
-  of the app — see web/preview.py. The card image is static; everything else is per-request.
+  How the link looks when it is sent to someone: the logo and one line about the app, the
+  same whichever sailing the link names. A preview introduces the app to someone who may
+  never have seen it; the answer itself is on the page. See web/preview.py.
 #}
 {% if preview %}
 <meta name="description" content="{{ preview.description }}">

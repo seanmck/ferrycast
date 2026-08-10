@@ -247,14 +247,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if not (distribution and distribution["n"])
                     else None
                 ),
-                "preview": index_preview(
-                    request,
-                    config,
-                    origin=chosen_origin,
-                    service_date=chosen_date.isoformat(),
-                    selected_time=chosen_time,
-                    distribution=distribution,
-                ),
+                "preview": index_preview(request, config),
                 "reports": reports,
                 "webcam": webcam,
                 "has_departed": departed,
