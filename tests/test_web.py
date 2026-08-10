@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,6 +45,42 @@ def test_index_offers_both_directions(client):
     response = client.get("/")
     assert "Saltery Bay" in response.text
     assert "Earls Cove" in response.text
+
+
+@pytest.fixture
+def at_ten_in_the_morning(monkeypatch):
+    """Fri 14 Aug 2026, 10:00 in Vancouver. SLT has gone 08:30; ERL has gone 09:30."""
+    monkeypatch.setattr(
+        "ferrycast.query.now_utc", lambda: datetime(2026, 8, 14, 17, 0, tzinfo=UTC)
+    )
+
+
+def test_switching_terminal_lands_on_the_next_sailing_not_the_first(
+    client, at_ten_in_the_morning
+):
+    """Every field is resubmitted together, so switching terminal arrives carrying the
+    other terminal's departure time. That is never in this one's timetable, and falling
+    back to the top of the list offered a sailing that had left hours earlier."""
+    # 12:30 is a Saltery Bay time; Earls Cove runs 09:30, 13:30, 15:25.
+    response = client.get("/?origin=ERL&service_date=2026-08-14&time=12:30")
+
+    assert '<option value="13:30" selected>' in response.text
+    assert '<option value="09:30" selected>' not in response.text
+
+
+def test_a_sailing_that_has_gone_is_still_shown_when_it_is_asked_for(
+    client, at_ten_in_the_morning
+):
+    """Only the fallback is time-aware. Naming a past sailing is how history is read."""
+    response = client.get("/?origin=ERL&service_date=2026-08-14&time=09:30")
+    assert '<option value="09:30" selected>' in response.text
+
+
+def test_the_first_sailing_still_leads_on_a_date_that_is_not_today(
+    client, at_ten_in_the_morning
+):
+    response = client.get("/?origin=ERL&service_date=2026-08-15&time=12:30")
+    assert '<option value="09:30" selected>' in response.text
 
 
 def test_api_query_returns_the_distribution(client, conn, config):

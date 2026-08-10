@@ -329,7 +329,13 @@ def cmd_aggregate(args) -> int:
 
 
 def cmd_query(args) -> int:
-    from .query import OUTCOME_LABELS, query_distribution, sailing_times, upcoming_sailings
+    from .query import (
+        OUTCOME_LABELS,
+        default_sailing_time,
+        query_distribution,
+        sailing_times,
+        upcoming_sailings,
+    )
 
     config = _config(args)
     conn = _open(config)
@@ -338,7 +344,7 @@ def cmd_query(args) -> int:
         origin = args.origin
         target = _parse_day(args.date or "today")
         times = sailing_times(config, origin, target)
-        chosen = args.time or (times[0] if times else None)
+        chosen = args.time or default_sailing_time(config, times, target)
     else:
         upcoming = upcoming_sailings(config, limit=1)
         if not upcoming:

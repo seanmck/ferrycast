@@ -173,7 +173,7 @@ def check_and_compare(
 
     The historical half costs nothing — it reads sailing records that already exist.
     """
-    from .query import query_distribution, sailing_times, upcoming_sailings
+    from .query import default_sailing_time, query_distribution, sailing_times, upcoming_sailings
 
     reference = at or now_utc()
     target_date = target_date or local(reference, config.tz).date()
@@ -185,7 +185,7 @@ def check_and_compare(
             target_date = upcoming[0].service_date
         else:
             times = sailing_times(config, origin, target_date)
-            depart_hhmm = times[0] if times else None
+            depart_hhmm = default_sailing_time(config, times, target_date, at=reference)
 
     status = check_now(
         conn,
