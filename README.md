@@ -173,13 +173,36 @@ n = 7 comparable sailing(s), match: exact
 Both are styled with the **Deep Water** theme (hull navy and chart cream, cedar and buoy
 accents, Instrument Serif for times and IBM Plex Mono for every number), and follow the
 device's light/dark setting. The three typefaces are self-hosted from
-`web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
-third-party requests, because the page has to paint at the side of Highway 101.
+`web/static/fonts/`, subset to the characters the app can render — 58 KB in total, because
+the page has to paint at the side of Highway 101. The only third-party request the page can
+make is the terminal camera below, and it is lazy, so nothing above it waits on BC Ferries.
 
 The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon and
 the iOS home-screen icon. All of it is cut from one master render by
 `brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why the
 masthead uses the mark alone rather than the full lockup.
+
+#### The terminal right now
+
+For the **next departure** — and only that one — the page shows the live terminal camera
+under the answer:
+
+> **SALTERY BAY NOW**
+> *[live image]*
+> Live from BC Ferries. You are seeing the compound — vehicles still queued on the approach
+> road may be out of frame, which is the whole reason this app keeps a record rather than
+> trusting a glance.
+
+The restriction is the point. A photograph is persuasive in a way a caption cannot undo, and
+a full compound attached to a sailing three days out would be read as that sailing's queue.
+So the camera appears when the chosen sailing is the next one out of that terminal, and
+never otherwise: not on a sailing that has gone, not on a later one the same day, not on
+another date. Terminals with no `webcam_url` simply have no panel.
+
+It is lazy-loaded and sits below the distribution, so the answer never waits on it, and the
+URL carries a minute-resolution cache key — a reload a minute later fetches a fresh frame, a
+reload ten seconds later costs BC Ferries nothing. If the camera is down the card removes
+itself rather than leaving a heading over a broken image.
 
 #### Reporting a sailing you were on
 

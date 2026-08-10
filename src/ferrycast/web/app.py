@@ -82,6 +82,43 @@ def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | No
     return "tomorrow" if days == 1 else f"in {days} days"
 
 
+# How long a browser may reuse the camera image. The page is server-rendered, so the URL
+# carries a bucket number that changes on this cadence: a reload a minute later fetches a
+# fresh frame, while a reload ten seconds later costs BC Ferries nothing.
+WEBCAM_FRESHNESS_SECONDS = 60
+
+
+def _live_webcam(
+    config: Config, origin: str, service_date: date, depart_hhmm: str | None
+) -> dict | None:
+    """The terminal camera, but only when the chosen sailing is the next one out.
+
+    A live picture is an answer to "should I leave now", which is a question only the next
+    departure poses. Attached to a sailing next Tuesday it would be actively misleading —
+    the queue in the frame is not that sailing's queue, and a photograph is persuasive in a
+    way a caption cannot undo.
+    """
+    if not depart_hhmm:
+        return None
+    terminal = config.route.terminal(origin)
+    if not terminal.webcam_url:
+        return None
+
+    upcoming = upcoming_sailings(config, origin=origin, limit=1)
+    if not upcoming:
+        return None
+    next_out = upcoming[0]
+    if next_out.service_date != service_date or next_out.depart_hhmm != depart_hhmm:
+        return None
+
+    separator = "&" if "?" in terminal.webcam_url else "?"
+    bucket = int(now_utc().timestamp()) // WEBCAM_FRESHNESS_SECONDS
+    return {
+        "url": f"{terminal.webcam_url}{separator}t={bucket}",
+        "terminal": terminal.name,
+    }
+
+
 def create_app(config_path: str | None = None) -> FastAPI:
     config = load_config(config_path)
     app = FastAPI(title="FerryCast", docs_url="/api/docs", redoc_url=None)
@@ -179,6 +216,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 departure,
             )
 
+        # The live camera, shown only for the sailing you could still catch — the next
+        # departure from this terminal. On any other sailing the picture answers a
+        # question nobody asked: a compound full of cars has nothing to do with a
+        # crossing three days out, and everything to do with being mistaken for it.
+        webcam = _live_webcam(config, chosen_origin, chosen_date, chosen_time)
+
         return TEMPLATES.TemplateResponse(
             request,
             "index.html",
@@ -213,6 +256,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     distribution=distribution,
                 ),
                 "reports": reports,
+                "webcam": webcam,
                 "has_departed": departed,
                 "fullness_options": DECK_FULLNESS,
                 "report_error": report_error,

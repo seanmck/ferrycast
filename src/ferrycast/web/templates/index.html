@@ -24,6 +24,13 @@
   .curve-axis { display: flex; justify-content: space-between; margin-top: 0.35rem;
                 font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem; color: var(--label); }
 
+  /* The live camera. No fixed aspect ratio: the frame's real shape is BC Ferries' to
+     choose, and guessing at it would either crop the ends of the compound or letterbox
+     them. It sits below the answer, so the reflow when it lands moves nothing being read. */
+  .cam { margin: 1rem 0 0; }
+  .cam img { display: block; width: 100%; height: auto; border-radius: var(--radius);
+             background: var(--inset); }
+
   /* The report form. Same controls as the picker above it — this is the same page asking
      a question rather than a separate thing bolted on. */
   .report-form { margin-top: 0.875rem; }
@@ -237,6 +244,24 @@
     <p class="label">No sailings scheduled</p>
     <p class="note">The timetable has no departures from this terminal on this date.</p>
   </section>
+{% endif %}
+
+{# ---- The terminal right now. Only ever the next sailing — see _live_webcam. ---- #}
+{% if webcam %}
+<section class="card cam-card">
+  <p class="label">{{ webcam.terminal }} now</p>
+  <figure class="cam">
+    {# Lazy and async: the answer above must never wait on a third-party image. If the
+       camera is down the whole card removes itself — a heading and a caption with no
+       picture under them is worse than never having promised one. #}
+    <img src="{{ webcam.url }}" alt="Live view of the {{ webcam.terminal }} terminal compound"
+         loading="lazy" decoding="async"
+         onerror="this.closest('.cam-card').hidden = true">
+  </figure>
+  <p class="note">Live from BC Ferries. You are seeing the compound — vehicles still queued
+    on the approach road may be out of frame, which is the whole reason this app keeps a
+    record rather than trusting a glance.</p>
+</section>
 {% endif %}
 
 {# ---- What people in the line saw. The one thing neither camera nor feed can report. ---- #}
