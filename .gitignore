@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local configuration and collected data never belong in git.
+config/ferrycast.toml
+config/schedule.toml
+data/
+*.db
+*.db-wal
+*.db-shm
+.env

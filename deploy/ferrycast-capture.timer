@@ -1,0 +1,12 @@
+[Unit]
+Description=Run FerryCast capture every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+# Spread the load a little so every FerryCast install doesn't hit the cameras on the
+# same second.
+RandomizedDelaySec=45
+Persistent=true
+
+[Install]
+WantedBy=timers.target

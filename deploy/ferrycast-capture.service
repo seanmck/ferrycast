@@ -1,0 +1,26 @@
+[Unit]
+Description=FerryCast frame capture and deck-space scrape
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ferrycast
+WorkingDirectory=/srv/ferrycast
+Environment=FERRYCAST_CONFIG=/srv/ferrycast/config/ferrycast.toml
+EnvironmentFile=-/srv/ferrycast/.env
+ExecStart=/srv/ferrycast/.venv/bin/ferrycast capture
+ExecStart=/srv/ferrycast/.venv/bin/ferrycast scrape
+
+# A failed capture is a recorded gap, not a service failure — don't let a flaky camera
+# put the unit into a failed state and stop the timer.
+SuccessExitStatus=0 1
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/ferrycast/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+*.egg-info
+
+# Never bake collected data into the image — it belongs on the volume.
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+tests/
+deploy/
