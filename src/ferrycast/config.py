@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,9 @@ CONFIG_ENV_VAR = "FERRYCAST_CONFIG"
 DATA_DIR_ENV_VAR = "FERRYCAST_DATA_DIR"
 WEBCAM_ENV_PREFIX = "FERRYCAST_WEBCAM_"
 DECK_SPACE_ENV_PREFIX = "FERRYCAST_DECKSPACE_"
+# The public origin is only known once the app is deployed, so it comes from the
+# environment rather than the committed config.
+BASE_URL_ENV_VAR = "FERRYCAST_BASE_URL"
 
 
 class ConfigError(Exception):
@@ -103,6 +106,10 @@ class WebConfig:
     # are opt-in and separately capped even though the UI is household-only.
     allow_on_demand_checks: bool = False
     on_demand_daily_cap: int = 40
+    # Public origin, e.g. "https://ferrycast.example.com". Open Graph needs absolute URLs,
+    # and behind a TLS-terminating proxy the app cannot always work out its own scheme.
+    # Left empty, the URL the request arrived on is used instead.
+    base_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -293,6 +300,10 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
 
     routes, active_route_id = _parse_routes(raw, app.get("active_route"))
 
+    web = _dataclass_from(WebConfig, raw.get("web", {}), "web")
+    if os.environ.get(BASE_URL_ENV_VAR):
+        web = replace(web, base_url=os.environ[BASE_URL_ENV_VAR])
+
     return Config(
         timezone_name=app.get("timezone", "America/Vancouver"),
         data_dir=data_dir,
@@ -306,6 +317,6 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         aggregate=_dataclass_from(AggregateConfig, raw.get("aggregate", {}), "aggregate"),
         query=_dataclass_from(QueryConfig, raw.get("query", {}), "query"),
         retention=_dataclass_from(RetentionConfig, raw.get("retention", {}), "retention"),
-        web=_dataclass_from(WebConfig, raw.get("web", {}), "web"),
+        web=web,
         source_path=config_path,
     )

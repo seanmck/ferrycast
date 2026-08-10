@@ -6,6 +6,35 @@
 <meta name="color-scheme" content="light dark">
 <title>{% block title %}FerryCast{% endblock %}</title>
 {#
+  How the link looks when it is sent to someone. A FerryCast link is shared about one
+  sailing, so the title and description are that sailing's answer rather than a description
+  of the app — see web/preview.py. The card image is static; everything else is per-request.
+#}
+{% if preview %}
+<meta name="description" content="{{ preview.description }}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="FerryCast">
+<meta property="og:locale" content="en_CA">
+<meta property="og:title" content="{{ preview.title }}">
+<meta property="og:description" content="{{ preview.description }}">
+<meta property="og:url" content="{{ preview.url }}">
+<meta property="og:image" content="{{ preview.image }}">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="{{ preview.image_alt }}">
+{# X and several chat clients read only the twitter:* names, and fall back to a thumbnail
+   beside the text unless the card type says otherwise. #}
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ preview.title }}">
+<meta name="twitter:description" content="{{ preview.description }}">
+<meta name="twitter:image" content="{{ preview.image }}">
+<meta name="twitter:image:alt" content="{{ preview.image_alt }}">
+{% endif %}
+{# The colour a mobile browser paints its own chrome, on each side of the theme. #}
+<meta name="theme-color" content="#F4EFE4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1A22" media="(prefers-color-scheme: dark)">
+{#
   "Deep Water" — the theme is chart paper and painted steel: hull navy, chart cream,
   cedar and buoy lacquer. Light mode is the cream side, dark mode the hull side; both
   are drawn from the same six-colour palette rather than being inversions of each other.

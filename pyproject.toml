@@ -30,7 +30,12 @@ ferrycast = "ferrycast.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ferrycast = ["schema.sql", "web/templates/*.html", "web/static/fonts/*.woff2"]
+ferrycast = [
+    "schema.sql",
+    "web/templates/*.html",
+    "web/static/*.png",
+    "web/static/fonts/*.woff2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

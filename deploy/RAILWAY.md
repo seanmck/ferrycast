@@ -148,10 +148,16 @@ a minute — it creates the database on first tick — then check the deploy log
 | `FERRYCAST_WEBCAM_SLT` | optional | Camera URL, overrides the committed config. |
 | `FERRYCAST_WEBCAM_ERL` | optional | As above. |
 | `FERRYCAST_DECKSPACE_SLT` / `_ERL` | optional | Deck-space page URLs. |
+| `FERRYCAST_BASE_URL` | recommended | Public origin, e.g. `https://ferrycast.up.railway.app`. Makes shared links preview with an image. |
 | `PORT` | injected | Railway sets it; `ferrycast run` binds it automatically. |
 
 The `FERRYCAST_WEBCAM_*` overrides exist so you can keep camera URLs out of git entirely if
 you prefer — the committed config can leave them blank.
+
+Set `FERRYCAST_BASE_URL` once you know the domain. Railway terminates TLS in front of the
+container, so the app itself only ever sees `http` — it falls back to the `X-Forwarded-Proto`
+header, but naming the origin outright is what guarantees a shared link previews with its
+card rather than as bare text.
 
 ## 5. Verify
 

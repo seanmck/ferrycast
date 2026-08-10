@@ -166,6 +166,27 @@ device's light/dark setting. The three typefaces are self-hosted from
 `web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
 third-party requests, because the page has to paint at the side of Highway 101.
 
+#### Sending someone a link
+
+A FerryCast link is almost always sent about one sailing — "we're aiming for the 12:30,
+here" — so the Open Graph preview answers for *that* sailing rather than describing the app.
+Pasted into a message, `/?origin=SLT&service_date=2026-08-01&time=12:30` shows:
+
+> **12:30 Saltery Bay → Earls Cove · Sat 1 Aug**
+> 75% of 12 comparable sailings waited at least one sailing. They typically ran out of room
+> 40 min before departure — be in the lineup by 11:50.
+
+The person reading it in a car gets the answer without opening anything, and a thin sample
+says so in the preview rather than only on the page. The card image beneath it is static
+(`assets/README.md` covers re-rendering it); the title and description are built per request
+from the same distribution the page renders.
+
+Both `og:url` and `og:image` have to be absolute, and behind a TLS-terminating proxy the app
+cannot always tell that it is being served over https — a card whose image is http on an
+https page is dropped as mixed content. The forwarded scheme is trusted when there is one;
+set **`FERRYCAST_BASE_URL`** (or `[web] base_url`) to your public origin to settle it
+outright.
+
 Comparable means **same sailing time × day-type × season bucket**, with BC stat holidays
 mapped to Sunday-like. When that bucket is too thin, the search widens in defined steps
 (all seasons → ±60 min → similar day types) and **says which step it used** — a distribution
@@ -435,6 +456,10 @@ The tests concentrate on the parts most likely to be silently wrong: the overloa
 inference, the comparability fallback ladder, holiday and season bucketing, the deck-space
 parser against several page phrasings, and the failure paths (dead camera, HTML served where
 an image was expected, unparseable page, low-confidence frame, exhausted budget).
+
+One asset is generated rather than written: `python assets/render_og.py` redraws the link
+preview card from `assets/og-card.html`. It needs Chrome or Chromium, is only run when the
+card changes, and its output is committed — see [assets/README.md](assets/README.md).
 
 ---
 

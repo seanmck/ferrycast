@@ -1,8 +1,10 @@
-from datetime import date
+from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
+from ferrycast.timeutil import combine_local, iso, parse_hhmm
 from ferrycast.web.app import create_app
 
 from .test_query import fridays, seed_record
@@ -168,3 +170,137 @@ def test_pages_are_compressed(client):
     """Inline CSS is only affordable roadside if it goes over the wire compressed."""
     response = client.get("/", headers={"Accept-Encoding": "gzip"})
     assert response.headers.get("content-encoding") == "gzip"
+
+
+# ---- Link previews --------------------------------------------------------------------
+#
+# A FerryCast link is sent about one sailing, so the preview has to answer for that sailing.
+# These read the served HTML rather than the preview module, because the failure that
+# actually matters is a tag that never reached the page.
+
+
+def _meta(html: str, key: str) -> str:
+    """The content of one meta tag, by property or name."""
+    import re
+
+    match = re.search(rf'<meta (?:property|name)="{re.escape(key)}" content="([^"]*)"', html)
+    assert match, f"no {key} meta tag in the response"
+    return match.group(1)
+
+
+def _seed_filling_sailings(conn, config, *, minutes_before: int) -> None:
+    """Comparable sailings that all waited, each having filled up before departure."""
+    for day in fridays(4):
+        sailing_id = seed_record(conn, config, day, "12:30", "waited_1")
+        departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+        conn.execute(
+            "UPDATE sailing_records SET filled_at = ? WHERE sailing_id = ?",
+            (iso(departure - timedelta(minutes=minutes_before)), sailing_id),
+        )
+    conn.commit()
+
+
+def test_preview_titles_the_sailing_the_link_is_about(client, conn, config):
+    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+
+    assert _meta(response.text, "og:title") == "12:30 Saltery Bay → Earls Cove · Fri 31 Jul"
+    assert _meta(response.text, "og:site_name") == "FerryCast"
+    assert _meta(response.text, "twitter:card") == "summary_large_image"
+
+
+def test_preview_description_carries_the_answer(client, conn, config):
+    for day, outcome in zip(
+        fridays(4), ["boarded", "waited_1", "waited_1", "waited_2plus"], strict=True
+    ):
+        seed_record(conn, config, day, "12:30", outcome)
+
+    description = _meta(
+        client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text, "og:description"
+    )
+
+    assert description.startswith("75% of 4 comparable sailings waited at least one sailing.")
+
+
+def test_preview_description_says_when_to_be_in_the_lineup(client, conn, config):
+    _seed_filling_sailings(conn, config, minutes_before=40)
+
+    description = _meta(
+        client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text, "og:description"
+    )
+
+    assert "40 min before departure" in description
+    assert "11:50" in description
+
+
+def test_preview_never_rounds_a_wait_away(client, conn, config):
+    """"0%" beside a sailing that waited is the kind of thing that gets an app deleted."""
+    for day, outcome in zip(fridays(4), ["boarded"] * 4, strict=True):
+        seed_record(conn, config, day, "12:30", outcome)
+
+    description = _meta(
+        client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text, "og:description"
+    )
+
+    assert description.startswith("None of the 4 comparable sailings had to wait.")
+
+
+def test_preview_flags_a_thin_sample(client, conn, config):
+    seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
+    description = _meta(
+        client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text, "og:description"
+    )
+    assert "Small sample" in description
+
+
+def test_preview_explains_the_app_when_there_is_no_history(client):
+    description = _meta(
+        client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text, "og:description"
+    )
+    assert "No comparable sailings recorded" in description
+    assert "BC Ferries" in description
+
+
+def test_preview_urls_are_absolute_and_pin_the_sailing(client, conn, config):
+    html = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+
+    assert _meta(html, "og:url") == (
+        "http://testserver/?origin=SLT&amp;service_date=2026-07-31&amp;time=12:30"
+    )
+    assert _meta(html, "og:image") == "http://testserver/static/og.png"
+
+
+def test_preview_trusts_the_forwarded_scheme(client):
+    """Behind a TLS-terminating proxy the app sees http; an http card on an https page is
+    dropped as mixed content."""
+    html = client.get("/", headers={"x-forwarded-proto": "https"}).text
+    assert _meta(html, "og:image").startswith("https://testserver/")
+
+
+def test_configured_base_url_wins(client, conn, config):
+    app = client.app
+    app.state.config = replace(
+        config, web=replace(config.web, base_url="https://ferrycast.example.com/")
+    )
+
+    html = client.get("/", headers={"x-forwarded-proto": "http"}).text
+
+    assert _meta(html, "og:image") == "https://ferrycast.example.com/static/og.png"
+    assert _meta(html, "og:url").startswith("https://ferrycast.example.com/?origin=")
+
+
+def test_the_share_card_is_served_at_the_size_it_claims(client):
+    import io
+
+    from PIL import Image
+
+    response = client.get("/static/og.png")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    with Image.open(io.BytesIO(response.content)) as card:
+        assert card.size == (1200, 630)
+
+
+def test_health_page_has_its_own_preview(client):
+    html = client.get("/health").text
+    assert _meta(html, "og:title") == "FerryCast — pipeline health"

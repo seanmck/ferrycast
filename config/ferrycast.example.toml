@@ -79,6 +79,12 @@ on_demand_max_age_minutes = 90
 allow_on_demand_checks = false
 on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
 
+# Public origin, used to make the link-preview URLs absolute — Open Graph requires it.
+# Leave empty to use whatever address the request arrived on, which is right for a LAN and
+# usually right behind a proxy that sets X-Forwarded-Proto. Set it if previews come back
+# with no image, or with an http:// image on an https:// page. FERRYCAST_BASE_URL overrides.
+base_url = ""   # e.g. "https://ferrycast.example.com"
+
 [aggregate]
 vessel_capacity         = 125  # Island Sky, approx. vehicle equivalents — verify
 lookback_minutes        = 120  # how far before a departure to look for queue build-up

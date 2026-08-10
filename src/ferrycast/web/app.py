@@ -35,6 +35,7 @@ from ..query import (
 )
 from ..schedule import day_type, season
 from ..timeutil import combine_local, local, now_utc, parse_hhmm
+from .preview import health_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -157,6 +158,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "countdown": (
                     _countdown(config, chosen_date, chosen_time) if chosen_time else None
                 ),
+                "preview": index_preview(
+                    request,
+                    config,
+                    origin=chosen_origin,
+                    service_date=chosen_date.isoformat(),
+                    selected_time=chosen_time,
+                    distribution=distribution,
+                ),
             },
         )
 
@@ -183,6 +192,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if config.capture.scheduled
                     else "capture on demand"
                 ),
+                "preview": health_preview(request, config),
             },
         )
 

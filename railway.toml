@@ -7,6 +7,8 @@
 #   Volume        mounted at /data          (required — without it, data is lost on deploy)
 #   ANTHROPIC_API_KEY                       (only needed for `ferrycast check`)
 #   FERRYCAST_WEBCAM_SLT / _ERL             (optional; overrides the committed config)
+#   FERRYCAST_BASE_URL                      (optional; the public https:// origin, so
+#                                            shared links preview with an image)
 #
 # PORT is injected by Railway and picked up automatically.
 
