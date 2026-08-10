@@ -111,6 +111,26 @@ CREATE TABLE IF NOT EXISTS sailing_records (
 );
 CREATE INDEX IF NOT EXISTS idx_records_outcome ON sailing_records (outcome);
 
+-- First-hand accounts from people who were actually in the line. This is the one signal
+-- neither the camera nor the deck-space feed can produce: whether a particular traveller
+-- got on. Keyed by the *scheduled* sailing rather than by a sailing id so a report can be
+-- filed for a day the aggregator has not materialised yet.
+CREATE TABLE IF NOT EXISTS sailing_reports (
+    id              INTEGER PRIMARY KEY,
+    route           TEXT    NOT NULL,
+    origin          TEXT    NOT NULL,
+    service_date    TEXT    NOT NULL,      -- local YYYY-MM-DD
+    depart_hhmm     TEXT    NOT NULL,      -- the scheduled departure being reported on
+    joined_queue_at TEXT,                  -- UTC ISO8601; optional, half a memory still helps
+    departed_at     TEXT,                  -- UTC ISO8601, when the vessel actually left
+    boarded         INTEGER NOT NULL,      -- 0/1 — the only required fact
+    deck_fullness   TEXT,                  -- room | half | nearly_full | full
+    source          TEXT    NOT NULL DEFAULT 'web',
+    submitted_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reports_sailing
+    ON sailing_reports (route, origin, service_date, depart_hhmm);
+
 CREATE TABLE IF NOT EXISTS event_tags (
     id           INTEGER PRIMARY KEY,
     service_date TEXT NOT NULL,

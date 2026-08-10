@@ -1,0 +1,381 @@
+"""Manual sailing reports — the one signal the pipeline cannot collect for itself.
+
+The things most likely to be silently wrong are here: that a report actually reaches the
+sailing record without waiting for the nightly job, that one person left behind outweighs
+any number who got on, and that a report is never allowed to move the "arrive before" time
+in the direction that would flatter the answer.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, time, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+
+from ferrycast.aggregate import aggregate_day
+from ferrycast.reports import (
+    ReportError,
+    describe_reports,
+    fetch_reports,
+    outcome_from_reports,
+    parse_clock,
+    submit_report,
+)
+from ferrycast.timeutil import combine_local, iso, parse_hhmm
+from ferrycast.web.app import create_app
+
+# A Friday that has been and gone, with a 12:30 sailing from Saltery Bay in the timetable.
+SAILED = date(2026, 7, 3)
+NOW = datetime(2026, 8, 10, 17, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def client(conn, config, monkeypatch):
+    # Reports may only be filed against a sailing that has departed, so the clock has to be
+    # pinned on both sides: the app checks it, and `upcoming_sailings` reads it too.
+    monkeypatch.setattr("ferrycast.reports.now_utc", lambda: NOW)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: NOW)
+    app = create_app(str(config.source_path))
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def file_report(conn, config, **kwargs):
+    fields = {
+        "origin": "SLT",
+        "service_date": SAILED,
+        "depart_hhmm": "12:30",
+        "boarded": True,
+        "now": NOW,
+    }
+    fields.update(kwargs)
+    return submit_report(conn, config, **fields)
+
+
+def outcome_of(conn, service_date: date, hhmm: str, origin: str = "SLT") -> str:
+    row = conn.execute(
+        """SELECT r.outcome, r.method, r.filled_at
+             FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = ? AND s.service_date = ? AND s.depart_hhmm = ?""",
+        (origin, service_date.isoformat(), hhmm),
+    ).fetchone()
+    return row
+
+
+# ---- Storage and validation -----------------------------------------------------------
+
+
+def test_a_report_is_stored_against_the_scheduled_sailing(conn, config):
+    file_report(conn, config, joined=time(11, 55), departed=time(12, 42), deck_fullness="full")
+
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+
+    assert len(rows) == 1
+    assert rows[0]["boarded"] == 1
+    assert rows[0]["deck_fullness"] == "full"
+    # Stored in UTC like everything else, but reasoned about in local time.
+    assert rows[0]["joined_queue_at"].endswith("Z")
+
+
+def test_only_getting_on_is_required(conn, config):
+    """A half-remembered trip is still worth more than no record at all."""
+    file_report(conn, config, boarded=False)
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+    assert rows[0]["joined_queue_at"] is None
+    assert rows[0]["deck_fullness"] is None
+
+
+def test_a_sailing_that_has_not_departed_cannot_be_reported(conn, config):
+    future = NOW.astimezone(config.tz).date() + timedelta(days=3)
+    with pytest.raises(ReportError, match="has not departed"):
+        file_report(conn, config, service_date=future)
+
+
+def test_a_sailing_not_in_the_timetable_is_refused(conn, config):
+    with pytest.raises(ReportError, match="no 11:11 sailing"):
+        file_report(conn, config, depart_hhmm="11:11")
+
+
+def test_joining_after_the_ferry_left_is_refused(conn, config):
+    with pytest.raises(ReportError, match="after the ferry left"):
+        file_report(conn, config, joined=time(13, 10), departed=time(12, 35))
+
+
+def test_a_departure_hours_from_the_scheduled_one_is_refused(conn, config):
+    """The am/pm flip: a 12:30 sailing reported as leaving at 00:30."""
+    with pytest.raises(ReportError, match="too far from the scheduled"):
+        file_report(conn, config, departed=time(0, 30))
+
+
+def test_an_unknown_deck_fullness_is_refused(conn, config):
+    with pytest.raises(ReportError, match="deck fullness"):
+        file_report(conn, config, deck_fullness="quite-full-ish")
+
+
+def test_reports_are_capped_per_sailing(conn, config, monkeypatch):
+    monkeypatch.setattr("ferrycast.reports.MAX_REPORTS_PER_SAILING", 2)
+    file_report(conn, config)
+    file_report(conn, config)
+    with pytest.raises(ReportError, match="already has 2 reports"):
+        file_report(conn, config)
+
+
+def test_clock_parsing_tolerates_seconds(conn, config):
+    assert parse_clock("11:55:00") == time(11, 55)
+    assert parse_clock("") is None
+    with pytest.raises(ReportError):
+        parse_clock("noon")
+
+
+# ---- What a report is allowed to conclude ---------------------------------------------
+
+
+def test_one_person_left_behind_outweighs_any_number_who_got_on():
+    """Several people boarding is not evidence that nobody was turned away after them."""
+    rows = [{"boarded": 1}, {"boarded": 1}, {"boarded": 0}]
+    assert outcome_from_reports(rows) == "filled"
+    assert outcome_from_reports([{"boarded": 1}, {"boarded": 1}]) == "boarded"
+    assert outcome_from_reports([]) is None
+
+
+def test_a_report_reaches_the_sailing_record_immediately(conn, config):
+    """Aggregation is nightly; a submitter must not have to wait for it to see their report
+    counted, or the page contradicts what they just said."""
+    file_report(conn, config, boarded=False)
+
+    record = outcome_of(conn, SAILED, "12:30")
+    assert record["outcome"] == "filled"
+    assert record["method"] == "report"
+
+
+def test_a_report_outranks_the_deck_space_feed(conn, config):
+    """Deck space describes space aboard the vessel; it cannot see the approach road. A
+    person standing on that road can."""
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    for minutes in (60, 45, 30, 15):
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    percent_available, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30', 30, 'ok')""",
+            (
+                config.route.id,
+                iso(departure - timedelta(minutes=minutes)),
+                SAILED.isoformat(),
+            ),
+        )
+    conn.commit()
+    aggregate_day(conn, config, SAILED)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "boarded"
+
+    file_report(conn, config, boarded=False, joined=time(11, 50))
+
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "filled"
+
+
+def test_a_report_never_sets_the_arrive_before_time(conn, config):
+    """Someone who joined at 11:50 and did not get on proves the cutoff was *earlier* than
+    11:50. Recording 11:50 as the moment it filled would tell the next traveller they can
+    turn up later than they really can — the one direction this app must not be wrong in."""
+    file_report(conn, config, boarded=False, joined=time(11, 50))
+
+    assert outcome_of(conn, SAILED, "12:30")["filled_at"] is None
+
+
+def test_deck_space_still_supplies_the_fill_time_under_a_report(conn, config):
+    """The bound a report gives up is not lost — the feed keeps that job when it saw it."""
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    for minutes, available in [(60, 20), (40, 0), (20, 0)]:
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    percent_available, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30', ?, 'ok')""",
+            (
+                config.route.id,
+                iso(departure - timedelta(minutes=minutes)),
+                SAILED.isoformat(),
+                available,
+            ),
+        )
+    conn.commit()
+
+    file_report(conn, config, boarded=False)
+
+    record = outcome_of(conn, SAILED, "12:30")
+    assert record["method"] == "report"
+    assert record["filled_at"] == iso(departure - timedelta(minutes=40))
+
+
+def test_reports_survive_a_later_aggregation_run(conn, config):
+    """The nightly job re-derives every record, so it has to keep consulting reports."""
+    file_report(conn, config, boarded=False)
+    aggregate_day(conn, config, SAILED)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "filled"
+
+
+def test_the_evidence_note_names_the_reports(conn, config):
+    from ferrycast.query import query_distribution
+
+    file_report(conn, config, boarded=False)
+
+    result = query_distribution(
+        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+    )
+    assert result.evidence == "report"
+    assert "in the line" in result.evidence_note
+
+
+# ---- The bounds shown on the page ------------------------------------------------------
+
+
+def test_the_two_bounds_are_reported_the_honest_way_round(conn, config):
+    file_report(conn, config, boarded=True, joined=time(11, 5))
+    file_report(conn, config, boarded=False, joined=time(11, 50))
+    file_report(conn, config, boarded=False, joined=time(12, 10))
+
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    summary = describe_reports(
+        config,
+        fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30"),
+        departure,
+    )
+
+    assert summary["boarded"] == 1
+    assert summary["left_behind"] == 2
+    # The earliest person turned away is the tightest bound on the cutoff...
+    assert summary["cutoff_before"] == "11:50"
+    # ...and the latest person who made it is the tightest bound the other way.
+    assert summary["still_room_at"] == "11:05"
+
+
+def test_lateness_is_measured_against_the_scheduled_departure(conn, config):
+    file_report(conn, config, departed=time(12, 47))
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+
+    summary = describe_reports(
+        config,
+        fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30"),
+        departure,
+    )
+    assert summary["typical_minutes_late"] == 17
+
+
+# ---- The page and the API --------------------------------------------------------------
+
+
+def _form(**overrides) -> dict:
+    body = {
+        "origin": "SLT",
+        "service_date": SAILED.isoformat(),
+        "time": "12:30",
+        "boarded": "yes",
+        "joined": "11:55",
+        "departed": "12:35",
+        "deck_fullness": "nearly_full",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_the_form_is_offered_for_a_sailing_that_has_gone(client):
+    body = client.get(f"/?origin=SLT&service_date={SAILED}&time=12:30").text
+    assert "Add what happened" in body
+    assert "Did you get on?" in body
+
+
+def test_the_form_is_not_offered_for_a_sailing_that_has_not(client):
+    """You cannot report on a crossing you have not made."""
+    ahead = (NOW.astimezone(client.app.state.config.tz).date() + timedelta(days=2)).isoformat()
+    body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
+    assert "Add what happened" not in body
+    assert "hasn't gone yet" in body
+
+
+def test_posting_a_report_redirects_back_to_the_sailing(client):
+    response = client.post("/report", data=_form(), follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/?origin=SLT")
+    assert "reported=1" in response.headers["location"]
+
+
+def test_a_submitted_report_shows_on_the_page(client):
+    client.post("/report", data=_form(boarded="no", joined="11:40"))
+
+    body = client.get(f"/?origin=SLT&service_date={SAILED}&time=12:30").text
+
+    assert "1 report" in body
+    assert "1 left behind" in body
+    assert "0 got on" not in body
+    assert "joined the line at <strong>11:40</strong>" in body
+
+
+def test_a_rejected_report_says_why_and_keeps_what_was_typed(client):
+    response = client.post("/report", data=_form(joined="12:50", departed="12:35"))
+
+    assert response.status_code == 400
+    assert "Not recorded: you cannot have joined the line after the ferry left" in response.text
+    # The times come back with the form rather than being silently dropped.
+    assert 'name="joined" value="12:50"' in response.text
+
+
+def test_a_report_with_no_answer_is_refused(client):
+    response = client.post("/report", data=_form(boarded=""))
+    assert response.status_code == 400
+    assert "say whether you got on" in response.text
+
+
+def test_the_api_lists_a_sailings_reports(client):
+    client.post("/report", data=_form())
+
+    payload = client.get(
+        "/api/reports", params={"origin": "SLT", "service_date": SAILED.isoformat(), "time": "12:30"}
+    ).json()
+
+    assert payload["n"] == 1
+    assert payload["entries"][0] == {
+        "boarded": True,
+        "joined": "11:55",
+        "departed": "12:35",
+        "minutes_late": 5,
+        "fullness": "Nearly full",
+        "submitted": payload["entries"][0]["submitted"],
+    }
+
+
+def test_the_api_accepts_a_report(client):
+    response = client.post(
+        "/api/report",
+        params={
+            "origin": "SLT",
+            "service_date": SAILED.isoformat(),
+            "time": "12:30",
+            "boarded": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "filled"
+
+
+def test_the_api_rejects_a_bad_report_with_a_reason(client):
+    response = client.post(
+        "/api/report",
+        params={
+            "origin": "SLT",
+            "service_date": SAILED.isoformat(),
+            "time": "03:00",
+            "boarded": True,
+        },
+    )
+    assert response.status_code == 400
+    assert "timetable" in response.json()["detail"]
+
+
+def test_reports_export(client):
+    client.post("/report", data=_form())
+    response = client.get("/export/reports.csv")
+    assert response.status_code == 200
+    assert "nearly_full" in response.text

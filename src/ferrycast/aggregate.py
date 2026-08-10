@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 
 from .config import Config
 from .db import JobRun
+from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
 
@@ -294,6 +295,40 @@ def compute_record(
             overload = derived == "filled"
             confidence = derived_confidence
             method = "deck_space"
+
+    # Somebody who was in that queue outranks both machines: they observed the one thing
+    # this whole pipeline is inferring. So a report settles the outcome whatever else spoke.
+    #
+    # What it must not settle is `filled_at`. A traveller who joined at 11:20 and did not
+    # get on proves the cutoff was *earlier* than 11:20 — treating their arrival as the
+    # cutoff would tell the next traveller they can turn up later than they really can,
+    # which is the one direction this app is not allowed to be wrong in. Deck space keeps
+    # that job; the bound the report does establish is shown on the page instead.
+    reports = fetch_reports(
+        conn,
+        sailing_row["route"],
+        sailing_row["origin"],
+        sailing_row["service_date"],
+        sailing_row["depart_hhmm"],
+    )
+    reported = outcome_from_reports(reports)
+    if reported:
+        outcome = reported
+        overload = reported == "filled"
+        cancelled = False
+        confidence = report_confidence(reports)
+        method = "report"
+        if outcome == "filled" and filled_at is None:
+            _, filled_at, _ = classify_from_deck_space(
+                _deck_space_series(
+                    conn,
+                    sailing_row["route"],
+                    sailing_row["origin"],
+                    sailing_row["service_date"],
+                    sailing_row["depart_hhmm"],
+                ),
+                departure,
+            )
 
     return SailingRecord(
         sailing_id=sailing_row["id"],

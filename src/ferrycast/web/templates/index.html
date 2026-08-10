@@ -23,6 +23,14 @@
   .curve-wrap { margin-top: 0.75rem; }
   .curve-axis { display: flex; justify-content: space-between; margin-top: 0.35rem;
                 font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem; color: var(--label); }
+
+  /* The report form. Same controls as the picker above it — this is the same page asking
+     a question rather than a separate thing bolted on. */
+  .report-form { margin-top: 0.875rem; }
+  .report-form .field, .report-form .wide { margin-bottom: 0.75rem; }
+  .report-form .hint { font-size: 0.75rem; color: var(--label); margin: 0.3rem 0 0; }
+  .got-on { color: var(--o-boarded); }
+  .left-behind { color: var(--o-waited_2plus); }
 {% endblock %}
 
 {% block content %}
@@ -229,6 +237,118 @@
     <p class="label">No sailings scheduled</p>
     <p class="note">The timetable has no departures from this terminal on this date.</p>
   </section>
+{% endif %}
+
+{# ---- What people in the line saw. The one thing neither camera nor feed can report. ---- #}
+{% if selected_time %}
+<section class="card" id="report">
+  <p class="label">From the line</p>
+
+  {% if report_saved %}
+    <p class="note flag">Thanks — that's recorded, and this sailing has been re-read with it
+      included.</p>
+  {% endif %}
+  {% if report_error %}
+    <p class="note flag">Not recorded: {{ report_error }}</p>
+  {% endif %}
+
+  {% if reports %}
+    <p class="note"><strong>{{ reports.n }} report{{ '' if reports.n == 1 else 's' }}</strong> —
+      {% if reports.boarded %}<span class="got-on">{{ reports.boarded }} got on</span>
+        {%- if reports.left_behind %}, {% endif %}{% endif %}
+      {%- if reports.left_behind %}
+        <span class="left-behind">{{ reports.left_behind }} left behind</span>{% endif %}.</p>
+
+    {% if reports.cutoff_before %}
+      <p class="note">Someone joined the line at <strong>{{ reports.cutoff_before }}</strong> and
+        did not get on, so the cutoff was earlier than that.</p>
+    {% endif %}
+    {% if reports.still_room_at %}
+      <p class="note">There was still room for someone who joined at
+        <strong>{{ reports.still_room_at }}</strong>.</p>
+    {% endif %}
+    {% if reports.typical_minutes_late %}
+      <p class="note">Reported as leaving
+        {% if reports.typical_minutes_late > 0 %}{{ reports.typical_minutes_late }} min late
+        {%- else %}{{ -reports.typical_minutes_late }} min early{% endif %}.</p>
+    {% endif %}
+
+    <table>
+      <thead>
+        <tr><th>Got on</th><th>Joined</th><th>Left</th><th>Deck</th></tr>
+      </thead>
+      <tbody>
+        {% for r in reports.entries %}
+          <tr>
+            <td class="outcome">
+              <span class="dot seg-{{ 'boarded' if r.boarded else 'waited_2plus' }}"></span>
+              {{ 'yes' if r.boarded else 'no' }}
+            </td>
+            <td class="n">{{ r.joined or '—' }}</td>
+            <td class="n">{{ r.departed or '—' }}</td>
+            <td>{{ r.fullness or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% elif has_departed %}
+    <p class="note">No one has reported this sailing.</p>
+  {% endif %}
+
+  {% if has_departed %}
+    {% set rf = report_form %}
+    <details {% if report_error %}open{% endif %}>
+      <summary class="btn btn-quiet">Add what happened</summary>
+      <form method="post" action="/report" class="report-form">
+        <input type="hidden" name="origin" value="{{ origin }}">
+        <input type="hidden" name="service_date" value="{{ service_date }}">
+        <input type="hidden" name="time" value="{{ selected_time }}">
+
+        <div class="wide">
+          <span class="label">Did you get on?</span>
+          <div class="segmented" role="radiogroup" aria-label="Did you get on?">
+            <input type="radio" id="boarded-yes" name="boarded" value="yes" required
+                   {% if rf.get('boarded') == 'yes' %}checked{% endif %}>
+            <label for="boarded-yes">Yes, I got on</label>
+            <input type="radio" id="boarded-no" name="boarded" value="no"
+                   {% if rf.get('boarded') == 'no' %}checked{% endif %}>
+            <label for="boarded-no">No, I waited</label>
+          </div>
+        </div>
+
+        <div class="row">
+          <label class="field">
+            <span class="label">Joined the line</span>
+            <input type="time" name="joined" value="{{ rf.get('joined', '') }}">
+          </label>
+          <label class="field">
+            <span class="label">Ferry left</span>
+            <input type="time" name="departed" value="{{ rf.get('departed', '') }}">
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="label">How full was the deck?</span>
+          <select name="deck_fullness">
+            <option value="">Not sure</option>
+            {% for key, label in fullness_options.items() %}
+              <option value="{{ key }}"
+                      {% if rf.get('deck_fullness') == key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <p class="hint">Only the first answer is needed — add the times if you remember them.
+          Nothing identifies you, and reports go straight into this sailing's record.</p>
+        <button type="submit">Add this report</button>
+      </form>
+    </details>
+  {% else %}
+    <p class="note">This sailing hasn't gone yet. Once it has, you can add when you joined the
+      line, when it left and whether you got on — deck space and the camera can tell whether
+      the vessel filled, but only a person in the queue knows who made it.</p>
+  {% endif %}
+</section>
 {% endif %}
 
 <p class="note">Deck space published by BC Ferries excludes vehicles still queued outside the

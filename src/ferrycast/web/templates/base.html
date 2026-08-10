@@ -268,7 +268,7 @@
      the top of the content box, high above the select beside it. A line-height equal to
      that content box centres it by ordinary inline layout, which every engine agrees on,
      rather than by anything particular to a date control. */
-  select, input[type="date"] {
+  select, input[type="date"], input[type="time"] {
     -webkit-appearance: none; appearance: none;
     display: block; width: 100%; height: var(--control-h);
     padding: 0 2rem 0 0.6rem; font: inherit; font-size: 1rem;
@@ -287,11 +287,13 @@
   }
   /* Chromium keeps its calendar button after appearance:none; park it where the select's
      chevron sits so the two controls line up on the right edge as well as the left. */
-  input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 -1.4rem 0 0; }
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator { margin: 0 -1.4rem 0 0; }
   /* Mobile Safari lays the value out in an inner element of its own, which arrives with
      its own alignment and its own margins. Neither survives contact with the box above:
      take the line-height, sit left, and add nothing to the top. */
-  input[type="date"]::-webkit-date-and-time-value {
+  input[type="date"]::-webkit-date-and-time-value,
+  input[type="time"]::-webkit-date-and-time-value {
     text-align: left; margin: 0; line-height: inherit;
   }
   select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
