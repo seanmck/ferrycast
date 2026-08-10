@@ -29,6 +29,20 @@ effective_to   = 2026-10-12
 days           = ["mon"]
 departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
 
+# VERIFIED — same source and date range, "Sunshine Coast (Earls Cove) to Powell River
+# (Saltery Bay)", Monday.
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-05-14
+effective_to   = 2026-10-12
+days           = ["mon"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
+
+# The two directions above interleave as one vessel making eight round trips: every SLT
+# arrival is followed by an ERL departure 5–20 minutes later, and vice versa, with no
+# overlap and no gap big enough to hide a sailing. That closure is a useful check — a
+# mistyped or omitted time would break the chain.
+
 # ────────────────────────────────────────────────────────────────────────────────────────
 # STILL MISSING. Deliberately left blank rather than guessed: a departure time that is
 # merely plausible mis-windows every observation around it, silently.
