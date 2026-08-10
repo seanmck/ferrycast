@@ -36,27 +36,11 @@ from ..query import (
 )
 from ..schedule import day_type, season
 from ..timeutil import combine_local, local, now_utc, parse_hhmm
+from .preview import health_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-
-def static_url(request: Request, path: str) -> str:
-    """Absolute URL for a static file, for the one tag that cannot take a relative one.
-
-    Open Graph requires `og:image` to be absolute, and behind a TLS-terminating proxy the
-    scheme the app itself sees is plain http — an http image on an https page is dropped by
-    several unfurlers. So the forwarded scheme is honoured here rather than being trusted
-    process-wide: this decides the text of a meta tag and nothing else.
-    """
-    url = request.url_for("static", path=path)
-    forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
-    if forwarded in ("http", "https"):
-        url = url.replace(scheme=forwarded)
-    return str(url)
-
-
-TEMPLATES.env.globals["static_url"] = static_url
 
 DAY_TYPE_SHORT = {
     "weekday": "Weekday",
@@ -178,6 +162,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "countdown": (
                     _countdown(config, chosen_date, chosen_time) if chosen_time else None
                 ),
+                "preview": index_preview(
+                    request,
+                    config,
+                    origin=chosen_origin,
+                    service_date=chosen_date.isoformat(),
+                    selected_time=chosen_time,
+                    distribution=distribution,
+                ),
             },
         )
 
@@ -204,6 +196,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     if config.capture.scheduled
                     else "capture on demand"
                 ),
+                "preview": health_preview(request, config),
             },
         )
 

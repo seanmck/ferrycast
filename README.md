@@ -170,10 +170,31 @@ device's light/dark setting. The three typefaces are self-hosted from
 `web/static/fonts/`, subset to the characters the app can render — 58 KB in total, and no
 third-party requests, because the page has to paint at the side of Highway 101.
 
-The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon,
-the iOS home-screen icon and the link-preview card. All of it is cut from one master render
-by `brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why
-the masthead uses the mark alone rather than the full lockup.
+The masthead carries the clock-and-ferry mark, and the same artwork supplies the favicon and
+the iOS home-screen icon. All of it is cut from one master render by
+`brand/build_assets.py` — see [`brand/README.md`](brand/README.md) for how, and for why the
+masthead uses the mark alone rather than the full lockup.
+
+#### Sending someone a link
+
+A FerryCast link is almost always sent about one sailing — "we're aiming for the 12:30,
+here" — so the Open Graph preview answers for *that* sailing rather than describing the app.
+Pasted into a message, `/?origin=SLT&service_date=2026-08-01&time=12:30` shows:
+
+> **12:30 Saltery Bay → Earls Cove · Sat 1 Aug**
+> 75% of 12 comparable sailings waited at least one sailing. They typically ran out of room
+> 40 min before departure — be in the lineup by 11:50.
+
+The person reading it in a car gets the answer without opening anything, and a thin sample
+says so in the preview rather than only on the page. The title and description are built per
+request from the same distribution the page renders; the card beneath them is the mark over
+the outcome ramp, static and rendered offline (`brand/README.md` covers re-rendering it).
+
+Both `og:url` and `og:image` have to be absolute, and behind a TLS-terminating proxy the app
+cannot always tell that it is being served over https — a card whose image is http on an
+https page is dropped as mixed content. The forwarded scheme is trusted when there is one;
+set **`FERRYCAST_BASE_URL`** (or `[web] base_url`) to your public origin to settle it
+outright.
 
 Comparable means **same sailing time × day-type × season bucket**, with BC stat holidays
 mapped to Sunday-like. When that bucket is too thin, the search widens in defined steps
@@ -444,6 +465,11 @@ The tests concentrate on the parts most likely to be silently wrong: the overloa
 inference, the comparability fallback ladder, holiday and season bucketing, the deck-space
 parser against several page phrasings, and the failure paths (dead camera, HTML served where
 an image was expected, unparseable page, low-confidence frame, exhausted budget).
+
+The served artwork is generated rather than written, and committed: `brand/build_assets.py`
+cuts the icons out of the logo master with Pillow, and `brand/render_card.py` draws the
+share card with headless Chrome. Neither runs at deploy time — see
+[brand/README.md](brand/README.md).
 
 ---
 

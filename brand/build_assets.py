@@ -126,9 +126,6 @@ fav = OUT / "favicon.ico"
 mark.resize((48, 48), Image.LANCZOS).save(fav, sizes=[(16, 16), (32, 32), (48, 48)])
 print(f"{'favicon.ico':22} {'16/32/48':10} {fav.stat().st_size / 1024:6.1f} KB")
 
-# Social card: the lockup on cream at the 1.91:1 ratio every unfurler crops to. Cream and
-# not the hull side, because the wordmark below the roundel is navy on navy in the dark.
-card = Image.new("RGBA", (1200, 630), (*CHART, 255))
-fit = lockup.resize((round(520 * lockup.width / lockup.height), 520), Image.LANCZOS)
-card.alpha_composite(fit, ((1200 - fit.width) // 2, (630 - fit.height) // 2))
-save(card.convert("RGB"), "og.png", colors=128)
+# og.png is not cut here. The share card is typeset — it carries the route and the outcome
+# ramp in the app's own faces, which Pillow cannot set — so it is drawn by render_card.py
+# from og-card.html, placing the mark.png written just above. Run that after this.

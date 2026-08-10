@@ -18,6 +18,7 @@ data/
 tests/
 deploy/
 
-# The logo master and the script that cuts it up. The assets it produces are committed
-# under src/ and ship with the package; the 1 MB source render has no business in the image.
+# The logo master, the share-card source, and the scripts that cut them up. Everything they
+# produce is committed under src/ and ships with the package; the 1 MB source render, and
+# the Chrome that draws the card, have no business in the image.
 brand/

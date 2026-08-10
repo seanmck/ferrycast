@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FerryCast — share card</title>
+<!--
+  Source for src/ferrycast/web/static/brand/og.png, the image a chat client shows when a
+  FerryCast link is pasted. It is rendered once, offline, by brand/render_card.py and the
+  result is committed — the deployment has no rasteriser, and a link preview must not wait
+  on one anyway.
+
+  Same "Deep Water" palette and the same three typefaces as the app, so a preview and the
+  page it opens read as one thing. 1200x630 is the size every scraper crops to.
+
+  The roundel is placed rather than the full lockup: "Ferry" is near-black navy and the
+  tagline mid-blue, and both vanish on this ground. The clock face is opaque, so the mark
+  alone carries — the same reason the masthead uses it. Everything the lockup would have
+  said is set in the app's own type instead, which is what lets the card also carry the
+  route and the outcome ramp.
+-->
+<style>
+  @font-face {
+    font-family: "Instrument Serif"; font-weight: 400; font-style: normal;
+    src: url("../src/ferrycast/web/static/fonts/instrumentserif-400.woff2") format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Sans"; font-weight: 400; font-style: normal;
+    src: url("../src/ferrycast/web/static/fonts/ibmplexsans-400.woff2") format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Mono"; font-weight: 400; font-style: normal;
+    src: url("../src/ferrycast/web/static/fonts/ibmplexmono-400.woff2") format("woff2");
+  }
+  @font-face {
+    font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal;
+    src: url("../src/ferrycast/web/static/fonts/ibmplexmono-500.woff2") format("woff2");
+  }
+
+  :root {
+    --hull: #0B1A22; --strait: #16323F; --kelp: #2F6C5F;
+    --cedar: #C46A3E; --buoy: #E0A13B; --chart: #F4EFE4;
+    --hero-label: #7FA6A0; --hero-muted: #A9BFBB;
+    --o-boarded: #2F6C5F; --o-filled: #7A9455;
+    --o-waited_1: #E0A13B; --o-waited_2plus: #C46A3E;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+
+  /* The card is exactly the viewport it is shot at. overflow:hidden is not cosmetic:
+     if the document is even a pixel taller than the window, headless Chrome drops the
+     trailing line from the capture rather than clipping it. */
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+
+  body {
+    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 60px 72px 54px;
+    /* The dark side of the theme, washes and all. */
+    background:
+      radial-gradient(1100px 620px at 12% -14%, var(--strait) 0%, rgba(11, 26, 34, 0) 62%) no-repeat,
+      radial-gradient(820px 520px at 92% 6%, #143B36 0%, rgba(11, 26, 34, 0) 58%) no-repeat,
+      var(--hull);
+    color: var(--chart);
+    font-family: "IBM Plex Sans", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A hairline of buoy lacquer down the left edge — the app's accent, used once. */
+  body::before {
+    content: ""; position: fixed; left: 0; top: 0; bottom: 0; width: 6px;
+    background: linear-gradient(180deg, var(--buoy), var(--cedar));
+  }
+
+  /* Centred, not baseline: the roundel is a 64px block and has no baseline worth aligning. */
+  .rule-top {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 22px; border-bottom: 1px solid rgba(232, 237, 236, 0.16);
+  }
+
+  .mark { display: flex; align-items: center; gap: 18px; }
+  /* Cut at 128 and placed at 64, so it is still sharp where a client shows the card at 2x. */
+  .mark img { width: 64px; height: 64px; display: block; }
+  .mark span {
+    font-family: "IBM Plex Mono", monospace; font-weight: 500;
+    font-size: 21px; letter-spacing: 0.34em; text-transform: uppercase; color: var(--chart);
+  }
+  .kicker {
+    font-family: "IBM Plex Mono", monospace; font-size: 17px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--hero-label);
+  }
+
+  h1 {
+    font-family: "Instrument Serif", Georgia, serif; font-weight: 400;
+    font-size: 90px; line-height: 1.02; letter-spacing: -0.015em;
+  }
+  h1 .swap { color: var(--buoy); }
+
+  /* One line, always: a preview is read in a glance and a widow reads as a mistake. */
+  .lede {
+    margin-top: 24px; white-space: nowrap;
+    font-size: 30px; line-height: 1.35; color: var(--hero-muted);
+  }
+
+  /* The outcome ramp, the one graphic the app is recognisable by. Proportions are
+     illustrative — no counts are printed, so the card cannot be read as a real reading. */
+  .bar { display: flex; height: 20px; border-radius: 2px; overflow: hidden; }
+  .bar span { display: block; }
+
+  .legend {
+    display: flex; gap: 34px; margin-top: 16px; padding: 0;
+    font-family: "IBM Plex Mono", monospace; font-size: 16px; letter-spacing: 0.05em;
+    color: var(--hero-muted);
+  }
+  .legend li { display: flex; align-items: center; gap: 9px; list-style: none; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+
+  .foot {
+    margin-top: 26px; padding-top: 18px; border-top: 1px solid rgba(232, 237, 236, 0.16);
+    font-family: "IBM Plex Mono", monospace; font-size: 17px; letter-spacing: 0.04em;
+    color: var(--hero-label);
+  }
+</style>
+</head>
+<body>
+
+<div class="rule-top">
+  <span class="mark">
+    <img src="../src/ferrycast/web/static/brand/mark.png" alt="">
+    <span>FerryCast</span>
+  </span>
+  <!-- The lockup's own tagline, so the card and the logo say the same thing. -->
+  <span class="kicker">Historical wait tracker</span>
+</div>
+
+<div>
+  <h1>Saltery Bay <span class="swap">⇄</span><br>Earls Cove</h1>
+  <p class="lede">On a day like today, what&#8217;s the wait?</p>
+</div>
+
+<div>
+  <div class="bar">
+    <span style="flex: 34; background: var(--o-boarded)"></span>
+    <span style="flex: 14; background: var(--o-filled)"></span>
+    <span style="flex: 33; background: var(--o-waited_1)"></span>
+    <span style="flex: 19; background: var(--o-waited_2plus)"></span>
+  </div>
+  <ul class="legend">
+    <li><span class="dot" style="background: var(--o-boarded)"></span>made it</li>
+    <li><span class="dot" style="background: var(--o-filled)"></span>filled up</li>
+    <li><span class="dot" style="background: var(--o-waited_1)"></span>waited 1</li>
+    <li><span class="dot" style="background: var(--o-waited_2plus)"></span>waited 2+</li>
+  </ul>
+  <p class="foot">Answered from comparable past sailings, not a forecast</p>
+</div>
+
+</body>
+</html>
