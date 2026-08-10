@@ -380,6 +380,32 @@ def sailing_times(config: Config, origin: str, target_date: date) -> list[str]:
     ]
 
 
+def default_sailing_time(
+    config: Config,
+    times: list[str],
+    target_date: date,
+    *,
+    at: datetime | None = None,
+) -> str | None:
+    """Which sailing to answer about when the caller did not name a usable one.
+
+    The next one that has not departed. Taking the first of the day instead answers about
+    a sailing that left hours ago — switch terminals at half past nine and the form would
+    quietly offer you the 06:30, with no countdown and history for a boat you cannot
+    catch. Only today has a "now" to measure against: on any other date the first sailing
+    is the neutral place to start, and once today's are all gone the last one is the
+    nearest there is.
+
+    `times` must be in departure order, as `sailing_times` returns them.
+    """
+    if not times:
+        return None
+    reference = local(at or now_utc(), config.tz)
+    if target_date != reference.date():
+        return times[0]
+    return next((t for t in times if t >= reference.strftime("%H:%M")), times[-1])
+
+
 def arrival_curve(
     conn: sqlite3.Connection,
     config: Config,

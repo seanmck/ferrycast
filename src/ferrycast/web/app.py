@@ -29,6 +29,7 @@ from ..query import (
     OUTCOME_LABELS,
     OUTCOME_LABELS_SHORT,
     arrival_curve,
+    default_sailing_time,
     query_distribution,
     sailing_times,
     upcoming_sailings,
@@ -124,9 +125,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
             service_date or (default.service_date.isoformat() if default else None)
         )
         times = sailing_times(config, chosen_origin, chosen_date)
-        chosen_time = time or (default.depart_hhmm if default and not origin else None)
-        if chosen_time not in times:
-            chosen_time = times[0] if times else None
+        # The form resubmits all three fields together, so switching terminal arrives here
+        # carrying the *other* terminal's departure time — which is never in this one's
+        # timetable. That has to fall back to the next sailing rather than the first of the
+        # day, or one tap on the segmented control lands you on this morning's 06:30.
+        chosen_time = time if time in times else default_sailing_time(config, times, chosen_date)
 
         distribution = None
         if chosen_time:
@@ -207,7 +210,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         _validate_origin(config, origin)
         target = _parse_date(service_date)
         times = sailing_times(config, origin, target)
-        chosen = time or (times[0] if times else None)
+        chosen = time or default_sailing_time(config, times, target)
         if not chosen:
             raise HTTPException(404, "no sailings scheduled from this terminal on that date")
         return query_distribution(

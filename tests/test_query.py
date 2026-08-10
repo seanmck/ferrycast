@@ -1,6 +1,12 @@
 from datetime import date, timedelta
 
-from ferrycast.query import arrival_curve, query_distribution, sailing_times, upcoming_sailings
+from ferrycast.query import (
+    arrival_curve,
+    default_sailing_time,
+    query_distribution,
+    sailing_times,
+    upcoming_sailings,
+)
 from ferrycast.schedule import day_type, season
 from ferrycast.timeutil import combine_local, parse_hhmm
 
@@ -196,6 +202,39 @@ def test_upcoming_sailings_roll_into_the_next_day(config):
     reference = datetime(2026, 8, 14, 23, 0, tzinfo=config.tz)
     upcoming = upcoming_sailings(config, at=reference, limit=1)
     assert upcoming[0].service_date == date(2026, 8, 15)
+
+
+def test_default_sailing_time_skips_departures_that_have_gone(config):
+    from datetime import datetime
+
+    times = sailing_times(config, "SLT", date(2026, 8, 14))
+    assert times == ["08:30", "12:30", "16:30"]
+
+    at = datetime(2026, 8, 14, 9, 0, tzinfo=config.tz)
+    assert default_sailing_time(config, times, date(2026, 8, 14), at=at) == "12:30"
+
+
+def test_default_sailing_time_takes_the_last_once_the_day_is_over(config):
+    from datetime import datetime
+
+    times = sailing_times(config, "SLT", date(2026, 8, 14))
+    at = datetime(2026, 8, 14, 23, 0, tzinfo=config.tz)
+    # Nothing is still to come, so the nearest sailing is the one that just went — not the
+    # 08:30, which is the furthest point of the day from now.
+    assert default_sailing_time(config, times, date(2026, 8, 14), at=at) == "16:30"
+
+
+def test_default_sailing_time_starts_at_the_top_of_any_other_day(config):
+    from datetime import datetime
+
+    at = datetime(2026, 8, 14, 23, 0, tzinfo=config.tz)
+    for day in (date(2026, 8, 15), date(2026, 8, 13)):
+        times = sailing_times(config, "SLT", day)
+        assert default_sailing_time(config, times, day, at=at) == "08:30"
+
+
+def test_default_sailing_time_is_none_when_nothing_is_scheduled(config):
+    assert default_sailing_time(config, [], date(2026, 8, 14)) is None
 
 
 def test_arrival_curve_buckets_by_minutes_before_departure(conn, config):
