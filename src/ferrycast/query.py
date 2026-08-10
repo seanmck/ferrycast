@@ -535,3 +535,102 @@ def _percentile(sorted_values: list[int], fraction: float) -> float:
         return 0.0
     index = max(0, min(len(sorted_values) - 1, round(fraction * (len(sorted_values) - 1))))
     return float(sorted_values[index])
+
+
+def collection_status(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    limit: int = 6,
+    route_id: str | None = None,
+) -> dict:
+    """What the collector has actually gathered, newest first.
+
+    The query page is answered from *past* comparable sailings, so on a new install it is
+    correctly blank for weeks — which looks exactly like a broken scraper. This is the
+    evidence that separates the two: the last reading, and the sailings recorded so far.
+
+    Deliberately not a distribution. A handful of sailings is proof of life, not an answer,
+    and presenting them as one would undercut the whole point of the comparability rules.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    names = {t.code: t.name for t in route.terminals}
+    now = now_utc()
+
+    latest = conn.execute(
+        """SELECT terminal, observed_at, sailing_hhmm, percent_available, status_text
+             FROM deck_space
+            WHERE route = ? AND fetch_status = 'ok'
+            ORDER BY observed_at DESC
+            LIMIT 1""",
+        (route.id,),
+    ).fetchone()
+
+    reading = None
+    if latest is not None:
+        observed = parse_iso(latest["observed_at"])
+        reading = {
+            "terminal": names.get(latest["terminal"], latest["terminal"]),
+            "observed_local": local(observed, config.tz).strftime("%-I:%M %p"),
+            "minutes_ago": max(0, int((now - observed).total_seconds() // 60)),
+            "sailing_hhmm": latest["sailing_hhmm"],
+            "percent_available": latest["percent_available"],
+            "status_text": latest["status_text"],
+        }
+
+    # `unknown` is excluded from the list but counted: a sailing the collector was not
+    # running for is a real gap, and hiding it entirely would overstate coverage.
+    totals = conn.execute(
+        """SELECT COUNT(*) AS n,
+                  SUM(CASE WHEN r.outcome = 'unknown' THEN 1 ELSE 0 END) AS unknown,
+                  MIN(s.service_date) AS since
+             FROM sailing_records r
+             JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.route = ?""",
+        (route.id,),
+    ).fetchone()
+
+    rows = conn.execute(
+        """SELECT s.service_date, s.depart_hhmm, s.origin, s.destination,
+                  r.outcome, r.filled_at, r.method, r.peak_queue
+             FROM sailing_records r
+             JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.route = ? AND r.outcome != 'unknown'
+            ORDER BY s.scheduled_departure DESC
+            LIMIT ?""",
+        (route.id, limit),
+    ).fetchall()
+
+    recent = [
+        {
+            "service_date": row["service_date"],
+            "depart_hhmm": row["depart_hhmm"],
+            "origin": row["origin"],
+            "destination": row["destination"],
+            "outcome": row["outcome"],
+            "label": OUTCOME_LABELS.get(row["outcome"], row["outcome"]),
+            "filled_at_local": (
+                local(parse_iso(row["filled_at"]), config.tz).strftime("%H:%M")
+                if row["filled_at"]
+                else None
+            ),
+            "evidence": _evidence_of({row["method"]}),
+            "peak_queue": row["peak_queue"],
+        }
+        for row in rows
+    ]
+
+    recorded = (totals["n"] or 0) - (totals["unknown"] or 0)
+    return {
+        "reading": reading,
+        "recent": recent,
+        "recorded": recorded,
+        "unknown": totals["unknown"] or 0,
+        "since": totals["since"],
+        "collecting": reading is not None and reading["minutes_ago"] <= _stale_after(config),
+    }
+
+
+def _stale_after(config: Config) -> int:
+    """A reading is 'current' for two scrape intervals — one missed cycle is not an outage."""
+    return max(30, config.capture.interval_minutes * 2)
