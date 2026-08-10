@@ -87,23 +87,25 @@ that up without any dashboard configuration.
 
 ## 3. Add the volume — do this before the first real deploy
 
-The volume attaches to the **service**, not the project, so open the service first:
+Volumes are **not** under the service's Settings tab. Use the CLI, which is the one route
+that is unambiguous:
 
-1. Project canvas → **click the FerryCast service** (the box, not the project header).
-2. **Settings** tab → scroll to **Volumes** → **Add Volume** (in some builds the button
-   is **+ New Volume**).
-3. Set the **mount path** to exactly:
+```bash
+npm i -g @railway/cli
+railway login
+railway link                                          # pick the project + service
+railway volume add --service ferrycast --mount-path /data
+railway volume list                                   # confirm the mount path
+```
 
-   ```
-   /data
-   ```
+`railway volume add` prompts for the service if you omit `--service`. Railway redeploys the
+service to attach the volume — wait for that deploy to go green.
 
-4. Railway redeploys the service to attach it. Wait for that deploy to go green.
-
-Two alternative routes to the same dialog, if the Settings tab looks different in your
-build: right-click the project canvas → **Add Volume** and pick the service, or press
-`Cmd/Ctrl + K` and search "volume". Recent CLI versions also expose `railway volume` —
-run `railway volume --help` to see what your version supports.
+The dashboard route is the **`+ Create` button** on the project canvas (the same one used to
+add a service), which offers **Volume** alongside Database / GitHub Repo / Empty Service;
+`Cmd/Ctrl + K` → "volume" reaches it too. Railway's dashboard changes often enough that the
+CLI above is the version worth trusting — `railway volume --help` prints the exact syntax
+your CLI supports.
 
 **The mount path must be `/data`.** That is what `FERRYCAST_DATA_DIR=/data` in the
 Dockerfile points at. If you mount somewhere else, either change that variable to match or
