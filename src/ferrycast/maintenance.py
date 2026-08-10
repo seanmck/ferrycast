@@ -25,6 +25,7 @@ class PruneResult:
     bytes_freed: int = 0
     dry_run: bool = False
     kept_unextracted: int = 0
+    thinned_unextracted: int = 0
 
 
 def _unlink(config: Config, relative_path: str | None) -> int:
@@ -39,6 +40,59 @@ def _unlink(config: Config, relative_path: str | None) -> int:
         return 0
     except OSError:
         return 0
+
+
+def _thin_unextracted(
+    conn: sqlite3.Connection, config: Config, result: PruneResult, *, dry_run: bool
+) -> None:
+    """Thin aged, never-read frames down to the ones an extraction would actually use.
+
+    "Archive frames now, analyse later" only works if the archive stays bounded. Keeping
+    every unread frame forever is a disk leak; deleting them outright throws away the whole
+    point. So after a while we keep exactly the frames nearest the essential offsets around
+    each departure — the set `extract --essential` would read — and drop the rest. Every
+    sailing remains fully analysable, at roughly half the disk.
+    """
+    from .selection import essential_frames_for_day
+
+    cutoff = iso(now_utc() - timedelta(days=config.retention.thin_unextracted_after_days))
+    dates = [
+        row[0]
+        for row in conn.execute(
+            """SELECT DISTINCT service_date FROM frames
+                WHERE path IS NOT NULL AND captured_at < ?
+                  AND NOT EXISTS (SELECT 1 FROM observations o
+                                   WHERE o.frame_id = frames.id AND o.prompt_version = ?)
+                ORDER BY service_date""",
+            (cutoff, config.vision.prompt_version),
+        ).fetchall()
+    ]
+
+    for service_date in dates:
+        day = date.fromisoformat(service_date)
+        # Pick the keepers from all frames, not just unread ones, so the choice does not
+        # shift as extraction happens.
+        keep = {
+            row["id"]
+            for row in essential_frames_for_day(conn, config, day, only_unextracted=False)
+        }
+        doomed = conn.execute(
+            """SELECT id, path FROM frames
+                WHERE path IS NOT NULL AND service_date = ? AND captured_at < ?
+                  AND NOT EXISTS (SELECT 1 FROM observations o
+                                   WHERE o.frame_id = frames.id AND o.prompt_version = ?)""",
+            (service_date, cutoff, config.vision.prompt_version),
+        ).fetchall()
+        for row in doomed:
+            if row["id"] in keep:
+                continue
+            if not dry_run:
+                result.bytes_freed += _unlink(config, row["path"])
+                conn.execute("UPDATE frames SET path = NULL WHERE id = ?", (row["id"],))
+            result.thinned_unextracted += 1
+
+    if not dry_run:
+        conn.commit()
 
 
 def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = False) -> PruneResult:
@@ -97,6 +151,9 @@ def prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool = Fa
             result.bytes_freed += _unlink(config, row["path"])
             conn.execute("UPDATE frames SET path = NULL WHERE id = ?", (row["id"],))
         result.downsampled += 1
+
+    if retention.keep_unextracted and retention.thin_unextracted_after_days:
+        _thin_unextracted(conn, config, result, dry_run=dry_run)
 
     if retention.keep_unextracted:
         result.kept_unextracted = (

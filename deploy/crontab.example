@@ -9,33 +9,34 @@ FERRYCAST_CONFIG=/srv/ferrycast/config/ferrycast.toml
 ANTHROPIC_API_KEY=sk-ant-...
 PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
-# R2 — scrape deck space every 15 minutes. This is the whole data-collection pipeline in
-# the default setup: it costs nothing, works at night, and is what the historical record is
-# built from. Keep it at 15 minutes or slower: be a polite scraper.
-*/15 * * * *  ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
+# R1 + R2 — archive a frame from each camera and scrape deck space, every 15 minutes.
+# Neither costs money. Capture is here because it is the one irreversible step: extraction
+# can always be run later, but a frame not taken at 14:15 is gone for good. Keep the
+# interval at 15 minutes or slower: be a polite scraper.
+*/15 * * * *  ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
 
-# R4 — turn yesterday's readings into one record per sailing.
+# R4 — turn yesterday's readings into one record per sailing. Free: this runs on deck
+# space, so every sailing gets a record whether or not any frame was ever analysed.
 23 3 * * *    ferrycast aggregate --date yesterday >> /var/log/ferrycast/aggregate.log 2>&1
 
-# Vision runs only when you ask for it:
-#     ferrycast check --origin ERL --time 15:25
-# roughly $0.004 a look. Nothing above spends money.
+# Retention. Frames aged past `thin_unextracted_after_days` and still unread are thinned
+# down to the ones an extraction would actually use, so the archive stays bounded (roughly
+# 2.8 GB/year rather than 5.7) without losing the ability to analyse any sailing.
+41 4 * * 0    ferrycast prune >> /var/log/ferrycast/prune.log 2>&1
+47 4 * * 0    ferrycast health --window 7 --strict
 
+# NOTHING ABOVE SPENDS MONEY. The vision model runs only when you ask:
+#     ferrycast check --origin ERL --time 15:25          # ~$0.004, reads the camera now
+#     ferrycast extract --essential --for-date 2026-07-04  # ~$0.09, analyse one past day
+#
 # ---------------------------------------------------------------------------------------
-# OPTIONAL: queue-level accuracy.
+# OPTIONAL: analyse every day automatically (~$2.65/month).
 #
 # Deck space says when the vessel ran out of room, not how many vehicles were still queued
 # outside the terminal — so it cannot tell a one-sailing wait from a three-sailing one.
-# Only the cameras can. If you want that, archive frames and read the few per sailing that
-# decide the outcome (about $2.65/month, and set capture.scheduled = true in the config so
-# `health` starts watching the cameras):
+# Only the cameras can. Uncomment to build that finer record continuously:
 #
-# */15 * * * * ferrycast capture >> /var/log/ferrycast/capture.log 2>&1
 # 17 2 * * *   ferrycast extract --essential --for-date yesterday >> /var/log/ferrycast/extract.log 2>&1
-#
-# Capturing without extracting is also reasonable: frames cost only disk, and can be read
-# months later if you decide the detail was worth it.
-#     ferrycast extract --essential --for-date 2026-07-04
 # ---------------------------------------------------------------------------------------
 
 # Retention plus the weekly digest. `health --strict` exits non-zero when something is

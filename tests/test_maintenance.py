@@ -96,8 +96,9 @@ def test_health_flags_a_stalled_pipeline(conn, config):
 
 
 def test_health_ignores_capture_when_it_is_not_scheduled(conn, config):
-    """In the default on-demand mode, a quiet camera is not a fault."""
-    report = health_report(conn, config)
+    """If an install has deliberately turned archiving off, a quiet camera is not a fault."""
+    no_capture = replace(config, capture=replace(config.capture, scheduled=False))
+    report = health_report(conn, no_capture)
     assert not any("capture" in p for p in report.problems)
 
 

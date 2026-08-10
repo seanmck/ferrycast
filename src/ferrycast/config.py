@@ -61,10 +61,10 @@ class CaptureConfig:
     timeout_seconds: float = 20.0
     max_retries: int = 2
     user_agent: str = "ferrycast/0.1 (personal archival project; low rate)"
-    # Whether frames are captured on a schedule. Off by default: the historical record is
-    # built from deck space, and `ferrycast check` captures its own frame when asked. Turn
-    # on only to archive frames for queue-level accuracy (see the README).
-    scheduled: bool = False
+    # Whether frames are archived on a schedule. On by default, and it costs only disk:
+    # extraction can always be run later, but a frame not captured at 14:15 is gone for
+    # good. Set false if disk is tight and you accept never being able to look back.
+    scheduled: bool = True
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,11 @@ class RetentionConfig:
     # With extraction deferred, an unread frame is the only record of that moment. Pruning
     # skips those by default so a cheap extraction policy can't quietly destroy history.
     keep_unextracted: bool = True
+    # ...but "keep everything unread forever" is a disk leak. After this many days, unread
+    # frames are thinned to the ones an extraction would actually look at (the essential
+    # offsets around each departure). Roughly halves disk while leaving every sailing still
+    # analysable in full. Set 0 to keep every unread frame.
+    thin_unextracted_after_days: int = 45
 
 
 @dataclass(frozen=True)

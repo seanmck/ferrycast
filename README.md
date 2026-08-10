@@ -18,7 +18,7 @@ It is a retrieval system, not a forecaster. Similarity search is the model.
 
 | Req | What it does | State |
 |-----|--------------|-------|
-| R1 | Frame capture from both terminal webcams | ✅ Built — on demand by default; optional cron |
+| R1 | Frame capture from both terminal webcams | ✅ Built — archived by default, analysed on demand |
 | R2 | Deck-space scrape, both directions, every 15 min | ✅ Built — **the default history source** |
 | R3 | Vision extraction to structured JSON, batchable and idempotent | ✅ Built — runs when you ask |
 | R4 | Sailing-level aggregation: peak queue, carryover, overload | ✅ Built |
@@ -163,7 +163,7 @@ underlying dates always travel with the answer.
 |---|---|
 | `ferrycast init` | Create the database and data directories |
 | `ferrycast doctor` | Check config, schedule, webcam/deck-space URLs, API key |
-| `ferrycast capture` | Capture one frame per terminal (R1); optional |
+| `ferrycast capture` | Archive one frame per terminal (R1) |
 | `ferrycast scrape` | Scrape current deck space (R2) |
 | `ferrycast extract` | Vision-extract frames (R3); `--essential` reads only what matters |
 | `ferrycast check` | On-demand: the queue right now, plus days like this one |
@@ -184,14 +184,15 @@ underlying dates always travel with the answer.
 A small VPS with cron is the recommended host — see `deploy/crontab.example`:
 
 ```cron
-*/15 * * * *  cd /srv/ferrycast && ferrycast scrape
+*/15 * * * *  cd /srv/ferrycast && ferrycast capture && ferrycast scrape
 23   3 * * *  cd /srv/ferrycast && ferrycast aggregate --date yesterday
+41   4 * * 0  cd /srv/ferrycast && ferrycast prune
 47   4 * * 0  cd /srv/ferrycast && ferrycast health --window 7 --strict
 ```
 
-That is the entire collection pipeline, and none of it spends money. Vision runs only when
-you type `ferrycast check`. To archive frames for queue-level accuracy as well, see the
-commented lines in `deploy/crontab.example` and
+That is the entire collection pipeline, and none of it spends money — it archives frames
+and scrapes deck space, but analyses nothing. Vision runs only when you type
+`ferrycast check` or ask for a specific day. See
 [Cost](#cost-and-when-the-vision-model-runs).
 
 Phase 1 of the PRD is just the first line — get it running and data starts accruing while
@@ -216,9 +217,22 @@ a dozen trips a year spends **under five cents a year** on vision.
 
 | What runs | When | Cost |
 |---|---|---|
+| `capture` — archive a frame from each camera | every 15 min | free (disk only) |
 | `scrape` — deck space | every 15 min | free |
 | `aggregate` — build sailing records | nightly | free |
-| `check` — read the camera now | when you ask | ~$0.004 |
+| `check` — analyse the camera now | when you ask | ~$0.004 |
+
+**Frames are archived but not analysed.** Capture runs by default because it is the one
+irreversible step: extraction can be run at any point in the future, but a frame not taken
+at 14:15 is gone for good. So the images accumulate against the day you want them, and the
+model reads them only when you ask — either `check` for right now, or
+`extract --essential --for-date 2026-07-04` to analyse a day that has already passed.
+
+The archive stays bounded. After `thin_unextracted_after_days` (default 45), frames still
+unread are thinned to the ones an extraction would actually use — the handful around each
+departure — which halves disk to about **2.8 GB/year** while leaving every sailing fully
+analysable. Frames past their retention date that are still unread are held rather than
+deleted, and `prune` tells you how many.
 
 ### What deck space can and can't tell you
 
@@ -248,13 +262,14 @@ decide the outcome. Set `capture.scheduled = true`, add the two commented cron l
 
 | Policy | Frames read/week | ~$/month | Gets you |
 |---|---:|---:|---|
-| Deck space only *(default)* | 0 | **$0.00** | filled / not filled, and when |
-| `extract --essential` | 476 | $2.65 | queue counts, carryover, 1 vs 2+ |
+| Archive only, analyse on demand *(default)* | 0 | **$0.00** | filled / not filled, and when |
+| `extract --essential` nightly | 476 | $2.65 | queue counts, carryover, 1 vs 2+ |
 | `extract` everything | 966 | $5.38 | the above, plus finer arrival curves |
 
-Capture without extraction is a reasonable middle: frames cost only disk, and can be read
-months later once you decide the detail was worth it
-(`ferrycast extract --essential --for-date 2026-07-04`).
+The default is deliberately the first row *with the frames kept*: you get the free record
+now and can buy the finer one for any past day later, for about **9 cents a day**
+(`ferrycast extract --essential --for-date 2026-07-04`). That option expires only if you
+turn capture off.
 
 ### Checking on the morning of departure
 

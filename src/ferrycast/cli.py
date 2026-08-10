@@ -426,15 +426,26 @@ def cmd_prune(args) -> int:
     config = _config(args)
     conn = _open(config)
     result = prune_frames(conn, config, dry_run=args.dry_run)
-    prefix = "would remove" if args.dry_run else "removed"
-    print(
-        f"{prefix} {result.deleted} expired frame file(s) and thinned "
-        f"{result.downsampled}, freeing {result.bytes_freed / 1e6:.1f} MB"
-    )
+    verb = "would remove" if args.dry_run else "removed"
+    if result.deleted:
+        print(f"{verb} {result.deleted} frame file(s) past the retention horizon")
+    if result.downsampled:
+        print(f"{verb} {result.downsampled} frame file(s) thinning older days to 1/hour")
+    if result.thinned_unextracted:
+        print(
+            f"{verb} {result.thinned_unextracted} aged unread frame(s), keeping the ones "
+            "an extraction would use — every sailing is still analysable"
+        )
+    total = result.deleted + result.downsampled + result.thinned_unextracted
+    if total:
+        print(f"{'would free' if args.dry_run else 'freed'} {result.bytes_freed / 1e6:.1f} MB")
+    else:
+        print("nothing to prune")
     if result.kept_unextracted:
         print(
-            f"kept {result.kept_unextracted} unextracted frame(s) that were otherwise due "
-            "for pruning — extract them, or set retention.keep_unextracted = false"
+            f"holding {result.kept_unextracted} unread frame(s) past their retention date "
+            "so they can still be analysed — extract them, or set "
+            "retention.keep_unextracted = false"
         )
     return 0
 

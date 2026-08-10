@@ -238,22 +238,24 @@ def test_history_side_of_a_check_costs_nothing(conn, config):
 
 
 def test_pruning_will_not_delete_a_frame_nobody_has_read(conn, config):
-    """The trap: with extraction deferred, an unread frame is the only record left."""
+    """The trap: with extraction deferred, an unread frame is the only record left.
+
+    Past its retention date and still unread, an analysable frame is held rather than
+    dropped — otherwise the retention policy would quietly destroy the archive that a
+    deferred-extraction setup exists to preserve.
+    """
+    from ferrycast.timeutil import local
+
     old = now_utc() - timedelta(days=500)
-    path = config.frames_dir / "SLT" / "old.png"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(_bright_png(50, 50))
-    conn.execute(
-        """INSERT INTO frames (route, terminal, captured_at, service_date, path, status)
-           VALUES (?, 'SLT', ?, ?, ?, 'ok')""",
-        (config.route.id, iso(old), old.date().isoformat(), str(path.relative_to(config.data_dir))),
-    )
-    conn.commit()
+    day = local(old, config.tz).date()
+    # Sitting right where an extraction would look, so thinning keeps it too.
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+    _add_frame_at(conn, config, "SLT", departure - timedelta(minutes=10))
 
     result = prune_frames(conn, config)
 
     assert result.deleted == 0
-    assert path.exists()
+    assert conn.execute("SELECT path FROM frames").fetchone()["path"] is not None
     assert result.kept_unextracted == 1
 
 
@@ -272,6 +274,52 @@ def test_pruning_reclaims_a_frame_once_it_has_been_read(conn, config):
 
     assert result.deleted == 1
     assert result.kept_unextracted == 0
+
+
+def _window_of_frames(conn, config, *, days_ago: int, hhmm: str = "12:30"):
+    """A full two-hour window of unread frames around a departure `days_ago` days back."""
+    from ferrycast.timeutil import local
+
+    day = local(now_utc() - timedelta(days=days_ago), config.tz).date()
+    departure = combine_local(day, parse_hhmm(hhmm), config.tz)
+    for offset in range(-120, 46, 15):
+        _add_frame_at(conn, config, "SLT", departure + timedelta(minutes=offset))
+    return day
+
+
+def test_aged_unread_frames_are_thinned_to_the_analysable_ones(conn, config):
+    """Archive-now-analyse-later needs the archive to stay bounded without losing value."""
+    day = _window_of_frames(conn, config, days_ago=90)
+
+    before = len(essential_frames_for_day(conn, config, day, origin="SLT"))
+    result = prune_frames(conn, config)
+    after = len(essential_frames_for_day(conn, config, day, origin="SLT"))
+
+    assert before > 0
+    assert result.thinned_unextracted > 0
+    # Every frame an extraction would actually read survives; only the surplus goes.
+    assert after == before
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM frames WHERE path IS NOT NULL"
+    ).fetchone()[0]
+    assert remaining == before
+
+
+def test_thinning_leaves_recent_unread_frames_alone(conn, config):
+    _window_of_frames(conn, config, days_ago=5)
+
+    result = prune_frames(conn, config)  # default: thin only after 45 days
+
+    assert result.thinned_unextracted == 0
+
+
+def test_thinning_can_be_disabled(conn, config):
+    from dataclasses import replace
+
+    _window_of_frames(conn, config, days_ago=90)
+    never = replace(config, retention=replace(config.retention, thin_unextracted_after_days=0))
+
+    assert prune_frames(conn, never).thinned_unextracted == 0
 
 
 def test_retention_can_be_told_to_reclaim_disk_regardless(conn, config):
