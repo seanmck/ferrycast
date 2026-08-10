@@ -43,7 +43,7 @@ railway up             # build and deploy from the local directory
 ```
 
 This deploys the working directory directly. You lose deploy-on-push, so most people
-connect GitHub and keep the CLI for `railway run` (step 6).
+connect GitHub and keep the CLI for `railway ssh` (step 6).
 
 ## 1. Commit your config
 
@@ -87,18 +87,59 @@ that up without any dashboard configuration.
 
 ## 3. Add the volume — do this before the first real deploy
 
-**Settings → Volumes → Add volume**, mount path:
+Volumes are **not** under the service's Settings tab. Use the CLI, which is the one route
+that is unambiguous:
 
+```bash
+npm i -g @railway/cli
+railway login
+railway link                                          # pick the project + service
+railway volume add --service ferrycast --mount-path /data
+railway volume list                                   # confirm the mount path
 ```
-/data
+
+`railway volume add` prompts for the service if you omit `--service`. Railway redeploys the
+service to attach the volume — wait for that deploy to go green.
+
+The dashboard route is the **`+ Create` button** on the project canvas (the same one used to
+add a service), which offers **Volume** alongside Database / GitHub Repo / Empty Service;
+`Cmd/Ctrl + K` → "volume" reaches it too. Railway's dashboard changes often enough that the
+CLI above is the version worth trusting — `railway volume --help` prints the exact syntax
+your CLI supports.
+
+**The mount path must be `/data`.** That is what `FERRYCAST_DATA_DIR=/data` in the
+Dockerfile points at. If you mount somewhere else, either change that variable to match or
+the app will write to a path that is still ephemeral.
+
+### Why before the first real deploy
+
+Without a volume the container filesystem is ephemeral: the database and every archived
+frame are destroyed on each redeploy, and the historical record silently restarts from
+nothing — no error, just a permanently empty distribution.
+
+Mounting a volume also **replaces the contents of that directory** in the container, so
+anything already written to `/data` by an earlier deploy is gone at the moment you attach
+it. That is harmless on day one and annoying after a week of collection, which is the whole
+reason to do this first.
+
+### Size
+
+Deck space alone is a few MB a year. With frame archiving on (the default) budget about
+**3 GB/year** — `prune` thins unread frames weekly to hold it near that. Start small;
+Railway lets you grow a volume later, and the per-plan ceiling is the real constraint, so
+check what your plan allows if you intend to archive frames for multiple seasons.
+
+### Check it worked
+
+After the deploy goes green:
+
+```bash
+railway ssh ls -la /data
 ```
 
-Without it the container filesystem is ephemeral: the database and every archived frame are
-destroyed on each redeploy, and the historical record silently restarts from nothing. The
-`FERRYCAST_DATA_DIR=/data` default in the Dockerfile points the app at this mount.
-
-Size: deck space alone is a few MB a year. With frame archiving on (the default) budget
-about **3 GB/year** — `prune` thins unread frames weekly to keep it near that.
+You want `ferrycast.db` and a `frames/` directory. If `/data` is empty, give the scheduler
+a minute — it creates the database on first tick — then check the deploy logs for
+`[scheduler] started`.
 
 ## 4. Environment variables
 
@@ -134,18 +175,35 @@ treats getting collection running as the thing to ship first.
 
 ## 6. Running commands against the deployed data
 
+Use `railway ssh`, which opens a shell **inside the running container** — that is the only
+CLI route that sees the volume:
+
 ```bash
-railway run ferrycast health
-railway run ferrycast check --origin ERL --time 15:25
-railway run ferrycast query --origin ERL --date 2026-08-14 --time 15:25
+railway ssh                                   # then, at the container prompt:
+ferrycast health
+ferrycast schedule
+ferrycast check --origin ERL --time 15:25
+ferrycast query --origin ERL --date 2026-08-14 --time 15:25
 ```
 
-`railway run` executes in the deployed environment, so these see the real volume.
+Or as one-shots: `railway ssh ferrycast health`.
+
+> ⚠️ **`railway run` is not the same thing.** It runs the command **on your machine** with
+> the service's environment variables injected — including `FERRYCAST_DATA_DIR=/data`,
+> which on your laptop is either missing or a different, empty directory. So
+> `railway run ferrycast check` reads no deployed data, writes its result nowhere useful,
+> and still spends the API call. Use it for things that genuinely should run locally
+> against remote config; use `railway ssh` for anything touching the database.
+
+The web endpoints in step 5 are the other way in, and need no CLI at all.
 
 ---
 
 ## Notes and gotchas
 
+- **Do not put `VOLUME ["/data"]` back in the Dockerfile.** Railway fails the build with
+  *"docker VOLUME at Line N is not supported, use Railway Volumes"* — it manages the mount
+  itself. The Dockerfile just `mkdir -p /data` so the app can start before a volume exists.
 - **Keep it at one replica.** SQLite has a single writer; `railway.toml` sets
   `numReplicas = 1`. Scaling out will corrupt the database rather than speed anything up.
 - **Redeploys are safe for the schedule.** Due-ness is read from the `job_runs` table on the
@@ -157,7 +215,7 @@ railway run ferrycast query --origin ERL --date 2026-08-14 --time 15:25
 - **On-demand checks from the browser are disabled by default.** A public URL that spends
   money is a bad idea. To enable the button, set `[web] allow_on_demand_checks = true` and
   keep `on_demand_daily_cap` sane — and consider that a Railway domain is public unless you
-  put auth in front of it. The CLI path (`railway run ferrycast check`) needs no such
+  put auth in front of it. The CLI path (`railway ssh ferrycast check`) needs no such
   exposure and is the safer default.
 - **Cost.** The container is the only ongoing charge; FerryCast itself adds vision spend
   only when you run `check` (~$0.004 each).

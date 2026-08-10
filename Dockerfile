@@ -39,9 +39,12 @@ RUN if [ ! -f config/ferrycast.toml ] || [ ! -f config/schedule.toml ]; then \
         exit 1; \
     fi
 
-# The mount point for the persistent volume. Without a volume attached here the database
-# and frames vanish on every redeploy.
-VOLUME ["/data"]
+# The mount point for the persistent volume. Deliberately a plain mkdir and not a Docker
+# `VOLUME` instruction: Railway rejects the build outright ("docker VOLUME is not supported,
+# use Railway Volumes"), because it manages the mount itself. The directory still has to
+# exist so the app can start before a volume is attached — but note that without one,
+# everything written here vanishes on every redeploy. See deploy/RAILWAY.md step 3.
+RUN mkdir -p /data
 
 EXPOSE 8000
 
