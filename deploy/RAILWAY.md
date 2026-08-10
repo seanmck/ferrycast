@@ -10,6 +10,41 @@ The vision model runs only when you ask (`ferrycast check`).
 
 ---
 
+## 0. Connect Railway to GitHub
+
+If you sign in to [railway.com](https://railway.com) **with GitHub**, the accounts are
+linked already — skip to step 1. Otherwise: **Account Settings → Connected Accounts →
+connect GitHub**.
+
+Either way you then have to grant the Railway GitHub App access to this specific repo,
+because `seanmck/ferrycast` is private and the app defaults to no repositories:
+
+**Railway dashboard → New Project → Deploy from GitHub repo → Configure GitHub App** →
+choose **Only select repositories** → add `ferrycast` → Install.
+
+If `seanmck/ferrycast` does not appear in Railway's repo list, that grant is the thing
+that is missing, not the connection itself.
+
+> ⚠️ **Set the deploy branch.** Railway tracks the repo's **default branch** (`main`), and
+> this work is on `claude/prd-implementation-3b4uv7`. Either merge to `main` first, or after
+> creating the service go to **Settings → Source → Branch** and point it at
+> `claude/prd-implementation-3b4uv7`. Otherwise Railway will deploy a `main` that has none
+> of this code and the build will fail on the missing Dockerfile.
+
+Once connected, every push to the tracked branch redeploys automatically.
+
+**CLI alternative.** If you would rather not link GitHub at all:
+
+```bash
+npm i -g @railway/cli
+railway login          # opens a browser
+railway init           # create the project
+railway up             # build and deploy from the local directory
+```
+
+This deploys the working directory directly. You lose deploy-on-push, so most people
+connect GitHub and keep the CLI for `railway run` (step 6).
+
 ## 1. Commit your config
 
 `config/ferrycast.toml` and `config/schedule.toml` are gitignored for local work, but the
@@ -43,8 +78,8 @@ in the build log rather than from a crash-looping container.
 
 ## 2. Create the service
 
-In Railway: **New Project → Deploy from GitHub repo → seanmck/ferrycast**, and pick the
-branch you want to run.
+In Railway: **New Project → Deploy from GitHub repo → seanmck/ferrycast**, then set the
+branch as described in step 0.
 
 `railway.toml` in the repo root already sets the builder to the Dockerfile, the start
 command to `ferrycast run`, and the healthcheck to `/healthz`. Railway should pick all of
