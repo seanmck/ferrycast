@@ -21,12 +21,13 @@
 #                  route are ignored rather than mixed in.
 
 # VERIFIED — from the published bcferries.com timetable, "Powell River (Saltery Bay) to
-# Sunshine Coast (Earls Cove)", effective May 14 – Oct 12 2026, Monday.
+# Sunshine Coast (Earls Cove)", effective May 14 – Oct 12 2026, Monday and Friday.
+# Friday is identical to Monday, checked departure by departure.
 [[block]]
 terminal       = "SLT"
 effective_from = 2026-05-14
 effective_to   = 2026-10-12
-days           = ["mon"]
+days           = ["mon", "fri"]
 departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
 
 # VERIFIED — same source and date range, "Sunshine Coast (Earls Cove) to Powell River
@@ -49,15 +50,15 @@ departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05",
 # STILL MISSING. Deliberately left blank rather than guessed: a departure time that is
 # merely plausible mis-windows every observation around it, silently.
 #
-#   1. SLT → ERL: Tue, Wed, Thu, Fri, Sat, Sun. Only Monday is confirmed. Note that
-#      Friday matched Monday exactly in the ERL direction, so the same is plausible here
-#      — but that is a reason to check it, not to assume it.
-#   2. ERL → SLT: Tue, Wed, Thu, Sat, Sun. Mon and Fri are confirmed identical.
-#   3. The off-season timetable, Oct 13 2026 – May 13 2027. The blocks above cover only
+#   1. Tue, Wed, Thu, Sat, Sun — both directions. Mon and Fri are confirmed identical in
+#      both directions, and Saturday's first sailing matches too (05:35 / 06:30), so the
+#      timetable may well be uniform all week. Confirm it; do not assume it. Weekend
+#      sailings are the ones a wait-time tool is most often asked about.
+#   2. The off-season timetable, Oct 13 2026 – May 13 2027. The blocks above cover only
 #      the summer range, so the schedule goes empty on Oct 13 until it is added.
 #
-# Until (1) catches up, Friday has ERL sailings but no SLT ones. That asymmetry is real
-# and visible, which is the point — it is a gap you can see, not a wrong answer.
+# If the remaining days do turn out to match, widen the two `days` lists above rather
+# than adding more blocks — same times in one place, not seven copies to keep in sync.
 #
 # Add each as its own [[block]], matching the form above.
 # ────────────────────────────────────────────────────────────────────────────────────────
