@@ -57,13 +57,11 @@ cp config/schedule.example.toml  config/schedule.toml
 ```
 
 Edit `config/schedule.toml` to the **real** BC Ferries timetable — the shipped times are
-placeholders, and a wrong departure time mis-windows every observation around it. In
-`config/ferrycast.toml` set:
+placeholders, and a wrong departure time mis-windows every observation around it.
 
-```toml
-[app]
-data_dir = "/data"        # the volume mount path, see step 3
-```
+Leave `data_dir` alone. The Dockerfile sets `FERRYCAST_DATA_DIR=/data`, which takes
+precedence over the config file, so the same committed config works locally and on Railway.
+Hardcoding `/data` here only breaks local runs.
 
 Leave `webcam_url` empty if you would rather supply it as an environment variable (step 4).
 
