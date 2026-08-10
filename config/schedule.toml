@@ -20,27 +20,26 @@
 #                  covers more than one, set it on every block; blocks naming a different
 #                  route are ignored rather than mixed in.
 
+# VERIFIED — from the published bcferries.com timetable, "Powell River (Saltery Bay) to
+# Sunshine Coast (Earls Cove)", effective May 14 – Oct 12 2026, Monday.
 [[block]]
 terminal       = "SLT"
-effective_from = 2026-01-01
-effective_to   = 2026-12-31
-days           = "all"
-departures     = ["06:30", "08:30", "10:30", "12:30", "14:30", "16:30", "18:30", "20:30"]
+effective_from = 2026-05-14
+effective_to   = 2026-10-12
+days           = ["mon"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
 
-[[block]]
-terminal       = "ERL"
-effective_from = 2026-01-01
-effective_to   = 2026-12-31
-days           = "all"
-departures     = ["05:35", "07:30", "09:30", "11:30", "13:30", "15:25", "17:30", "19:30", "21:20"]
-
-# Example of a summer-only extra sailing. Uncomment and correct once you have the
-# published peak-season timetable; a later block wins nothing automatically — every block
-# that covers a date contributes its departures, de-duplicated by time.
+# ────────────────────────────────────────────────────────────────────────────────────────
+# STILL MISSING. Deliberately left blank rather than guessed: a departure time that is
+# merely plausible mis-windows every observation around it, silently.
 #
-# [[block]]
-# terminal       = "SLT"
-# effective_from = 2026-06-25
-# effective_to   = 2026-09-08
-# days           = ["fri", "sat", "sun"]
-# departures     = ["22:15"]
+#   1. SLT, Tue–Sun. Tuesday's first sailing is also 05:35, so Mon–Thu may well be
+#      identical — but "may well be" is not a timetable. Check each day.
+#   2. ERL → SLT, every day. The whole reverse direction is unknown; the old placeholder
+#      block for it has been deleted rather than left in place, because no sailings is a
+#      visible gap and wrong sailings is invisible corruption.
+#   3. The off-season timetable, Oct 13 2026 – May 13 2027. The block above covers only
+#      the summer range, so the schedule goes empty on Oct 13 until it is added.
+#
+# Add each as its own [[block]], matching the form above.
+# ────────────────────────────────────────────────────────────────────────────────────────
