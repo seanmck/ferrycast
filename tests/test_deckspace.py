@@ -94,14 +94,50 @@ def test_unparsed_page_is_distinguished_from_a_fetch_error(conn, config, monkeyp
     assert statuses == {"unparsed"}
 
 
+# Each terminal publishes its own departures, so the fixtures differ per URL. Serving one
+# page to both terminals used to "pass": the parser accepted any time it saw, so Earls Cove
+# happily recorded Saltery Bay's departures as its own.
+ERL_PAGE = """
+<html><body>
+  <div class="sailing"><h3>9:30 am</h3><span>45% Available</span><p>Island Sky</p></div>
+  <div class="sailing"><h3>1:30 pm</h3><span>0% Available</span></div>
+</body></html>
+"""
+
+
+def _page_for(url: str) -> str:
+    return ERL_PAGE if "erl" in url.lower() else AVAILABLE_PAGE
+
+
 def test_successful_scrape_stores_rows(conn, config, monkeypatch):
+    from ferrycast import deckspace
+    from ferrycast.fetching import FetchResult
+
+    monkeypatch.setattr(
+        deckspace, "fetch", lambda url, **k: FetchResult(ok=True, text=_page_for(url))
+    )
+    results = scrape_once(conn, config)
+
+    assert all(r["ok"] for r in results)
+    assert conn.execute("SELECT COUNT(*) FROM deck_space").fetchone()[0] == 4  # 2 rows x 2 terminals
+
+
+def test_one_terminals_sailings_are_not_recorded_against_the_other(conn, config, monkeypatch):
+    """Saltery Bay's board served at the Earls Cove URL must record nothing."""
     from ferrycast import deckspace
     from ferrycast.fetching import FetchResult
 
     monkeypatch.setattr(
         deckspace, "fetch", lambda *a, **k: FetchResult(ok=True, text=AVAILABLE_PAGE)
     )
-    results = scrape_once(conn, config)
+    scrape_once(conn, config)
 
-    assert all(r["ok"] for r in results)
-    assert conn.execute("SELECT COUNT(*) FROM deck_space").fetchone()[0] == 4  # 2 rows x 2 terminals
+    stored = conn.execute(
+        "SELECT DISTINCT terminal FROM deck_space WHERE fetch_status = 'ok'"
+    ).fetchall()
+    assert [r[0] for r in stored] == ["SLT"]
+    # ...and the failure is recorded with the page, so it can be diagnosed later.
+    raw = conn.execute(
+        "SELECT raw FROM deck_space WHERE terminal = 'ERL' AND fetch_status = 'unparsed'"
+    ).fetchone()
+    assert raw and "12:30" in raw[0]

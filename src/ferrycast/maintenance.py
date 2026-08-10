@@ -246,6 +246,16 @@ def health_report(
         or 0
     )
     deck_rate = (deck_ok / deck_total) if deck_total else None
+    # Fetching is not the same as understanding. A row only counts as usable if it names a
+    # scheduled sailing, which is what aggregation joins on.
+    deck_usable = (
+        conn.execute(
+            """SELECT COUNT(*) FROM deck_space
+                WHERE observed_at >= ? AND fetch_status = 'ok' AND sailing_hhmm IS NOT NULL""",
+            (since,),
+        ).fetchone()[0]
+        or 0
+    )
 
     awaiting = (
         conn.execute(
@@ -327,6 +337,13 @@ def health_report(
 
     if deck_rate is not None and deck_rate < 0.95:
         problems.append(f"deck-space scrape success rate {deck_rate:.0%} is below 95%")
+    # The quiet failure: fetching perfectly and recognising nothing. It looks identical to
+    # a healthy feed on a quiet day, and on the live install it ran for a full day that way.
+    if deck_ok and not deck_usable:
+        problems.append(
+            f"{deck_ok} deck-space scrape(s) succeeded but none named a scheduled sailing "
+            "— the page format has probably changed; see the stored `raw` column"
+        )
     if deck_total == 0:
         problems.append(
             "no deck-space readings in this window — that feed is the historical record"
