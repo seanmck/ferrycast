@@ -3,11 +3,15 @@
 # Copy to config/ferrycast.toml and fill in the two webcam URLs before running `capture`.
 #   cp config/ferrycast.example.toml config/ferrycast.toml
 #
-# ⚠️  webcam_url is the PRD's one blocking open question. Nothing here is a verified
-#     frame URL — confirm the address of each camera image, check that it is fetchable
-#     at a fixed URL rather than embedded in a player, and satisfy yourself that
-#     low-rate archival is acceptable use. `ferrycast doctor` will tell you whether the
-#     URL you entered actually returns an image.
+# ⚠️  webcam_url is left blank deliberately. BC Ferries' terminal cameras publish a still
+#     JPEG per terminal at a fixed address of the form
+#
+#         https://ccimg.bcferries.com/cc/support/terminals/cam1_<CODE>.jpg
+#
+#     where <CODE> is the terminal code (SLT, ERL, ...). Fill those in once you have
+#     confirmed the address for your terminals and satisfied yourself that low-rate
+#     archival is acceptable use — `ferrycast doctor` reports whether the URL you entered
+#     actually returns an image rather than a page or a player.
 
 [app]
 timezone       = "America/Vancouver"

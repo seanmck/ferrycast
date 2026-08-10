@@ -2,11 +2,15 @@
 # .gitignore) because the Docker image needs it. It holds no secrets: the API key is the
 # ANTHROPIC_API_KEY environment variable.
 #
-# ⚠️  webcam_url is the PRD's one blocking open question and is still blank below. Nothing
-#     here is a verified frame URL — confirm the address of each camera image, check that
-#     it is fetchable at a fixed URL rather than embedded in a player, and satisfy yourself
-#     that low-rate archival is acceptable use. `ferrycast doctor` will tell you whether
-#     the URL you entered actually returns an image.
+# ⚠️  webcam_url now points at BC Ferries' terminal cameras, which publish a still JPEG per
+#     terminal at a fixed address: ccimg.bcferries.com/cc/support/terminals/cam1_<CODE>.jpg,
+#     where <CODE> is the same terminal code used below. SLT was confirmed by hand; ERL is
+#     inferred from that pattern and has NOT been fetched — run `ferrycast doctor`, which
+#     reports whether each URL actually returns an image, before trusting either.
+#
+#     Still to satisfy yourself about: that the address stays fixed rather than acquiring an
+#     expiring token, and that low-rate archival is acceptable use. `cam1` implies there may
+#     be a cam2 at some terminals.
 #
 #     Blank is safe: deck-space scraping is the history source and needs no camera. Only
 #     `ferrycast check` requires one. You can supply them here or, to keep them out of git,
@@ -40,14 +44,15 @@ name = "Saltery Bay – Earls Cove"
   code           = "SLT"
   name           = "Saltery Bay"
   destination    = "ERL"
-  webcam_url     = ""   # ⚠️ REQUIRED — see the note above
+  webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_SLT.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
 
   [[route.terminals]]
   code           = "ERL"
   name           = "Earls Cove"
   destination    = "SLT"
-  webcam_url     = ""   # ⚠️ REQUIRED — see the note above
+  # Inferred from the SLT pattern, not yet fetched — confirm with `ferrycast doctor`.
+  webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_ERL.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
 
 [capture]

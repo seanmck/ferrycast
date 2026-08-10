@@ -52,9 +52,11 @@ Then edit both files:
 
 1. **`config/ferrycast.toml` → `webcam_url` for each terminal.**
    Needed only for `ferrycast check` — the historical record is built from deck space, so
-   everything else works without it. You need a URL that returns the camera *image* at a
-   fixed address, not the page that embeds it, and you should satisfy yourself that
-   low-rate access is acceptable use.
+   everything else works without it. BC Ferries' terminal cameras publish a still JPEG at
+   `https://ccimg.bcferries.com/cc/support/terminals/cam1_<CODE>.jpg`, where `<CODE>` is the
+   terminal code — so `cam1_SLT.jpg` and `cam1_ERL.jpg` for this route. It has to be the
+   camera *image* at a fixed address, not the page that embeds it, and you should satisfy
+   yourself that low-rate access is acceptable use.
 
 2. **`config/schedule.toml` → the real departure times.**
    The shipped times are plausible placeholders, **not** a published timetable. A wrong
@@ -537,8 +539,10 @@ share card with headless Chrome. Neither runs at deploy time — see
 
 ## Open questions still owned by you
 
-- **Webcam access** *(blocking)* — confirm frame URL stability and acceptable use.
-  `ferrycast doctor` verifies the URL you supply.
+- **Webcam access** — the address is known (`ccimg.bcferries.com/.../cam1_<CODE>.jpg`), so
+  this is no longer blocking. What is still yours: confirming it stays a fixed URL rather
+  than acquiring an expiring token, and that low-rate archival is acceptable use.
+  `ferrycast doctor` verifies each URL actually returns an image.
 - **Night sailings** — currently flagged `unknown` rather than guessed. Once you have real
   night frames, check whether they are usable at all; if not, those sailings will rely on
   deck-space data alone.
