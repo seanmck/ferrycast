@@ -1,0 +1,44 @@
+# Sailing timetable for the Saltery Bay – Earls Cove route.
+#
+# ⚠️  THESE TIMES ARE PLACEHOLDERS. They are plausible for a ~2-hour-headway route but they
+#     are NOT copied from a published timetable. Check every one against the current
+#     BC Ferries schedule for Route 7 before trusting an aggregate, because a wrong
+#     departure time silently mis-windows every observation around it.
+#
+# Copy to config/schedule.toml and correct it:
+#   cp config/schedule.example.toml config/schedule.toml
+#
+# The schedule is seasonal, so it is expressed as dated blocks. Add a new block whenever
+# BC Ferries changes the timetable; blocks may overlap in date as long as they cover
+# different days of the week.
+#
+# Fields:
+#   terminal       terminal code the sailing departs FROM
+#   effective_from / effective_to   inclusive date range this block applies to
+#   days           "all", or a list from mon tue wed thu fri sat sun
+#   departures     local wall-clock HH:MM times
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-01-01
+effective_to   = 2026-12-31
+days           = "all"
+departures     = ["06:30", "08:30", "10:30", "12:30", "14:30", "16:30", "18:30", "20:30"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-01-01
+effective_to   = 2026-12-31
+days           = "all"
+departures     = ["05:35", "07:30", "09:30", "11:30", "13:30", "15:25", "17:30", "19:30", "21:20"]
+
+# Example of a summer-only extra sailing. Uncomment and correct once you have the
+# published peak-season timetable; a later block wins nothing automatically — every block
+# that covers a date contributes its departures, de-duplicated by time.
+#
+# [[block]]
+# terminal       = "SLT"
+# effective_from = 2026-06-25
+# effective_to   = 2026-09-08
+# days           = ["fri", "sat", "sun"]
+# departures     = ["22:15"]

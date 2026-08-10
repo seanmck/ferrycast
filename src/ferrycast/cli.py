@@ -1,0 +1,558 @@
+"""FerryCast command line.
+
+Designed for cron: every command is non-interactive, exits non-zero on real failure, and
+prints a single-line summary suitable for a log.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+from . import __version__
+from .config import Config, ConfigError, load_config
+from .db import connect, init_db
+
+
+def _config(args) -> Config:
+    return load_config(args.config)
+
+
+def _open(config: Config, create: bool = False):
+    return connect(config.db_path, create=create)
+
+
+def _parse_day(value: str) -> date:
+    if value == "today":
+        return date.today()
+    if value == "yesterday":
+        return date.today() - timedelta(days=1)
+    return date.fromisoformat(value)
+
+
+# --------------------------------------------------------------------------- commands
+
+
+def cmd_init(args) -> int:
+    config = _config(args)
+    init_db(config.db_path)
+    config.frames_dir.mkdir(parents=True, exist_ok=True)
+    print(f"initialised {config.db_path}")
+    print(f"frames will be stored under {config.frames_dir}")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    from .deckspace import parse_deck_space
+    from .fetching import fetch
+
+    problems: list[str] = []
+    try:
+        config = _config(args)
+    except ConfigError as exc:
+        print(f"FAIL  config: {exc}")
+        return 1
+    print(f"ok    config: {config.source_path}")
+
+    try:
+        from .schedule import load_schedule
+
+        blocks = load_schedule(config.schedule_path)
+        departures = sum(len(b.departures) for b in blocks)
+        print(f"ok    schedule: {len(blocks)} block(s), {departures} departure times")
+    except ConfigError as exc:
+        problems.append(f"schedule: {exc}")
+        print(f"FAIL  schedule: {exc}")
+
+    if config.db_path.exists():
+        print(f"ok    database: {config.db_path}")
+    else:
+        problems.append("database missing — run `ferrycast init`")
+        print(f"FAIL  database: not found at {config.db_path}")
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        print("ok    ANTHROPIC_API_KEY is set")
+    else:
+        print("warn  ANTHROPIC_API_KEY not set — extraction will fail (capture is unaffected)")
+
+    for terminal in config.route.terminals:
+        if not terminal.webcam_url:
+            problems.append(f"{terminal.code}: no webcam_url configured")
+            print(f"FAIL  {terminal.code} webcam: not configured")
+        elif args.offline:
+            print(f"skip  {terminal.code} webcam: {terminal.webcam_url}")
+        else:
+            result = fetch(
+                terminal.webcam_url,
+                user_agent=config.capture.user_agent,
+                timeout=config.capture.timeout_seconds,
+                max_retries=0,
+            )
+            if not result.ok:
+                problems.append(f"{terminal.code} webcam unreachable: {result.error}")
+                print(f"FAIL  {terminal.code} webcam: {result.error}")
+            else:
+                from .capture import sniff_extension
+
+                ext = sniff_extension(result.content or b"")
+                if ext:
+                    print(
+                        f"ok    {terminal.code} webcam: {ext}, "
+                        f"{len(result.content or b'') // 1024} KiB"
+                    )
+                else:
+                    problems.append(
+                        f"{terminal.code} webcam URL returns "
+                        f"{result.content_type or 'unknown content'}, not an image"
+                    )
+                    print(f"FAIL  {terminal.code} webcam: not an image ({result.content_type})")
+
+        if not terminal.deck_space_url:
+            print(f"warn  {terminal.code} deck space: not configured")
+        elif args.offline:
+            print(f"skip  {terminal.code} deck space: {terminal.deck_space_url}")
+        else:
+            result = fetch(
+                terminal.deck_space_url,
+                user_agent=config.capture.user_agent,
+                timeout=config.capture.timeout_seconds,
+                max_retries=0,
+            )
+            if not result.ok or not result.text:
+                print(f"warn  {terminal.code} deck space: {result.error or 'no text'}")
+            else:
+                rows = parse_deck_space(result.text)
+                if rows:
+                    print(f"ok    {terminal.code} deck space: parsed {len(rows)} sailing row(s)")
+                else:
+                    print(f"warn  {terminal.code} deck space: page fetched but nothing parsed")
+
+    if problems:
+        print(f"\n{len(problems)} problem(s) need attention:")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+    print("\nall checks passed")
+    return 0
+
+
+def cmd_capture(args) -> int:
+    from .capture import capture_once
+
+    config = _config(args)
+    conn = _open(config, create=True)
+    outcomes = capture_once(conn, config)
+    for outcome in outcomes:
+        if outcome.ok:
+            print(f"ok    {outcome.terminal}: {outcome.path}")
+        elif outcome.skipped:
+            print(f"skip  {outcome.terminal}: {outcome.error}")
+        else:
+            print(f"fail  {outcome.terminal}: {outcome.error}")
+    attempted = [o for o in outcomes if not o.skipped]
+    # A partial failure is still a working pipeline; only a total loss is an error exit.
+    return 0 if any(o.ok for o in attempted) or not attempted else 1
+
+
+def cmd_scrape(args) -> int:
+    from .deckspace import scrape_once
+
+    config = _config(args)
+    conn = _open(config, create=True)
+    results = scrape_once(conn, config)
+    for result in results:
+        if result.get("skipped"):
+            print(f"skip  {result['terminal']}: no deck_space_url configured")
+        elif result["ok"]:
+            print(f"ok    {result['terminal']}: {result['rows']} row(s)")
+        else:
+            print(f"fail  {result['terminal']}: {result.get('error')}")
+    attempted = [r for r in results if not r.get("skipped")]
+    return 0 if any(r["ok"] for r in attempted) or not attempted else 1
+
+
+def cmd_extract(args) -> int:
+    from .timeutil import iso, now_utc
+    from .vision import extract_pending
+
+    config = _config(args)
+    conn = _open(config)
+    since = None
+    if args.since:
+        from datetime import datetime
+        from datetime import time as time_cls
+
+        since = iso(
+            datetime.combine(_parse_day(args.since), time_cls.min, tzinfo=config.tz)
+        )
+    elif args.days:
+        since = iso(now_utc() - timedelta(days=args.days))
+
+    stats = extract_pending(
+        conn,
+        config,
+        limit=args.limit,
+        since=since,
+        terminal=args.terminal,
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        print(f"{stats.considered} frame(s) awaiting extraction (dry run, nothing sent)")
+        return 0
+    print(
+        f"extracted {stats.extracted}, dark-skipped {stats.skipped_dark}, "
+        f"flagged unusable {stats.flagged_unusable}, failed {stats.failed} "
+        f"— ${stats.cost_usd:.4f} this run"
+    )
+    for error in stats.errors[:10]:
+        print(f"  ! {error}")
+    if len(stats.errors) > 10:
+        print(f"  ! ... and {len(stats.errors) - 10} more")
+    return 1 if stats.failed and not stats.extracted else 0
+
+
+def cmd_aggregate(args) -> int:
+    from .aggregate import aggregate_range, observed_date_range
+
+    config = _config(args)
+    conn = _open(config)
+
+    if args.all:
+        observed = observed_date_range(conn, config)
+        if not observed:
+            print("no frames captured yet; nothing to aggregate")
+            return 0
+        start, end = observed
+    elif args.start or args.end:
+        start = _parse_day(args.start) if args.start else _parse_day(args.end)
+        end = _parse_day(args.end) if args.end else start
+    else:
+        target = _parse_day(args.date or "today")
+        start = end = target
+
+    counts = aggregate_range(conn, config, start, end)
+    total = sum(counts.values())
+    print(f"{start} to {end}: {total} sailing(s)")
+    for outcome, count in counts.items():
+        print(f"  {outcome:<13} {count}")
+    return 0
+
+
+def cmd_query(args) -> int:
+    from .query import OUTCOME_LABELS, query_distribution, sailing_times, upcoming_sailings
+
+    config = _config(args)
+    conn = _open(config)
+
+    if args.origin:
+        origin = args.origin
+        target = _parse_day(args.date or "today")
+        times = sailing_times(config, origin, target)
+        chosen = args.time or (times[0] if times else None)
+    else:
+        upcoming = upcoming_sailings(config, limit=1)
+        if not upcoming:
+            print("no upcoming sailings in the schedule")
+            return 1
+        nxt = upcoming[0]
+        origin, target, chosen = nxt.origin, nxt.service_date, nxt.depart_hhmm
+
+    if not chosen:
+        print("no sailings scheduled for that terminal and date")
+        return 1
+
+    result = query_distribution(
+        conn, config, origin=origin, target_date=target, depart_hhmm=chosen
+    )
+    terminal = config.route.terminal(origin)
+    print(f"{terminal.name} -> {config.route.terminal(terminal.destination).name}")
+    print(f"{target} at {chosen} ({result.day_type}, {result.season})")
+    print(f"n = {result.n} comparable sailing(s), match: {result.match_level}")
+    for relaxation in result.relaxations:
+        print(f"  note: {relaxation}")
+    if result.n:
+        for outcome, count in result.counts.items():
+            share = result.shares[outcome]
+            bar = "#" * round(share * 30)
+            print(f"  {OUTCOME_LABELS[outcome]:<20} {count:>3}  {share:>5.0%} {bar}")
+        if args.verbose:
+            print("  dates:")
+            for sample in result.samples:
+                print(
+                    f"    {sample.service_date} {sample.depart_hhmm} {sample.outcome}"
+                    f" peak={sample.peak_queue} carryover={sample.carryover}"
+                )
+    else:
+        print("  no comparable history recorded yet")
+    return 0
+
+
+def cmd_next(args) -> int:
+    from .query import upcoming_sailings
+
+    config = _config(args)
+    for sailing in upcoming_sailings(config, origin=args.origin, limit=args.limit):
+        print(
+            f"{sailing.scheduled_departure:%Y-%m-%d %H:%M}  {sailing.origin} -> "
+            f"{sailing.destination}  ({sailing.day_type}, {sailing.season})"
+        )
+    return 0
+
+
+def cmd_export(args) -> int:
+    from .export import export
+
+    config = _config(args)
+    conn = _open(config)
+    body = export(conn, args.dataset, args.format, since=args.since, until=args.until)
+    if args.out:
+        Path(args.out).write_text(body, encoding="utf-8")
+        print(f"wrote {args.out}")
+    else:
+        sys.stdout.write(body)
+    return 0
+
+
+def cmd_health(args) -> int:
+    from .maintenance import format_health, health_report
+
+    config = _config(args)
+    conn = _open(config)
+    report = health_report(conn, config, window_days=args.window)
+    print(format_health(report))
+    return 1 if (args.strict and not report.healthy) else 0
+
+
+def cmd_prune(args) -> int:
+    from .maintenance import prune_frames
+
+    config = _config(args)
+    conn = _open(config)
+    result = prune_frames(conn, config, dry_run=args.dry_run)
+    prefix = "would remove" if args.dry_run else "removed"
+    print(
+        f"{prefix} {result.deleted} expired frame file(s) and thinned "
+        f"{result.downsampled}, freeing {result.bytes_freed / 1e6:.1f} MB"
+    )
+    return 0
+
+
+def cmd_tag(args) -> int:
+    from .maintenance import add_tag, list_tags
+
+    config = _config(args)
+    conn = _open(config)
+    if args.tag_command == "add":
+        created = add_tag(conn, _parse_day(args.date), args.tag, args.note)
+        print("added" if created else "already present")
+    else:
+        rows = list_tags(conn, _parse_day(args.date) if args.date else None)
+        for row in rows:
+            print(f"{row['service_date']}  {row['tag']}  {row['note'] or ''}".rstrip())
+        if not rows:
+            print("no tags recorded")
+    return 0
+
+
+def cmd_import_records(args) -> int:
+    """Seed history from a hand-built CSV (known overload days, spreadsheet exports)."""
+    import csv
+
+    from .aggregate import SailingRecord, store_record, upsert_sailings
+    from .schedule import Sailing, day_type, season
+    from .timeutil import combine_local, parse_hhmm
+
+    config = _config(args)
+    conn = _open(config)
+    destinations = {t.code: t.destination for t in config.route.terminals}
+
+    imported = 0
+    with open(args.path, newline="", encoding="utf-8") as fh:
+        for line_no, row in enumerate(csv.DictReader(fh), start=2):
+            try:
+                service_date = date.fromisoformat(row["service_date"].strip())
+                origin = row["origin"].strip()
+                hhmm = row["depart_hhmm"].strip()
+                outcome = row["outcome"].strip()
+            except (KeyError, ValueError) as exc:
+                print(f"line {line_no}: skipped ({exc})")
+                continue
+            if origin not in destinations:
+                print(f"line {line_no}: skipped (unknown terminal {origin!r})")
+                continue
+            if outcome not in ("boarded", "waited_1", "waited_2plus", "cancelled"):
+                print(f"line {line_no}: skipped (unknown outcome {outcome!r})")
+                continue
+
+            departure = combine_local(service_date, parse_hhmm(hhmm), config.tz)
+            upsert_sailings(
+                conn,
+                [
+                    Sailing(
+                        route=config.route.id,
+                        origin=origin,
+                        destination=destinations[origin],
+                        service_date=service_date,
+                        scheduled_departure=departure,
+                        depart_hhmm=hhmm,
+                        day_type=day_type(service_date),
+                        season=season(service_date),
+                    )
+                ],
+            )
+            sailing_id = conn.execute(
+                "SELECT id FROM sailings WHERE origin = ? AND scheduled_departure = ?",
+                (origin, departure.isoformat()),
+            ).fetchone()["id"]
+            carryover = row.get("carryover")
+            store_record(
+                conn,
+                SailingRecord(
+                    sailing_id=sailing_id,
+                    peak_queue=int(row["peak_queue"]) if row.get("peak_queue") else None,
+                    queue_at_departure=None,
+                    residual_queue=None,
+                    carryover=int(carryover) if carryover else None,
+                    overload=outcome in ("waited_1", "waited_2plus"),
+                    cancelled=outcome == "cancelled",
+                    outcome=outcome,
+                    n_frames=0,
+                    confidence=None,
+                    queue_truncated=False,
+                    deck_space_min=None,
+                    method=f"import:{row.get('source', 'manual')}",
+                ),
+            )
+            imported += 1
+    print(f"imported {imported} record(s) from {args.path}")
+    return 0
+
+
+def cmd_serve(args) -> int:
+    import uvicorn
+
+    if args.config:
+        os.environ["FERRYCAST_CONFIG"] = str(args.config)
+    _config(args)  # fail fast on a bad config rather than inside the worker
+    uvicorn.run(
+        "ferrycast.web.app:get_app",
+        factory=True,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level="info",
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ferrycast", description="Historical ferry wait tracker."
+    )
+    parser.add_argument("--version", action="version", version=f"ferrycast {__version__}")
+    parser.add_argument("-c", "--config", help="path to ferrycast.toml")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("init", help="create the database and data directories").set_defaults(
+        func=cmd_init
+    )
+
+    doctor = sub.add_parser("doctor", help="check configuration and remote sources")
+    doctor.add_argument("--offline", action="store_true", help="skip network checks")
+    doctor.set_defaults(func=cmd_doctor)
+
+    sub.add_parser("capture", help="capture one frame per terminal (R1)").set_defaults(
+        func=cmd_capture
+    )
+    sub.add_parser("scrape", help="scrape current deck space (R2)").set_defaults(func=cmd_scrape)
+
+    extract = sub.add_parser("extract", help="run vision extraction over stored frames (R3)")
+    extract.add_argument("--limit", type=int, help="maximum frames this run")
+    extract.add_argument("--since", help="only frames on or after this date")
+    extract.add_argument("--days", type=int, help="only frames from the last N days")
+    extract.add_argument("--terminal", help="restrict to one terminal code")
+    extract.add_argument("--dry-run", action="store_true", help="report the backlog only")
+    extract.set_defaults(func=cmd_extract)
+
+    aggregate = sub.add_parser("aggregate", help="roll frames up into sailing records (R4)")
+    aggregate.add_argument("--date", help="a single service date (default: today)")
+    aggregate.add_argument("--start", help="start of a date range")
+    aggregate.add_argument("--end", help="end of a date range")
+    aggregate.add_argument("--all", action="store_true", help="every day with captured frames")
+    aggregate.set_defaults(func=cmd_aggregate)
+
+    query = sub.add_parser("query", help="the day-like-today distribution (R5)")
+    query.add_argument("--origin", help="terminal code to depart from")
+    query.add_argument("--date", help="target date (default: today)")
+    query.add_argument("--time", help="sailing time HH:MM")
+    query.add_argument("-v", "--verbose", action="store_true", help="list the sample dates")
+    query.set_defaults(func=cmd_query)
+
+    nxt = sub.add_parser("next", help="list upcoming scheduled sailings")
+    nxt.add_argument("--origin")
+    nxt.add_argument("--limit", type=int, default=6)
+    nxt.set_defaults(func=cmd_next)
+
+    exporter = sub.add_parser("export", help="export raw observations")
+    exporter.add_argument("dataset", choices=["frames", "sailings", "deck_space"])
+    exporter.add_argument("--format", choices=["csv", "json"], default="csv")
+    exporter.add_argument("--since")
+    exporter.add_argument("--until")
+    exporter.add_argument("--out", help="write to this file instead of stdout")
+    exporter.set_defaults(func=cmd_export)
+
+    health = sub.add_parser("health", help="capture uptime and coverage report")
+    health.add_argument("--window", type=int, default=7, help="days to look back")
+    health.add_argument("--strict", action="store_true", help="exit non-zero if unhealthy")
+    health.set_defaults(func=cmd_health)
+
+    prune = sub.add_parser("prune", help="apply the frame retention policy")
+    prune.add_argument("--dry-run", action="store_true")
+    prune.set_defaults(func=cmd_prune)
+
+    tag = sub.add_parser("tag", help="manual event tags (festivals, closures)")
+    tag_sub = tag.add_subparsers(dest="tag_command", required=True)
+    tag_add = tag_sub.add_parser("add")
+    tag_add.add_argument("date")
+    tag_add.add_argument("tag")
+    tag_add.add_argument("--note")
+    tag_list = tag_sub.add_parser("list")
+    tag_list.add_argument("--date")
+    tag.set_defaults(func=cmd_tag)
+
+    importer = sub.add_parser("import-records", help="seed history from a CSV of known sailings")
+    importer.add_argument("path")
+    importer.set_defaults(func=cmd_import_records)
+
+    serve = sub.add_parser("serve", help="run the web UI")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--reload", action="store_true")
+    serve.set_defaults(func=cmd_serve)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

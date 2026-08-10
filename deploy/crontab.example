@@ -1,0 +1,29 @@
+# FerryCast crontab — the recommended deployment.
+#
+#   crontab -e   and paste, adjusting paths.
+#
+# Phase 1 of the PRD is just the capture line: ship that first and data accrues while
+# everything else is built.
+
+FERRYCAST_CONFIG=/srv/ferrycast/config/ferrycast.toml
+ANTHROPIC_API_KEY=sk-ant-...
+PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# R1 + R2 — capture a frame from each camera and scrape deck space, every 15 minutes.
+# Keep this at 15 minutes or slower: be a polite scraper.
+*/15 * * * *  ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
+
+# R3 — extract hourly in bounded batches. The monthly budget in the config is the backstop.
+7 * * * *     ferrycast extract --limit 60 >> /var/log/ferrycast/extract.log 2>&1
+
+# R4 — aggregate yesterday once the day is complete and extraction has caught up.
+23 3 * * *    ferrycast aggregate --date yesterday >> /var/log/ferrycast/aggregate.log 2>&1
+
+# Retention plus the weekly digest. `health --strict` exits non-zero when something is
+# wrong, so cron's MAILTO only reaches you when there is a problem to read about.
+41 4 * * 0    ferrycast prune >> /var/log/ferrycast/prune.log 2>&1
+47 4 * * 0    ferrycast health --window 7 --strict
+
+# After changing the prompt (bump `prompt_version` in the config), re-extract the backlog
+# by hand rather than on a schedule:
+#   ferrycast extract --limit 500 && ferrycast aggregate --all

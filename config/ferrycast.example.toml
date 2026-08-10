@@ -1,0 +1,72 @@
+# FerryCast configuration.
+#
+# Copy to config/ferrycast.toml and fill in the two webcam URLs before running `capture`.
+#   cp config/ferrycast.example.toml config/ferrycast.toml
+#
+# ⚠️  webcam_url is the PRD's one blocking open question. Nothing here is a verified
+#     frame URL — confirm the address of each camera image, check that it is fetchable
+#     at a fixed URL rather than embedded in a player, and satisfy yourself that
+#     low-rate archival is acceptable use. `ferrycast doctor` will tell you whether the
+#     URL you entered actually returns an image.
+
+[app]
+timezone       = "America/Vancouver"
+data_dir       = "../data"          # relative to this file
+db_name        = "ferrycast.db"
+frames_dirname = "frames"
+schedule_path  = "schedule.toml"    # relative to this file
+
+[route]
+id   = "route7"
+name = "Saltery Bay – Earls Cove"
+
+  [[route.terminals]]
+  code           = "SLT"
+  name           = "Saltery Bay"
+  destination    = "ERL"
+  webcam_url     = ""   # ⚠️ REQUIRED — see the note above
+  deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
+
+  [[route.terminals]]
+  code           = "ERL"
+  name           = "Earls Cove"
+  destination    = "SLT"
+  webcam_url     = ""   # ⚠️ REQUIRED — see the note above
+  deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
+
+[capture]
+interval_minutes = 15      # keep at 15 or higher: be a polite scraper
+timeout_seconds  = 20.0
+max_retries      = 2
+# Identify yourself honestly, and leave a way to be contacted.
+user_agent = "ferrycast/0.1 (personal ferry-wait archive; contact: you@example.com)"
+
+[vision]
+model               = "claude-haiku-4-5"
+prompt_version      = "v1"    # bump to re-extract the backlog with an improved prompt
+max_frames_per_run  = 200
+max_image_width     = 896     # image tokens scale with area — this is the main cost lever
+monthly_budget_usd  = 5.0     # extraction stops when the month's spend reaches this
+input_usd_per_mtok  = 1.0     # Claude Haiku 4.5 list price, for cost accounting
+output_usd_per_mtok = 5.0
+min_confidence      = 0.35    # below this, the frame is flagged rather than trusted
+skip_dark_frames    = true    # night frames are marked unusable without spending a call
+dark_luma_threshold = 24.0
+
+[aggregate]
+vessel_capacity         = 125  # Island Sky, approx. vehicle equivalents — verify
+lookback_minutes        = 120  # how far before a departure to look for queue build-up
+departure_grace_minutes = 20   # "queue at departure" comes from this window before it
+settle_minutes          = 12   # wait this long after departure before reading the residual
+post_window_minutes     = 45
+residual_threshold      = 5    # a residual at or above this means vehicles were left behind
+
+[query]
+min_sample                     = 5   # below this, the search widens and says so
+time_tolerance_minutes         = 15
+relaxed_time_tolerance_minutes = 60
+
+[retention]
+keep_frames_days        = 400  # a full season plus margin, per R1
+downsample_after_days   = 120
+downsample_keep_per_hour = 1

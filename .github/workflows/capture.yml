@@ -1,0 +1,80 @@
+# Optional GitHub Actions capture — read this before relying on it.
+#
+# The PRD allows "VPS or GitHub Actions". Actions works, with two real caveats:
+#
+#   1. Scheduled workflows fire late under load — 15-minute cadence is best-effort, and
+#      missed runs are simply lost. Capture uptime will sit below the 95% target.
+#   2. Raw frames have nowhere durable to live. Committing them to git would add several
+#      GB a year, so this workflow extracts immediately and keeps frames only as a 90-day
+#      artifact. That means you lose the ability to re-extract the full backlog with an
+#      improved prompt (R3) once the artifacts expire.
+#
+# A small VPS with the cron in deploy/crontab.example avoids both. Use this to start
+# collecting today, and move the job when you can.
+#
+# Setup: add the ANTHROPIC_API_KEY secret, commit config/ferrycast.toml and
+# config/schedule.toml (they are gitignored by default), and enable Actions write
+# permissions so the workflow can push the database.
+
+name: Capture
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ferrycast-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Ensure the data branch exists
+        run: |
+          git rev-parse --verify HEAD >/dev/null 2>&1 || git checkout --orphan data
+          git config user.name "ferrycast-bot"
+          git config user.email "ferrycast-bot@users.noreply.github.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -e .
+
+      - name: Capture, scrape, extract, aggregate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FERRYCAST_CONFIG: ${{ github.workspace }}/config/ferrycast.toml
+        run: |
+          ferrycast init
+          ferrycast capture || echo "capture reported a problem (recorded as a gap)"
+          ferrycast scrape  || echo "scrape reported a problem (deck space degrades gracefully)"
+          ferrycast extract --limit 20
+          ferrycast aggregate --date today
+
+      - name: Keep the frames for as long as artifacts allow
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ github.run_id }}
+          path: data/frames
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Commit the database
+        env:
+          FERRYCAST_CONFIG: ${{ github.workspace }}/config/ferrycast.toml
+        run: |
+          git add -f data/ferrycast.db
+          git commit -m "capture $(date -u +%Y-%m-%dT%H:%MZ)" || exit 0
+          git push origin HEAD:data

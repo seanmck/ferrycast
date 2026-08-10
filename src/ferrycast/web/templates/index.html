@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>FerryCast — {{ route.name }}</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #14181d; --muted: #5b6672;
+    --line: #dfe3e8; --accent: #1f6f8b;
+    --boarded: #2e7d54; --waited1: #c98a1b; --waited2: #b4442f; --cancelled: #6b7280;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d; --card: #1c2229; --ink: #eef1f4; --muted: #9aa5b1;
+      --line: #2c343d; --accent: #63b6d4;
+      --boarded: #4caf7d; --waited1: #e0a94a; --waited2: #e0705a; --cancelled: #8b95a1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1rem 0.9rem 3rem; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 34rem; margin: 0 auto; }
+  h1 { font-size: 1.15rem; margin: 0 0 0.15rem; }
+  .sub { color: var(--muted); font-size: 0.85rem; margin: 0 0 1rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 0.9rem; margin-bottom: 0.9rem;
+  }
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+  form .wide { grid-column: 1 / -1; }
+  label { display: block; font-size: 0.75rem; text-transform: uppercase;
+          letter-spacing: 0.04em; color: var(--muted); margin-bottom: 0.25rem; }
+  select, input[type=date], button {
+    width: 100%; padding: 0.65rem; font-size: 1rem; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  }
+  button { background: var(--accent); color: #fff; border: none; font-weight: 600; }
+  .headline { font-size: 1.5rem; font-weight: 650; margin: 0 0 0.15rem; }
+  .bar { display: flex; height: 1.6rem; border-radius: 6px; overflow: hidden; margin: 0.7rem 0 0.5rem; }
+  .bar span { display: block; }
+  .seg-boarded { background: var(--boarded); }
+  .seg-waited_1 { background: var(--waited1); }
+  .seg-waited_2plus { background: var(--waited2); }
+  .seg-cancelled { background: var(--cancelled); }
+  ul.legend { list-style: none; padding: 0; margin: 0; }
+  ul.legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0; }
+  .dot { width: 0.7rem; height: 0.7rem; border-radius: 2px; flex: none; }
+  .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .note { font-size: 0.82rem; color: var(--muted); margin: 0.6rem 0 0; }
+  .warn { border-left: 3px solid var(--waited1); padding-left: 0.6rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.35rem 0.3rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  details { margin-top: 0.6rem; }
+  summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+  .curve { display: flex; align-items: flex-end; gap: 3px; height: 110px; margin-top: 0.7rem; }
+  .curve div { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; }
+  .curve-axis { display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>FerryCast</h1>
+  <p class="sub">{{ route.name }} — how comparable past sailings actually went.</p>
+
+  <div class="card">
+    <form method="get" action="/">
+      <div>
+        <label for="origin">Leaving from</label>
+        <select id="origin" name="origin" onchange="this.form.submit()">
+          {% for t in terminals %}
+            <option value="{{ t.code }}" {% if t.code == origin %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="service_date">Date</label>
+        <input type="date" id="service_date" name="service_date" value="{{ service_date }}"
+               onchange="this.form.submit()">
+      </div>
+      <div class="wide">
+        <label for="time">Sailing</label>
+        <select id="time" name="time" onchange="this.form.submit()">
+          {% for t in times %}
+            <option value="{{ t }}" {% if t == selected_time %}selected{% endif %}>{{ t }}</option>
+          {% else %}
+            <option value="">No sailings scheduled</option>
+          {% endfor %}
+        </select>
+      </div>
+      <noscript><div class="wide"><button type="submit">Show</button></div></noscript>
+    </form>
+  </div>
+
+  {% if distribution and distribution.n %}
+    {% set d = distribution %}
+    <div class="card">
+      {% set top = d.counts | dictsort(by='value') | last %}
+      <p class="headline">{{ labels[top[0]] }} — {{ (d.shares[top[0]] * 100) | round | int }}%</p>
+      <p class="sub">most likely outcome across {{ d.n }} comparable sailing{{ '' if d.n == 1 else 's' }}</p>
+
+      <div class="bar" role="img" aria-label="Outcome distribution">
+        {% for key, count in d.counts.items() if count %}
+          <span class="seg-{{ key }}" style="width: {{ (d.shares[key] * 100) }}%"
+                title="{{ labels[key] }}: {{ count }}"></span>
+        {% endfor %}
+      </div>
+
+      <ul class="legend">
+        {% for key, count in d.counts.items() %}
+          <li>
+            <span class="dot seg-{{ key }}"></span>{{ labels[key] }}
+            <span class="pct">{{ count }} &middot; {{ (d.shares[key] * 100) | round | int }}%</span>
+          </li>
+        {% endfor %}
+      </ul>
+
+      {% if not d.sufficient %}
+        <p class="note warn">Small sample ({{ d.n }}). Treat this as a hint, not a forecast.</p>
+      {% endif %}
+      {% if d.relaxations %}
+        <p class="note warn">
+          Not enough exact matches, so the search was {{ d.relaxations | join('; then ') }}.
+        </p>
+      {% endif %}
+      {% if d.tags %}<p class="note">Tags for this date: {{ d.tags | join(', ') }}</p>{% endif %}
+      {% if d.unknown_excluded %}
+        <p class="note">{{ d.unknown_excluded }} sailing(s) had no usable record and are excluded.</p>
+      {% endif %}
+
+      <details>
+        <summary>Show the {{ d.samples | length }} sailings behind this</summary>
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Peak queue</th><th>Left behind</th></tr>
+          </thead>
+          <tbody>
+            {% for s in d.samples %}
+              <tr>
+                <td>{{ s.service_date }}</td>
+                <td>{{ s.depart_hhmm }}</td>
+                <td>{{ labels[s.outcome] }}</td>
+                <td>{{ s.peak_queue if s.peak_queue is not none else '—' }}{% if s.queue_truncated %}+{% endif %}</td>
+                <td>{{ s.carryover if s.carryover is not none else '—' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="note">A “+” means the queue ran past the edge of the camera frame, so the real count was higher.</p>
+      </details>
+
+      <details id="curve-box">
+        <summary>When did the queue build?</summary>
+        <div id="curve-body"><p class="note">Loading…</p></div>
+      </details>
+    </div>
+  {% elif selected_time %}
+    <div class="card">
+      <p class="headline">No history yet</p>
+      <p class="sub">
+        No comparable sailings have been recorded for this slot. The dataset fills in as
+        capture and extraction run — check back after a few weeks of collection.
+      </p>
+    </div>
+  {% else %}
+    <div class="card">
+      <p class="headline">No sailings scheduled</p>
+      <p class="sub">The timetable has no departures from this terminal on this date.</p>
+    </div>
+  {% endif %}
+
+  <p class="note">
+    Deck space published by BC Ferries excludes vehicles still queued outside the terminal.
+    These outcomes are counted from terminal webcam frames, which include them.
+  </p>
+</main>
+
+<script>
+  // The arrival curve is the one thing fetched lazily: it is a "nice to know", and the
+  // headline answer must not wait on it.
+  const box = document.getElementById('curve-box');
+  if (box) {
+    box.addEventListener('toggle', async () => {
+      if (!box.open || box.dataset.loaded) return;
+      box.dataset.loaded = '1';
+      const body = document.getElementById('curve-body');
+      const params = new URLSearchParams({
+        origin: {{ origin | tojson }},
+        time: {{ selected_time | tojson }},
+        service_date: {{ service_date | tojson }}
+      });
+      try {
+        const res = await fetch('/api/arrival-curve?' + params);
+        const data = await res.json();
+        if (!data.points || !data.points.length) {
+          body.innerHTML = '<p class="note">Not enough frames yet to chart the build-up.</p>';
+          return;
+        }
+        const peak = Math.max(...data.points.map(p => p.p75)) || 1;
+        const bars = data.points.map(p =>
+          `<div style="height:${Math.max(2, (p.p75 / peak) * 100)}%" title="${p.minutes_before} min before: median ${p.median}, 75th pct ${p.p75}"></div>`
+        ).join('');
+        const first = data.points[0].minutes_before;
+        body.innerHTML =
+          `<div class="curve">${bars}</div>` +
+          `<div class="curve-axis"><span>${first} min before</span><span>departure</span></div>` +
+          `<p class="note">Typical queue length (75th percentile) across ${data.sailings} comparable sailings.</p>`;
+      } catch (err) {
+        body.innerHTML = '<p class="note">Could not load the arrival curve.</p>';
+      }
+    });
+  }
+</script>
+</body>
+</html>

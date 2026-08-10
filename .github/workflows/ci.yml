@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Test
+        run: pytest -q
+
+      - name: Verify the example config and schedule still load
+        run: |
+          mkdir -p /tmp/fc/config
+          sed 's|webcam_url     = ""|webcam_url     = "https://example.invalid/cam.jpg"|' \
+            config/ferrycast.example.toml > /tmp/fc/config/ferrycast.toml
+          cp config/schedule.example.toml /tmp/fc/config/schedule.toml
+          export FERRYCAST_CONFIG=/tmp/fc/config/ferrycast.toml
+          ferrycast init
+          ferrycast doctor --offline
+          ferrycast next --limit 3

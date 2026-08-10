@@ -1,0 +1,205 @@
+"""Configuration loading.
+
+Everything the PRD flags as an open question (webcam URLs, the timetable, deck-space page
+layout) is configuration rather than code, so it can be corrected without a release.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+DEFAULT_CONFIG_PATH = Path("config/ferrycast.toml")
+CONFIG_ENV_VAR = "FERRYCAST_CONFIG"
+
+
+class ConfigError(Exception):
+    """Raised when configuration is missing or internally inconsistent."""
+
+
+@dataclass(frozen=True)
+class Terminal:
+    code: str
+    name: str
+    destination: str
+    webcam_url: str = ""
+    deck_space_url: str = ""
+
+    @property
+    def configured_for_capture(self) -> bool:
+        return bool(self.webcam_url)
+
+
+@dataclass(frozen=True)
+class Route:
+    id: str
+    name: str
+    terminals: tuple[Terminal, ...]
+
+    def terminal(self, code: str) -> Terminal:
+        for t in self.terminals:
+            if t.code == code:
+                return t
+        raise ConfigError(f"unknown terminal {code!r} for route {self.id!r}")
+
+    @property
+    def codes(self) -> tuple[str, ...]:
+        return tuple(t.code for t in self.terminals)
+
+
+@dataclass(frozen=True)
+class CaptureConfig:
+    interval_minutes: int = 15
+    timeout_seconds: float = 20.0
+    max_retries: int = 2
+    user_agent: str = "ferrycast/0.1 (personal archival project; low rate)"
+
+
+@dataclass(frozen=True)
+class VisionConfig:
+    model: str = "claude-haiku-4-5"
+    prompt_version: str = "v1"
+    max_frames_per_run: int = 200
+    max_image_width: int = 896
+    monthly_budget_usd: float = 5.0
+    input_usd_per_mtok: float = 1.0
+    output_usd_per_mtok: float = 5.0
+    min_confidence: float = 0.35
+    skip_dark_frames: bool = True
+    dark_luma_threshold: float = 24.0
+
+
+@dataclass(frozen=True)
+class AggregateConfig:
+    vessel_capacity: int = 125
+    lookback_minutes: int = 120
+    departure_grace_minutes: int = 20
+    settle_minutes: int = 12
+    post_window_minutes: int = 45
+    residual_threshold: int = 5
+
+
+@dataclass(frozen=True)
+class QueryConfig:
+    min_sample: int = 5
+    time_tolerance_minutes: int = 15
+    relaxed_time_tolerance_minutes: int = 60
+
+
+@dataclass(frozen=True)
+class RetentionConfig:
+    keep_frames_days: int = 400
+    downsample_after_days: int = 120
+    downsample_keep_per_hour: int = 1
+
+
+@dataclass(frozen=True)
+class Config:
+    timezone_name: str
+    data_dir: Path
+    db_path: Path
+    frames_dir: Path
+    schedule_path: Path
+    route: Route
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
+    vision: VisionConfig = field(default_factory=VisionConfig)
+    aggregate: AggregateConfig = field(default_factory=AggregateConfig)
+    query: QueryConfig = field(default_factory=QueryConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
+    source_path: Path | None = None
+
+    @property
+    def tz(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone_name)
+
+
+def _dataclass_from(cls, raw: dict, section: str):
+    known = {f.name for f in cls.__dataclass_fields__.values()}
+    unknown = set(raw) - known
+    if unknown:
+        raise ConfigError(f"unknown key(s) in [{section}]: {', '.join(sorted(unknown))}")
+    return cls(**raw)
+
+
+def _parse_route(raw: dict) -> Route:
+    if not raw:
+        raise ConfigError("missing [route] section")
+    terminals_raw = raw.get("terminals") or []
+    if len(terminals_raw) != 2:
+        raise ConfigError("[route] must define exactly two terminals (one per direction)")
+    terminals = []
+    for entry in terminals_raw:
+        for required in ("code", "name", "destination"):
+            if not entry.get(required):
+                raise ConfigError(f"terminal entry missing {required!r}")
+        terminals.append(
+            Terminal(
+                code=entry["code"],
+                name=entry["name"],
+                destination=entry["destination"],
+                webcam_url=entry.get("webcam_url", ""),
+                deck_space_url=entry.get("deck_space_url", ""),
+            )
+        )
+    codes = {t.code for t in terminals}
+    for t in terminals:
+        if t.destination not in codes:
+            raise ConfigError(
+                f"terminal {t.code!r} points at destination {t.destination!r}, "
+                "which is not part of this route"
+            )
+        if t.destination == t.code:
+            raise ConfigError(f"terminal {t.code!r} cannot sail to itself")
+    return Route(
+        id=raw.get("id", "route"),
+        name=raw.get("name", raw.get("id", "route")),
+        terminals=tuple(terminals),
+    )
+
+
+def resolve_config_path(explicit: str | os.PathLike | None = None) -> Path:
+    if explicit:
+        return Path(explicit)
+    from_env = os.environ.get(CONFIG_ENV_VAR)
+    if from_env:
+        return Path(from_env)
+    return DEFAULT_CONFIG_PATH
+
+
+def load_config(path: str | os.PathLike | None = None) -> Config:
+    config_path = resolve_config_path(path)
+    if not config_path.exists():
+        raise ConfigError(
+            f"no config at {config_path}. Copy config/ferrycast.example.toml to "
+            f"{config_path} and fill in the webcam and deck-space URLs."
+        )
+    with config_path.open("rb") as fh:
+        raw = tomllib.load(fh)
+
+    app = raw.get("app", {})
+    base = config_path.parent
+    data_dir = Path(app.get("data_dir", "data"))
+    if not data_dir.is_absolute():
+        data_dir = (base / data_dir).resolve()
+
+    schedule_path = Path(app.get("schedule_path", "schedule.toml"))
+    if not schedule_path.is_absolute():
+        schedule_path = (base / schedule_path).resolve()
+
+    return Config(
+        timezone_name=app.get("timezone", "America/Vancouver"),
+        data_dir=data_dir,
+        db_path=data_dir / app.get("db_name", "ferrycast.db"),
+        frames_dir=data_dir / app.get("frames_dirname", "frames"),
+        schedule_path=schedule_path,
+        route=_parse_route(raw.get("route", {})),
+        capture=_dataclass_from(CaptureConfig, raw.get("capture", {}), "capture"),
+        vision=_dataclass_from(VisionConfig, raw.get("vision", {}), "vision"),
+        aggregate=_dataclass_from(AggregateConfig, raw.get("aggregate", {}), "aggregate"),
+        query=_dataclass_from(QueryConfig, raw.get("query", {}), "query"),
+        retention=_dataclass_from(RetentionConfig, raw.get("retention", {}), "retention"),
+        source_path=config_path,
+    )
