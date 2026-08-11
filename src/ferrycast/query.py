@@ -612,6 +612,7 @@ def comparable_report_bounds(
     tolerance = config.query.time_tolerance_minutes
     target_minutes = _hhmm_to_minutes(depart_hhmm)
     target_type = day_type(target_date)
+    target_long_weekend = is_long_weekend(target_date)
     departure = combine_local(target_date, parse_hhmm(depart_hhmm), config.tz)
 
     # Straight from the reports table rather than through `sailings`: a report is keyed by
@@ -630,6 +631,12 @@ def comparable_report_bounds(
     for row in rows:
         service_date = date.fromisoformat(row["service_date"])
         if day_type(service_date) != target_type:
+            continue
+        # Same rule the distribution above this panel uses. Without it "on days like this"
+        # would pool a long-weekend Friday with ordinary ones — and this is the panel where
+        # that matters most, because a single "I was turned away at 11:20" is stated as
+        # fact rather than averaged away.
+        if is_long_weekend(service_date) != target_long_weekend:
             continue
         if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) > tolerance:
             continue

@@ -186,3 +186,26 @@ def test_both_bounds_travel_together_with_their_sample(conn, config):
     assert result["n_sailings"] == 3
     assert result["n_reports"] == 3
     assert result["turned_away_sailings"] == 1
+
+
+def test_long_weekend_reports_do_not_bound_an_ordinary_day(conn, config):
+    """"On days like this" must use the same rule as the distribution above it.
+
+    A single turned-away report is stated as fact — "11:20 has been too late" — not
+    averaged into a share. Pooling a long-weekend Friday into an ordinary one would put a
+    scary, specific, wrong claim on the page.
+    """
+    from ferrycast.holidays import is_long_weekend
+    from ferrycast.query import comparable_report_bounds
+
+    from .test_query import PLAIN_FRIDAY
+
+    long_weekend_friday = date(2026, 7, 31)
+    assert is_long_weekend(long_weekend_friday) and not is_long_weekend(PLAIN_FRIDAY)
+
+    add_report(conn, config, long_weekend_friday, "12:30", joined="11:20", boarded=False)
+
+    bounds = comparable_report_bounds(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+    assert bounds is None or not bounds.get("turned_away_at")

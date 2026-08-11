@@ -50,7 +50,7 @@ def test_index_carries_the_bounds_from_the_line(client, conn, config):
         seed_record(conn, config, day, "12:30", "filled")
     add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:20", boarded=False)
 
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
 
     assert "On days like this" in response.text
     assert "11:20" in response.text
@@ -64,7 +64,7 @@ def test_the_index_never_turns_boarding_into_an_arrival_time(client, conn, confi
     add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:15", boarded=True)
     add_report(conn, config, date(2026, 7, 10), "12:30", joined="11:05", boarded=True)
 
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
 
     assert "everyone who did get on had" in response.text
     assert "11:15" in response.text
@@ -483,7 +483,7 @@ def test_the_page_never_claims_frames_for_a_deck_space_answer(client, conn, conf
         add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
         aggregate_day(conn, config, day)
 
-    body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
     assert "not how many vehicles were still queued" in body  # what this evidence is
     assert "counted from terminal webcam frames" not in body  # and what it is not
