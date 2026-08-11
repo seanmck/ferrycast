@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -152,12 +152,27 @@ def day_type(day: date) -> str:
     return "weekday"
 
 
+def summer_ends(year: int) -> date:
+    """The first day of school — the day peak summer travel stops.
+
+    Anchored to Labour Day rather than a fixed date. BC schools open the Tuesday after
+    Labour Day, so this tracks the real driver and stays correct in later years instead of
+    quietly drifting: a hardcoded "September 8" is right for 2026 and wrong for 2027.
+
+    Labour Day itself is the last big travel day of the summer, so it stays inside peak.
+    """
+    from .holidays import _nth_weekday
+
+    return _nth_weekday(year, 9, 0, 1) + timedelta(days=1)
+
+
 def season(day: date) -> str:
     """Peak summer is the stretch that actually overloads; the rest splits at the shoulders."""
     md = (day.month, day.day)
-    if (6, 25) <= md <= (9, 8):
+    school_starts = summer_ends(day.year)
+    if (6, 25) <= md and day < school_starts:
         return "peak_summer"
-    if (4, 1) <= md < (6, 25) or (9, 8) < md <= (10, 31):
+    if (4, 1) <= md < (6, 25) or (school_starts <= day and md <= (10, 31)):
         return "shoulder"
     return "winter"
 
