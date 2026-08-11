@@ -518,3 +518,16 @@ def test_a_date_less_request_answers_about_the_route_s_today(client, monkeypatch
 
     payload = client.get("/api/query?origin=SLT").json()
     assert payload["service_date"] == "2026-08-10"
+
+
+def test_the_page_itself_does_not_promise_tomorrow_two_days_out(client, monkeypatch):
+    """The whole path, as it reaches the phone: 20:20 on Monday, looking at Wednesday's
+    first sailing. The headline read "06:30 tomorrow" for a boat leaving the day after."""
+    monday_evening = datetime(2026, 8, 11, 3, 20, tzinfo=UTC)  # Mon 10 Aug, 20:20 PDT
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: monday_evening)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: monday_evening)
+
+    body = client.get("/?origin=SLT&service_date=2026-08-12&time=08:30").text
+
+    assert '<span class="in">in 2 days</span>' in body
+    assert "tomorrow" not in body
