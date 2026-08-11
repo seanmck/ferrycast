@@ -27,6 +27,10 @@ DAY_TYPE_GROUPS = {
 
 REPORTED_OUTCOMES = ("boarded", "filled", "waited_1", "waited_2plus", "cancelled")
 
+# One person turned away is an observed failure and stands on its own. One person getting
+# on is one person's luck, so the "everyone who got on" bound waits for a second report.
+MIN_BOARDED_REPORTS = 2
+
 OUTCOME_LABELS = {
     "boarded": "Space the whole time",
     "filled": "Filled up before departure",
@@ -541,6 +545,114 @@ def _percentile(sorted_values: list[int], fraction: float) -> float:
         return 0.0
     index = max(0, min(len(sorted_values) - 1, round(fraction * (len(sorted_values) - 1))))
     return float(sorted_values[index])
+
+
+def comparable_report_bounds(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    depart_hhmm: str,
+    cutline_minutes_before: int | None = None,
+    route_id: str | None = None,
+) -> dict | None:
+    """What people in the line proved about the cutoff, pooled over comparable sailings.
+
+    `describe_reports` states these same two bounds for one sailing, which means they are
+    blank on every future date — every date anybody actually plans against. Pooling them
+    the way the distribution pools outcomes puts them back on the page.
+
+    The two bounds are not mirror images, and only one of them is advice:
+
+    - Somebody who joined at 11:20 and did *not* get on proves that arriving that late has
+      failed on a day like this. That claim transfers, and it can only move the advice
+      earlier — the direction this app is allowed to be wrong in.
+    - Somebody who joined at 11:05 and *did* get on proves nothing transferable: whether it
+      worked depended on how many vehicles were ahead of them that day. It stays
+      descriptive, and is never allowed to say "you can arrive at 11:05".
+
+    Pooled in minutes-before-departure rather than by wall clock, because the tolerance
+    admits sailings at neighbouring times: 11:20 is 70 minutes early for a 12:30 and 25 for
+    an 11:45, and comparing those as clock strings would quietly mix them.
+
+    Day type must match exactly — no group fallback. The distribution widens because a thin
+    bucket of outcomes is still worth summarising; a bound is a claim about one traveller
+    on one day, and widening it only makes that day less like yours.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    tolerance = config.query.time_tolerance_minutes
+    target_minutes = _hhmm_to_minutes(depart_hhmm)
+    target_type = day_type(target_date)
+    departure = combine_local(target_date, parse_hhmm(depart_hhmm), config.tz)
+
+    # Straight from the reports table rather than through `sailings`: a report is keyed by
+    # its *scheduled* sailing, so this still sees days the aggregator has not materialised.
+    rows = conn.execute(
+        """SELECT service_date, depart_hhmm, joined_queue_at, boarded
+             FROM sailing_reports
+            WHERE route = ? AND origin = ? AND joined_queue_at IS NOT NULL
+              AND service_date != ?""",
+        (route.id, origin, target_date.isoformat()),
+    ).fetchall()
+
+    turned_away: list[tuple[int, str, str]] = []
+    boarded: list[int] = []
+    sailings: set[tuple[str, str]] = set()
+    for row in rows:
+        service_date = date.fromisoformat(row["service_date"])
+        if day_type(service_date) != target_type:
+            continue
+        if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) > tolerance:
+            continue
+        scheduled = combine_local(service_date, parse_hhmm(row["depart_hhmm"]), config.tz)
+        lead = int((scheduled - parse_iso(row["joined_queue_at"])).total_seconds() // 60)
+        # Joining at or after the scheduled departure happens when the vessel ran late. It
+        # is a real record, but it cannot answer "how early do I need to be".
+        if lead <= 0:
+            continue
+        sailings.add((row["service_date"], row["depart_hhmm"]))
+        if row["boarded"]:
+            boarded.append(lead)
+        else:
+            turned_away.append((lead, row["service_date"], row["depart_hhmm"]))
+
+    # The earliest anybody was turned away is the largest lead, and it is deliberately an
+    # extreme rather than a median: one person turned away is an observed failure, not a
+    # sample from a distribution. Its date travels with it so an outlying day can be seen
+    # for what it is instead of quietly setting the advice for every day like it.
+    strongest = max(turned_away, default=None)
+    turned_away_lead = strongest[0] if strongest else None
+
+    # Only worth printing when it is earlier than what deck space already said. A bound
+    # that merely agrees with the headline is a line of type carrying no information.
+    tightens = turned_away_lead is not None and (
+        cutline_minutes_before is None or turned_away_lead > cutline_minutes_before
+    )
+
+    # The latest anybody got on is the smallest lead. Two reports minimum: with one, a
+    # single lucky arrival would be published as "everyone who got on".
+    boarded_lead = min(boarded) if len(boarded) >= MIN_BOARDED_REPORTS else None
+
+    if not tightens and boarded_lead is None:
+        return None
+
+    def clock(lead: int | None) -> str | None:
+        return (departure - timedelta(minutes=lead)).strftime("%H:%M") if lead is not None else None
+
+    return {
+        "turned_away_at": clock(turned_away_lead) if tightens else None,
+        "turned_away_minutes_before": turned_away_lead if tightens else None,
+        "turned_away_date": strongest[1] if tightens else None,
+        "turned_away_date_label": (
+            date.fromisoformat(strongest[1]).strftime("%a %-d %b") if tightens else None
+        ),
+        "turned_away_sailings": len({(day, hhmm) for _, day, hhmm in turned_away}),
+        "boarded_by": clock(boarded_lead),
+        "boarded_by_minutes_before": boarded_lead,
+        "n_sailings": len(sailings),
+        "n_reports": len(turned_away) + len(boarded),
+    }
 
 
 def collection_status(

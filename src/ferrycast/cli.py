@@ -33,6 +33,27 @@ def _parse_day(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def _print_line_bounds(bounds: dict | None) -> None:
+    """The bounds people in the line established, pooled over comparable sailings.
+
+    Indented under the distribution like the deck-space line above it, but kept as its own
+    two sentences: one is a claim about what has already failed, the other is not advice at
+    all. Collapsing them into a single "arrive by" would lose that distinction.
+    """
+    if not bounds:
+        return
+    if bounds["turned_away_at"]:
+        print(
+            f"  someone who joined at {bounds['turned_away_at']} did not get on "
+            f"({bounds['turned_away_date']}), so that has been too late"
+        )
+    if bounds["boarded_by"]:
+        print(
+            f"  everyone who did get on had joined by {bounds['boarded_by']} "
+            f"(across {bounds['n_sailings']} sailing(s) with reports; not a target)"
+        )
+
+
 # --------------------------------------------------------------------------- commands
 
 
@@ -292,6 +313,7 @@ def cmd_check(args) -> int:
                 f"  typically ran out of room {history['typical_fill_minutes_before']} min "
                 f"before departure (about {history['typical_fill_local']})"
             )
+        _print_line_bounds(result.get("line_bounds"))
     elif history:
         print(f"\nno comparable history yet for the {sailing['depart_hhmm']}")
 
@@ -331,6 +353,7 @@ def cmd_aggregate(args) -> int:
 def cmd_query(args) -> int:
     from .query import (
         OUTCOME_LABELS,
+        comparable_report_bounds,
         default_sailing_time,
         query_distribution,
         sailing_times,
@@ -376,6 +399,16 @@ def cmd_query(args) -> int:
                 f"\n  typically ran out of room {result.typical_fill_minutes_before} min "
                 f"before departure (about {result.typical_fill_local})"
             )
+        _print_line_bounds(
+            comparable_report_bounds(
+                conn,
+                config,
+                origin=origin,
+                target_date=target,
+                depart_hhmm=chosen,
+                cutline_minutes_before=result.typical_fill_minutes_before,
+            )
+        )
         if result.evidence_note:
             print(f"  {result.evidence_note}")
         if args.verbose:

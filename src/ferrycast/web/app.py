@@ -31,6 +31,7 @@ from ..query import (
     OUTCOME_LABELS_SHORT,
     arrival_curve,
     collection_status,
+    comparable_report_bounds,
     default_sailing_time,
     query_distribution,
     sailing_times,
@@ -193,6 +194,23 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 depart_hhmm=chosen_time,
             ).to_dict()
 
+        # The same two bounds `describe_reports` gives for one sailing, pooled across the
+        # comparable ones so they survive onto a date nobody has reported on yet. Passed
+        # the deck-space cutline, which decides whether the turned-away bound has anything
+        # to add — see `comparable_report_bounds`.
+        line_bounds = None
+        if chosen_time:
+            line_bounds = comparable_report_bounds(
+                conn,
+                config,
+                origin=chosen_origin,
+                target_date=chosen_date,
+                depart_hhmm=chosen_time,
+                cutline_minutes_before=(
+                    distribution["typical_fill_minutes_before"] if distribution else None
+                ),
+            )
+
         kind = DAY_TYPE_SHORT.get(day_type(chosen_date), day_type(chosen_date))
         bucket = SEASON_SHORT.get(season(chosen_date), season(chosen_date))
 
@@ -256,6 +274,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     else None
                 ),
                 "preview": index_preview(request, config),
+                "line_bounds": line_bounds,
                 "reports": reports,
                 "webcam": webcam,
                 "has_departed": departed,

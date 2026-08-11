@@ -127,6 +127,31 @@
       <hr class="rule">
     {% endif %}
 
+    {# What people in the line proved, pooled over comparable sailings. Kept under its own
+       heading rather than folded into the qualifier above, because it is a different kind
+       of evidence and must not read as a footnote to the deck-space time. The heading says
+       "days like this" and not "from the line", which is what the panel further down calls
+       reports about *this* sailing — one page cannot have two of those. #}
+    {% if line_bounds %}
+      <p class="label">On days like this</p>
+      {% if line_bounds.turned_away_at %}
+        <p class="note flag">Someone joined the line at
+          <strong>{{ line_bounds.turned_away_at }}</strong> on a comparable sailing
+          ({{ line_bounds.turned_away_date_label }}) and did not get on, so on a day like this
+          {{ line_bounds.turned_away_at }} has been too late.{% if
+          line_bounds.turned_away_sailings > 1 %} {{ line_bounds.turned_away_sailings }} of the
+          {{ line_bounds.n_sailings }} comparable sailings with reports turned someone
+          away.{% endif %}</p>
+      {% endif %}
+      {% if line_bounds.boarded_by %}
+        <p class="note">Across {{ line_bounds.n_sailings }} comparable
+          sailing{{ '' if line_bounds.n_sailings == 1 else 's' }}, everyone who did get on had
+          joined by <strong>{{ line_bounds.boarded_by }}</strong> — not a target, since it
+          depended on how many were ahead of them.</p>
+      {% endif %}
+      <hr class="rule">
+    {% endif %}
+
     <ul class="legend">
       {% for key, count in d.counts.items() %}
         <li>
