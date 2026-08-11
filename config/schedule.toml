@@ -1,10 +1,11 @@
 # Sailing timetable for the Saltery Bay – Earls Cove route.
 #
-# ⚠️  THESE TIMES ARE STILL PLACEHOLDERS — AND THIS FILE IS WHAT GETS DEPLOYED.
-#     They are plausible for a ~2-hour-headway route but they are NOT copied from a
-#     published timetable. Check every one against the current BC Ferries schedule for
-#     Route 7. A wrong departure time silently mis-windows every observation around it:
-#     the collector runs happily and records the wrong thing. Correcting the times later
+# ⚠️  THIS FILE IS WHAT GETS DEPLOYED. The times below are copied from the published
+#     BC Ferries timetable for Route 7, but they cover the summer range only — the
+#     schedule goes empty on Oct 13 2026 (see the foot of this file). Re-check them
+#     whenever BC Ferries changes the timetable, and never add a time you have not
+#     confirmed: a wrong departure silently mis-windows every observation around it, the
+#     collector runs happily and records the wrong thing, and correcting the times later
 #     does not repair sailings already aggregated against them.
 #
 # The schedule is seasonal, so it is expressed as dated blocks. Add a new block whenever
@@ -20,11 +21,10 @@
 #                  covers more than one, set it on every block; blocks naming a different
 #                  route are ignored rather than mixed in.
 
-# Mon and Fri VERIFIED — from the published bcferries.com timetable, "Powell River
-# (Saltery Bay) to Sunshine Coast (Earls Cove)", effective May 14 – Oct 12 2026. Friday is
-# identical to Monday, checked departure by departure.
-#
-# Tue, Wed, Thu, Sat, Sun ASSUMED, not verified — see the note at the foot of this file.
+# VERIFIED — from the published bcferries.com timetable, "Powell River (Saltery Bay) to
+# Sunshine Coast (Earls Cove)", effective May 14 – Oct 12 2026. Mon and Fri were checked
+# departure by departure against that timetable and are identical; the maintainer confirms
+# the timetable is the same every day of the week, hence `days = "all"`.
 [[block]]
 terminal       = "SLT"
 effective_from = 2026-05-14
@@ -32,12 +32,11 @@ effective_to   = 2026-10-12
 days           = "all"
 departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
 
-# Mon and Fri VERIFIED — same source and date range, "Sunshine Coast (Earls Cove) to
-# Powell River (Saltery Bay)". Friday is identical to Monday, checked departure by
-# departure: this route adds no extra Friday sailings in this direction, which is the
-# opposite of what the peak-season assumption would have predicted. One block, not two.
-#
-# Tue, Wed, Thu, Sat, Sun ASSUMED, not verified — see the note at the foot of this file.
+# VERIFIED — same source and date range, "Sunshine Coast (Earls Cove) to Powell River
+# (Saltery Bay)", and likewise the same every day of the week. Friday is identical to
+# Monday, checked departure by departure: this route adds no extra Friday sailings in this
+# direction, which is the opposite of what the peak-season assumption would have
+# predicted. One block, not two — and, with a uniform week, not seven.
 [[block]]
 terminal       = "ERL"
 effective_from = 2026-05-14
@@ -51,27 +50,14 @@ departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05",
 # mistyped or omitted time would break the chain.
 
 # ────────────────────────────────────────────────────────────────────────────────────────
-# STILL UNVERIFIED — read this before trusting an aggregate.
+# STILL MISSING: the off-season timetable, Oct 13 2026 – May 13 2027. The blocks above
+# cover only the summer range, so the schedule goes empty on Oct 13 until it is added. Add
+# it as its own [[block]], matching the form above.
 #
-#   1. Tue, Wed, Thu, Sat, Sun, both directions, are now covered by `days = "all"` above.
-#      They were filled in on the assumption that the timetable is uniform all week, NOT
-#      by checking a published timetable. The supporting evidence is real but partial:
-#      Mon and Fri are confirmed identical in both directions, and Saturday's first
-#      sailing matches too (05:35 / 06:30). That is three days out of seven.
-#
-#      If the assumption is wrong, it is wrong in the way this file keeps warning about:
-#      the collector runs happily against a plausible time and silently mis-windows every
-#      observation around it, and correcting the times later does not repair sailings
-#      already aggregated. Weekend sailings — the least-evidenced here — are the ones a
-#      wait-time tool is most often asked about.
-#
-#      To settle it, check bcferries.com for Route 7, both directions, Tue/Wed/Thu/Sat/Sun
-#      in the May 14 – Oct 12 2026 range. If they match, delete this item. If they do not,
-#      narrow the blocks above back to their verified days and add a block per variant.
-#
-#   2. The off-season timetable, Oct 13 2026 – May 13 2027. The blocks above cover only
-#      the summer range, so the schedule goes empty on Oct 13 until it is added. Add it as
-#      its own [[block]], matching the form above.
+# Do not assume the off-season week is uniform just because the summer one is. Get the
+# published times. A departure time that is merely plausible mis-windows every observation
+# around it, silently: the collector runs happily and records the wrong thing, and
+# correcting the times later does not repair sailings already aggregated against them.
 #
 # Keep preferring wider `days` lists over duplicated blocks: same times in one place, not
 # seven copies to keep in sync.
