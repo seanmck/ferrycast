@@ -403,8 +403,10 @@
 </section>
 {% endif %}
 
-<p class="note">Deck space published by BC Ferries excludes vehicles still queued outside the
-  terminal. These outcomes are counted from terminal webcam frames, which include them.</p>
+{# No page-level note about where outcomes come from. It used to say they were counted from
+   webcam frames, which was true when frames were the only source; a deck-space answer now
+   sits directly above it saying the opposite. The evidence note under the distribution is
+   the one that knows which source this answer actually used. #}
 <p class="note"><a href="/health">Pipeline health</a></p>
 {% endblock %}
 
