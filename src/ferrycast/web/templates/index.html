@@ -376,7 +376,7 @@
         {# Only asked of someone who missed it. Without it a report can only ever say "did
            not get on", which is recorded as `filled` — so the distribution could never
            contain waited_1 or waited_2plus from the one source that actually knows. #}
-        <label class="field" id="waited-field">
+        <label class="field" id="waited-field" data-when-boarded="no">
           <span class="label">How long did you wait?</span>
           <select name="sailings_waited">
             <option value="" {% if not rf.get('sailings_waited') %}selected{% endif %}>Not sure</option>
@@ -403,7 +403,7 @@
           </label>
         </div>
 
-        <label class="field">
+        <label class="field" id="fullness-field" data-when-boarded="yes">
           <span class="label">How full was the deck?</span>
           <select name="deck_fullness">
             <option value="">Not sure</option>
@@ -483,6 +483,33 @@
 
 {% block script %}
 <script>
+  // Two of the report questions only apply to one answer: "how long did you wait" is for
+  // somebody who missed it, "how full was the deck" is for somebody who was on it. Asking
+  // both of everyone invites an answer to a question the person could not observe.
+  //
+  // Hidden fields are also disabled, so a value typed before switching the radio is not
+  // submitted for a question that is no longer on screen. With JS off both stay visible and
+  // nothing breaks — the server still refuses the one combination that contradicts itself.
+  (function () {
+    const conditional = document.querySelectorAll('[data-when-boarded]');
+    const radios = document.querySelectorAll('input[name="boarded"]');
+    if (!conditional.length || !radios.length) return;
+
+    function sync() {
+      const chosen = document.querySelector('input[name="boarded"]:checked');
+      conditional.forEach(field => {
+        // Before either radio is touched, show everything: hiding a question the person has
+        // not been asked yet would make the form look shorter than it is.
+        const applies = !chosen || field.dataset.whenBoarded === chosen.value;
+        field.hidden = !applies;
+        field.querySelectorAll('input, select').forEach(el => { el.disabled = !applies; });
+      });
+    }
+
+    radios.forEach(radio => radio.addEventListener('change', sync));
+    sync();
+  })();
+
   // The arrival curve is the one thing fetched lazily: it is a "nice to know", and the
   // headline answer must not wait on it.
   const box = document.getElementById('curve-box');
