@@ -157,14 +157,62 @@
       <hr class="rule">
     {% endif %}
 
+    {# Two questions, not one list of five alternatives. "Space the whole time" and
+       "Cancelled" describe the sailing; "Waited 1 sailing" describes a person — and a
+       person only waits because the vessel ran out of room, so waited_1 and waited_2plus
+       are refinements of `filled`, not siblings of it.
+
+       Flattened, the panel contradicted itself: "Filled up before departure 0%" printed
+       directly above "Waited 1 sailing 100%", which says the boat had room and somebody
+       waited anyway. Grouping puts the implication back. #}
+    {% set ran_out = d.counts.get('filled', 0) + d.counts.get('waited_1', 0)
+                     + d.counts.get('waited_2plus', 0) %}
+
+    <p class="label">The sailing</p>
     <ul class="legend">
-      {% for key, count in d.counts.items() %}
-        <li>
-          <span class="dot seg-{{ key }}"></span>{{ labels[key] }}
-          <span class="count">{{ count }} · {{ (d.shares[key] * 100) | round | int }}%</span>
-        </li>
-      {% endfor %}
+      <li>
+        <span class="dot seg-boarded"></span>Space the whole time
+        <span class="count">{{ d.counts.get('boarded', 0) }} ·
+          {{ (d.shares.get('boarded', 0) * 100) | round | int }}%</span>
+      </li>
+      <li>
+        <span class="dot seg-filled"></span>Ran out of room
+        <span class="count">{{ ran_out }} · {{ (d.filled_share * 100) | round | int }}%</span>
+      </li>
+      <li>
+        <span class="dot seg-cancelled"></span>Cancelled
+        <span class="count">{{ d.counts.get('cancelled', 0) }} ·
+          {{ (d.shares.get('cancelled', 0) * 100) | round | int }}%</span>
+      </li>
     </ul>
+
+    {# Only shown when something did run out — otherwise it is three zeroes answering a
+       question nobody asked. Counts rather than percentages: these are a breakdown of the
+       row above, and a second column of percentages summing to something else invites the
+       reader to add them to the first. #}
+    {% if ran_out %}
+      <p class="label">Of those, how long people waited</p>
+      <ul class="legend">
+        <li>
+          <span class="dot seg-waited_1"></span>Waited 1 sailing
+          <span class="count">{{ d.counts.get('waited_1', 0) }}</span>
+        </li>
+        <li>
+          <span class="dot seg-waited_2plus"></span>Waited 2+ sailings
+          <span class="count">{{ d.counts.get('waited_2plus', 0) }}</span>
+        </li>
+        {% if d.counts.get('filled', 0) %}
+          <li>
+            <span class="dot seg-filled"></span>Not known
+            <span class="count">{{ d.counts.get('filled', 0) }}</span>
+          </li>
+        {% endif %}
+      </ul>
+      {% if d.counts.get('filled', 0) %}
+        <p class="note">"Not known" means the vessel was seen to fill, but nobody has
+          reported how long they then waited.</p>
+      {% endif %}
+    {% endif %}
 
     {% if d.evidence_note %}<p class="note">{{ d.evidence_note }}</p>{% endif %}
     {% if not d.sufficient %}

@@ -606,3 +606,34 @@ def test_each_report_question_is_marked_for_the_answer_it_applies_to(client, con
     # No `hidden` attribute in the markup: before either radio is touched both apply, and a
     # form that renders half its questions is one somebody assumes they have finished.
     assert 'data-when-boarded="no" hidden' not in body
+
+
+def test_the_legend_does_not_mix_the_boat_with_the_people(client, conn, config):
+    """A person only waits because the vessel ran out of room, so waited_1 is a refinement
+    of `filled`, not an alternative to it. Flattened, the panel printed "Filled up before
+    departure 0%" directly above "Waited 1 sailing 100%" — the boat had room and somebody
+    waited anyway."""
+    seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "The sailing" in body
+    assert "Ran out of room" in body
+    assert "Of those, how long people waited" in body
+    # The old flat row, which is what said 0% while someone waited.
+    assert "Filled up before departure" not in body
+
+
+def test_the_wait_breakdown_is_hidden_when_nothing_ran_out(client, conn, config):
+    """Three zeroes answering a question nobody asked."""
+    for day in fridays(3):
+        seed_record(conn, config, day, "12:30", "boarded")
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    assert "Of those, how long people waited" not in body
+
+
+def test_an_unexplained_fill_is_labelled_not_known(client, conn, config):
+    """`filled` after the split means "ran out, and nobody said how long they waited"."""
+    seed_record(conn, config, date(2026, 7, 3), "12:30", "filled")
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    assert "Not known" in body
+    assert "nobody has\n          reported how long" in body or "reported how long" in body
