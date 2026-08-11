@@ -186,33 +186,26 @@
     <p class="label">No history yet</p>
     <p class="note">This slot is answered from <em>past</em> comparable sailings, and there are
       none yet. That is expected on a new install — the dataset needs a few weeks. Below is
-      what has been collected so far, so you can tell collection from breakage.</p>
+      what has been collected for this sailing so far, so you can tell a young dataset from
+      a broken one.</p>
   </section>
 
-  {# ---- Proof of life. Never a distribution: a handful of sailings is not an answer. ---- #}
+  {# ---- Proof of life. Never a distribution: a handful of sailings is not an answer.
+         Scoped to this slot: a list of every crossing on the route would be identical on
+         every page, and so evidence about none of them. ---- #}
   <section class="card">
-    <p class="label">Collecting</p>
-    {% if c and c.reading %}
-      <p class="note{% if not c.collecting %} flag{% endif %}">
-        Last reading {{ c.reading.minutes_ago }} min ago at {{ c.reading.observed_local }} —
-        {{ c.reading.terminal }}{% if c.reading.sailing_hhmm %}, the {{ c.reading.sailing_hhmm }}
-        sailing{% endif %}{% if c.reading.percent_available is not none %},
-        {{ c.reading.percent_available }}% space left{% endif %}.
-        {%- if not c.collecting %} That is older than expected — check
-        <a href="/health">pipeline health</a>.{% endif %}
-      </p>
-    {% else %}
-      <p class="note flag">No deck-space readings recorded yet. If this persists for more than
-        a scrape interval, check <a href="/health">pipeline health</a>.</p>
-    {% endif %}
-
+    <p class="label">Collected for the {{ selected_time }}</p>
     {% if c and c.recorded %}
-      <p class="note">{{ c.recorded }} sailing{{ '' if c.recorded == 1 else 's' }} recorded
-        since {{ c.since }}{% if c.unknown %}; {{ c.unknown }} had no usable record{% endif %}.</p>
+      <p class="note">{{ c.recorded }} equivalent sailing{{ '' if c.recorded == 1 else 's' }}
+        recorded since {{ c.since }}{% if c.unknown %}; {{ c.unknown }} had no usable
+        record{% endif %}.</p>
     {% elif c and c.unknown %}
-      <p class="note">{{ c.unknown }} sailing{{ '' if c.unknown == 1 else 's' }} seen so far, none
-        with a usable record yet — normal until a sailing runs its full course while the
-        collector is up.</p>
+      <p class="note">{{ c.unknown }} equivalent sailing{{ '' if c.unknown == 1 else 's' }} seen
+        so far, none with a usable record yet — normal until a sailing runs its full course
+        while the collector is up.</p>
+    {% else %}
+      <p class="note flag">Nothing recorded for this sailing yet. If the collector has been
+        running for more than a few days, check <a href="/health">pipeline health</a>.</p>
     {% endif %}
 
     {% if c and c.recent %}
@@ -220,14 +213,20 @@
       <p class="label">Most recent</p>
       <table>
         <thead>
-          <tr><th>Date</th><th>Time</th><th>From</th><th>Outcome</th></tr>
+          <tr><th>Date</th><th>Time</th><th>Left</th><th>Late</th><th>Outcome</th></tr>
         </thead>
         <tbody>
           {% for s in c.recent %}
             <tr>
               <td class="n">{{ s.service_date }}</td>
               <td class="n">{{ s.depart_hhmm }}</td>
-              <td class="n">{{ s.origin }}</td>
+              <td class="n">{{ s.departed_local or '—' }}</td>
+              <td class="n">
+                {%- if s.minutes_late is none %}—
+                {%- elif s.minutes_late > 0 %}+{{ s.minutes_late }}
+                {%- elif s.minutes_late < 0 %}−{{ -s.minutes_late }}
+                {%- else %}on time{% endif -%}
+              </td>
               <td class="outcome">
                 <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
               </td>
@@ -235,8 +234,11 @@
           {% endfor %}
         </tbody>
       </table>
-      <p class="note">These are individual sailings, not a forecast — too few, and not filtered
-        to days like this one.</p>
+      <p class="note">Sailings from this terminal within {{ c.tolerance_minutes }} min of
+        {{ c.depart_hhmm }}, on the same kind of day. “Left” is when the vessel actually went
+        and “Late” is that against the scheduled time, in minutes — only somebody in the line
+        can report a departure, so both are blank where nobody did. These are individual
+        sailings, not a forecast.</p>
     {% endif %}
   </section>
 {% else %}

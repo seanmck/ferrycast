@@ -547,96 +547,116 @@ def collection_status(
     conn: sqlite3.Connection,
     config: Config,
     *,
+    origin: str,
+    target_date: date,
+    depart_hhmm: str,
     limit: int = 6,
     route_id: str | None = None,
 ) -> dict:
-    """What the collector has actually gathered, newest first.
+    """What has been collected *for this slot* — equivalent sailings only, newest first.
 
-    The query page is answered from *past* comparable sailings, so on a new install it is
+    The query page is answered from past comparable sailings, so on a new install it is
     correctly blank for weeks — which looks exactly like a broken scraper. This is the
-    evidence that separates the two: the last reading, and the sailings recorded so far.
+    evidence that separates the two.
+
+    Scoped the same way the distribution is: same terminal, same day type, same departure
+    time within the tolerance. Anything wider is not evidence about the sailing on screen —
+    a list of last week's afternoon crossings is the same list on every page, which reads
+    as data about whichever sailing happens to be selected and is data about none of them.
+    Season is deliberately *not* required to match: this panel exists precisely when the
+    strict bucket is empty, and a same-slot sailing from the shoulder season is still the
+    honest answer to "has anything been recorded here at all".
 
     Deliberately not a distribution. A handful of sailings is proof of life, not an answer,
     and presenting them as one would undercut the whole point of the comparability rules.
     """
     route = config.route_by_id(route_id) if route_id else config.route
-    names = {t.code: t.name for t in route.terminals}
-    now = now_utc()
-
-    latest = conn.execute(
-        """SELECT terminal, observed_at, sailing_hhmm, percent_available, status_text
-             FROM deck_space
-            WHERE route = ? AND fetch_status = 'ok'
-            ORDER BY observed_at DESC
-            LIMIT 1""",
-        (route.id,),
-    ).fetchone()
-
-    reading = None
-    if latest is not None:
-        observed = parse_iso(latest["observed_at"])
-        reading = {
-            "terminal": names.get(latest["terminal"], latest["terminal"]),
-            "observed_local": local(observed, config.tz).strftime("%-I:%M %p"),
-            "minutes_ago": max(0, int((now - observed).total_seconds() // 60)),
-            "sailing_hhmm": latest["sailing_hhmm"],
-            "percent_available": latest["percent_available"],
-            "status_text": latest["status_text"],
-        }
-
-    # `unknown` is excluded from the list but counted: a sailing the collector was not
-    # running for is a real gap, and hiding it entirely would overstate coverage.
-    totals = conn.execute(
-        """SELECT COUNT(*) AS n,
-                  SUM(CASE WHEN r.outcome = 'unknown' THEN 1 ELSE 0 END) AS unknown,
-                  MIN(s.service_date) AS since
-             FROM sailing_records r
-             JOIN sailings s ON s.id = r.sailing_id
-            WHERE s.route = ?""",
-        (route.id,),
-    ).fetchone()
+    tolerance = config.query.time_tolerance_minutes
+    target_minutes = _hhmm_to_minutes(depart_hhmm)
 
     rows = conn.execute(
-        """SELECT s.service_date, s.depart_hhmm, s.origin, s.destination,
+        """SELECT s.service_date, s.depart_hhmm, s.scheduled_departure,
                   r.outcome, r.filled_at, r.method, r.peak_queue
              FROM sailing_records r
              JOIN sailings s ON s.id = r.sailing_id
-            WHERE s.route = ? AND r.outcome != 'unknown'
-            ORDER BY s.scheduled_departure DESC
-            LIMIT ?""",
-        (route.id, limit),
+            WHERE s.route = ? AND s.origin = ? AND s.day_type = ?
+            ORDER BY s.scheduled_departure DESC""",
+        (route.id, origin, day_type(target_date)),
     ).fetchall()
-
-    recent = [
-        {
-            "service_date": row["service_date"],
-            "depart_hhmm": row["depart_hhmm"],
-            "origin": row["origin"],
-            "destination": row["destination"],
-            "outcome": row["outcome"],
-            "label": OUTCOME_LABELS.get(row["outcome"], row["outcome"]),
-            "filled_at_local": (
-                local(parse_iso(row["filled_at"]), config.tz).strftime("%H:%M")
-                if row["filled_at"]
-                else None
-            ),
-            "evidence": _evidence_of({row["method"]}),
-            "peak_queue": row["peak_queue"],
-        }
+    equivalent = [
+        row
         for row in rows
+        if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= tolerance
     ]
 
-    recorded = (totals["n"] or 0) - (totals["unknown"] or 0)
+    # `unknown` is excluded from the list but counted: a sailing the collector was not
+    # running for is a real gap, and hiding it entirely would overstate coverage.
+    unknown = sum(1 for row in equivalent if row["outcome"] == "unknown")
+    listed = [row for row in equivalent if row["outcome"] != "unknown"][:limit]
+    departures = _reported_departures(conn, route.id, origin, listed)
+
+    recent = []
+    for row in listed:
+        actual = departures.get((row["service_date"], row["depart_hhmm"]))
+        scheduled = datetime.fromisoformat(row["scheduled_departure"])
+        recent.append(
+            {
+                "service_date": row["service_date"],
+                "depart_hhmm": row["depart_hhmm"],
+                "outcome": row["outcome"],
+                "label": OUTCOME_LABELS.get(row["outcome"], row["outcome"]),
+                # When the vessel actually left, where somebody in the line said so. The
+                # feed only ever reports the scheduled sailing, so this is the one place
+                # the real departure is known — and it is often not known at all.
+                "departed_local": (
+                    local(actual, config.tz).strftime("%H:%M") if actual else None
+                ),
+                "minutes_late": (
+                    int((actual - scheduled).total_seconds() // 60) if actual else None
+                ),
+                "filled_at_local": (
+                    local(parse_iso(row["filled_at"]), config.tz).strftime("%H:%M")
+                    if row["filled_at"]
+                    else None
+                ),
+                "evidence": _evidence_of({row["method"]}),
+                "peak_queue": row["peak_queue"],
+            }
+        )
+
     return {
-        "reading": reading,
         "recent": recent,
-        "recorded": recorded,
-        "unknown": totals["unknown"] or 0,
-        "since": totals["since"],
-        "collecting": reading is not None and reading["minutes_ago"] <= _stale_after(config),
+        "recorded": len(equivalent) - unknown,
+        "unknown": unknown,
+        "since": min((row["service_date"] for row in equivalent), default=None),
+        "depart_hhmm": depart_hhmm,
+        "tolerance_minutes": tolerance,
     }
 
 
-def _stale_after(config: Config) -> int:
-    """A reading is 'current' for two scrape intervals — one missed cycle is not an outage."""
-    return max(30, config.capture.interval_minutes * 2)
+def _reported_departures(
+    conn: sqlite3.Connection, route_id: str, origin: str, rows: list[sqlite3.Row]
+) -> dict[tuple[str, str], datetime]:
+    """When each of these sailings actually left, from the people who watched it go.
+
+    Median rather than earliest: two travellers rarely agree to the minute, and one of them
+    glancing at the clock as the ramp came up should not become the record.
+    """
+    if not rows:
+        return {}
+    placeholders = ",".join("?" for _ in rows)
+    reported = conn.execute(
+        f"""SELECT service_date, depart_hhmm, departed_at
+              FROM sailing_reports
+             WHERE route = ? AND origin = ? AND departed_at IS NOT NULL
+               AND service_date IN ({placeholders})""",
+        (route_id, origin, *(row["service_date"] for row in rows)),
+    ).fetchall()
+
+    wanted = {(row["service_date"], row["depart_hhmm"]) for row in rows}
+    grouped: dict[tuple[str, str], list[datetime]] = {}
+    for row in reported:
+        key = (row["service_date"], row["depart_hhmm"])
+        if key in wanted:
+            grouped.setdefault(key, []).append(parse_iso(row["departed_at"]))
+    return {key: sorted(times)[len(times) // 2] for key, times in grouped.items()}

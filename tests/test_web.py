@@ -406,34 +406,36 @@ def test_health_page_has_its_own_preview(client):
 
 def test_the_empty_page_shows_what_has_been_collected(client, conn, config):
     """A blank page cannot distinguish "collecting fine" from "scraper broken"."""
-    from .test_collection_status import add_reading
+    from .test_collection_status import add_departure_report
 
-    add_reading(conn, config, minutes_ago=4)
-    seed_record(conn, config, date(2026, 8, 3), "09:25", "boarded")
+    # Earlier the same day: the distribution excludes the date being asked about, so this
+    # is collected evidence without being an answer.
+    seed_record(conn, config, date(2026, 8, 10), "12:30", "filled")
+    add_departure_report(conn, config, date(2026, 8, 10), "12:30", "12:47")
 
-    body = client.get("/?origin=SLT&service_date=2026-08-10&time=09:25").text
+    body = client.get("/?origin=SLT&service_date=2026-08-10&time=12:30").text
     assert "No history yet" in body        # still honest about the answer
-    assert "Last reading 4 min ago" in body
-    assert "2026-08-03" in body            # the sailing it does know about
+    assert "Collected for the 12:30" in body
+    assert "2026-08-10" in body            # the sailing it does know about
+    assert "12:47" in body                 # when it actually went
+    assert "+17" in body                   # and how far off the timetable that was
 
 
-def test_a_silent_feed_is_flagged_on_the_page(client, conn, config):
-    from .test_collection_status import add_reading
+def test_the_collected_list_is_only_this_sailing(client, conn, config):
+    """Unscoped, this panel was the same list on every page — evidence about none of them."""
+    seed_record(conn, config, date(2026, 8, 10), "16:30", "waited_2plus")
 
-    add_reading(conn, config, minutes_ago=config.capture.interval_minutes * 5)
-    body = client.get("/?origin=SLT&service_date=2026-08-10&time=09:25").text
-    assert "older than expected" in body
+    body = client.get("/?origin=SLT&service_date=2026-08-10&time=12:30").text
+    assert "Nothing recorded for this sailing yet" in body
+    assert "Most recent" not in body  # the 16:30 is not evidence about the 12:30
 
 
 def test_collection_evidence_is_hidden_once_there_is_a_real_answer(client, conn, config):
     """The proof-of-life panel is scaffolding for a new install, not a permanent fixture —
     and it must never sit next to a distribution looking like a second, contradictory one."""
-    from .test_collection_status import add_reading
-
-    add_reading(conn, config, minutes_ago=2)
     for day in fridays(6):
         seed_record(conn, config, day, "12:30", "waited_1")
 
     body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
     assert "comparable sailing" in body
-    assert "Last reading" not in body
+    assert "Collected for the" not in body
