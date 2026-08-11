@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -40,10 +40,22 @@ def _add_departed_hhmm(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE deck_space ADD COLUMN departed_hhmm TEXT")
 
 
+def _add_sailings_waited(conn: sqlite3.Connection) -> None:
+    """v3 -> v4: how many sailings someone who missed one ended up waiting.
+
+    Without it a report could only ever say "did not get on", which the record stored as
+    `filled` — so the distribution could never contain waited_1 or waited_2plus from the
+    one source that actually knows the answer.
+    """
+    if not _column_exists(conn, "sailing_reports", "sailings_waited"):
+        conn.execute("ALTER TABLE sailing_reports ADD COLUMN sailings_waited INTEGER")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
     2: _add_departed_hhmm,
+    3: _add_sailings_waited,
 }
 
 

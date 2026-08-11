@@ -159,6 +159,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, f"bad date {value!r}; expected YYYY-MM-DD") from exc
 
+    def _board_clock(
+        conn: sqlite3.Connection, config: Config, origin: str, day: date, hhmm: str | None
+    ) -> str:
+        """The board's departure time as HH:MM, or "" if it has not published one."""
+        if not hhmm:
+            return ""
+        from ..aggregate import _board_departure
+
+        when = _board_departure(conn, config.route.id, origin, day.isoformat(), hhmm, config)
+        return when.astimezone(config.tz).strftime("%H:%M") if when else ""
+
     def _validate_origin(config: Config, origin: str) -> str:
         if origin not in config.route.codes:
             raise HTTPException(
@@ -302,6 +313,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     else None
                 ),
                 "fill_result": fill_result,
+                # The board publishes the actual departure for *today's* sailings only, so
+                # this pre-fills the field rather than replacing it: report on last Friday
+                # and there is nothing to read, and only the person was there.
+                "board_departed": _board_clock(conn, config, chosen_origin, chosen_date, chosen_time),
                 "line_bounds": line_bounds,
                 "reports": reports,
                 "webcam": webcam,
@@ -343,6 +358,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
         time: str,
         boarded: str,
         joined: str = "",
+        departed: str = "",
+        sailings_waited: str = "",
         deck_fullness: str = "",
     ) -> int:
         """Everything the two submission paths agree on, in one place."""
@@ -360,6 +377,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
             depart_hhmm=time,
             boarded=boarded == "yes",
             joined=parse_clock(joined),
+            departed=parse_clock(departed),
+            sailings_waited=int(sailings_waited) if sailings_waited else None,
             deck_fullness=deck_fullness or None,
         )
 
@@ -373,6 +392,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # actually make here, and it deserves the page's own message rather than a 422.
         boarded: str = Form(""),
         joined: str = Form(""),
+        departed: str = Form(""),
+        sailings_waited: str = Form(""),
         deck_fullness: str = Form(""),
         conn: sqlite3.Connection = Depends(get_conn),
         config: Config = Depends(get_config),
@@ -387,6 +408,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 time=time,
                 boarded=boarded,
                 joined=joined,
+                departed=departed,
+                sailings_waited=sailings_waited,
                 deck_fullness=deck_fullness,
             )
         except ReportError as exc:
@@ -403,6 +426,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 report_values={
                     "boarded": boarded,
                     "joined": joined,
+                    "departed": departed,
+                    "sailings_waited": sailings_waited,
                     "deck_fullness": deck_fullness,
                 },
                 status_code=400,
@@ -499,6 +524,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
         time: str,
         boarded: bool,
         joined: str = "",
+        departed: str = "",
+        sailings_waited: str = "",
         deck_fullness: str = "",
         conn: sqlite3.Connection = Depends(get_conn),
         config: Config = Depends(get_config),
@@ -512,6 +539,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 time=time,
                 boarded="yes" if boarded else "no",
                 joined=joined,
+                departed=departed,
+                sailings_waited=sailings_waited,
                 deck_fullness=deck_fullness,
             )
         except ReportError as exc:
