@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from ferrycast.web.app import create_app
+from ferrycast.web.app import _countdown, create_app
 
 from .test_query import fridays, seed_record
 from .test_report_bounds import add_report
@@ -469,3 +469,52 @@ def test_collection_evidence_is_hidden_once_there_is_a_real_answer(client, conn,
     body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
     assert "comparable sailing" in body
     assert "Collected for the" not in body
+
+
+# ---- The countdown ---------------------------------------------------------------------
+#
+# "tomorrow" is a claim about the calendar, so it has to be measured on the calendar. The
+# stopwatch version — elapsed minutes divided into 24-hour blocks — agrees only when the
+# departure's wall-clock time is no earlier in the day than now, and a ferry timetable
+# that starts at 05:35 spends every evening in the half that disagrees.
+
+
+def _countdown_at(config, monkeypatch, now_utc_value, service_date, depart_hhmm):
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: now_utc_value)
+    return _countdown(config, service_date, depart_hhmm)
+
+
+def test_the_day_after_tomorrow_is_not_called_tomorrow(config, monkeypatch):
+    """Mon 20:00 in Vancouver, looking at Wednesday's 08:30 — 36 hours out.
+
+    Thirty-six hours is one elapsed day and change, which is how a sailing two dates away
+    came to be labelled "tomorrow"."""
+    monday_evening = datetime(2026, 8, 11, 3, 0, tzinfo=UTC)  # Mon 10 Aug, 20:00 PDT
+    label = _countdown_at(config, monkeypatch, monday_evening, date(2026, 8, 12), "08:30")
+    assert label == "in 2 days"
+
+
+def test_tomorrow_still_means_tomorrow(config, monkeypatch):
+    """Mon 08:00, Tuesday's 16:30 — 32 hours out, and genuinely the next date."""
+    monday_morning = datetime(2026, 8, 10, 15, 0, tzinfo=UTC)  # Mon 10 Aug, 08:00 PDT
+    label = _countdown_at(config, monkeypatch, monday_morning, date(2026, 8, 11), "16:30")
+    assert label == "tomorrow"
+
+
+def test_the_countdown_stays_in_hours_inside_the_day(config, monkeypatch):
+    """Under 24 hours the answer is hours, whichever date it lands on — an hour count is
+    unambiguous in a way a day name is not."""
+    monday_evening = datetime(2026, 8, 11, 3, 0, tzinfo=UTC)  # Mon 10 Aug, 20:00 PDT
+    label = _countdown_at(config, monkeypatch, monday_evening, date(2026, 8, 11), "08:30")
+    assert label == "in 12 h 30 min"
+
+
+def test_a_date_less_request_answers_about_the_route_s_today(client, monkeypatch):
+    """The server runs on UTC. At 20:00 on the coast that is already tomorrow, and every
+    request that did not name a date was answered about the wrong day's timetable."""
+    monday_evening = datetime(2026, 8, 11, 3, 0, tzinfo=UTC)  # Mon 10 Aug, 20:00 PDT
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: monday_evening)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: monday_evening)
+
+    payload = client.get("/api/query?origin=SLT").json()
+    assert payload["service_date"] == "2026-08-10"

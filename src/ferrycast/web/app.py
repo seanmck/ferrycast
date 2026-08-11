@@ -46,7 +46,7 @@ from ..reports import (
     submit_report,
 )
 from ..schedule import day_type, season
-from ..timeutil import combine_local, local, now_utc, parse_hhmm
+from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
 from .preview import health_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
@@ -71,7 +71,8 @@ def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | No
     planning around. A stale countdown would be worse than none at all.
     """
     departure = combine_local(service_date, parse_hhmm(depart_hhmm), config.tz)
-    minutes = int((departure - local(now_utc(), config.tz)).total_seconds() // 60)
+    now = local(now_utc(), config.tz)
+    minutes = int((departure - now).total_seconds() // 60)
     if minutes < 0:
         return None
     if minutes < 60:
@@ -79,7 +80,13 @@ def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | No
     if minutes < 24 * 60:
         hours, rest = divmod(minutes, 60)
         return f"in {hours} h" if rest == 0 else f"in {hours} h {rest} min"
-    days = minutes // (24 * 60)
+    # Past a day out the unit is the calendar, not the stopwatch. Counting elapsed 24-hour
+    # blocks called Wednesday's 05:35 "tomorrow" at 20:00 on Monday, because 33 hours is
+    # one whole day and a bit — wrong whenever the departure's wall-clock time falls
+    # earlier in the day than now, which on a morning timetable is most of the evening.
+    # Subtracting dates in the route's zone is also the only form immune to DST: the
+    # weekend the clocks go back, one of those "days" is 25 hours long.
+    days = (service_date - now.date()).days
     return "tomorrow" if days == 1 else f"in {days} days"
 
 
@@ -140,9 +147,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
         finally:
             conn.close()
 
-    def _parse_date(value: str | None) -> date:
+    def _parse_date(config: Config, value: str | None) -> date:
         if not value:
-            return date.today()
+            # The route's today, not the server's. This box runs on UTC, so `date.today()`
+            # rolled over to tomorrow at 5pm on the coast — every date-less request through
+            # a Sunshine Coast evening was answered about the following day's timetable.
+            return local_date(now_utc(), config.tz)
         try:
             return date.fromisoformat(value)
         except ValueError as exc:
@@ -175,7 +185,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             config, origin or (default.origin if default else config.route.codes[0])
         )
         chosen_date = _parse_date(
-            service_date or (default.service_date.isoformat() if default else None)
+            config, service_date or (default.service_date.isoformat() if default else None)
         )
         times = sailing_times(config, chosen_origin, chosen_date)
         # The form resubmits all three fields together, so switching terminal arrives here
@@ -394,7 +404,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         conn: sqlite3.Connection, config: Config, origin: str, service_date: str, time: str
     ) -> dict:
         _validate_origin(config, origin)
-        target = _parse_date(service_date)
+        target = _parse_date(config, service_date)
         try:
             departure = combine_local(target, parse_hhmm(time), config.tz)
         except ValueError as exc:
@@ -476,7 +486,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         config: Config = Depends(get_config),
     ):
         _validate_origin(config, origin)
-        target = _parse_date(service_date)
+        target = _parse_date(config, service_date)
         times = sailing_times(config, origin, target)
         chosen = time or default_sailing_time(config, times, target)
         if not chosen:
@@ -498,7 +508,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             conn,
             config,
             origin=origin,
-            target_date=_parse_date(service_date),
+            target_date=_parse_date(config, service_date),
             depart_hhmm=time,
         )
 
@@ -511,7 +521,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if origin:
             _validate_origin(config, origin)
         if service_date:
-            target = _parse_date(service_date)
+            target = _parse_date(config, service_date)
             return {"date": target.isoformat(), "times": sailing_times(config, origin or config.route.codes[0], target)}
         return [
             {
@@ -558,7 +568,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             conn,
             config,
             origin=origin,
-            target_date=_parse_date(service_date) if service_date else None,
+            target_date=_parse_date(config, service_date) if service_date else None,
             depart_hhmm=time,
         )
 
