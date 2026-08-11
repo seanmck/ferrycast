@@ -23,6 +23,9 @@ from datetime import date, datetime, time, timedelta
 from .config import Config
 from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
+# An am/pm flip on a hand-typed departure: a 12:30 sailing reported as leaving at 00:30.
+MAX_DEPARTURE_DRIFT_HOURS = 3
+
 # How full the deck looked as the vessel left. Four steps rather than a percentage: nobody
 # standing on a car deck can tell 60% from 70%, and a spurious number would be treated as
 # though it were measured.
@@ -79,6 +82,8 @@ def submit_report(
     depart_hhmm: str,
     boarded: bool,
     joined: time | None = None,
+    departed: time | None = None,
+    sailings_waited: int | None = None,
     deck_fullness: str | None = None,
     source: str = "web",
     now: datetime | None = None,
@@ -110,16 +115,30 @@ def submit_report(
     if scheduled > reference:
         raise ReportError("that sailing has not departed yet")
 
-    # Not asked for any more: the departures board publishes the actual time to the minute
-    # ("9:25 am Departed 9:56 am"), which beats a recollection and is one fewer field to
-    # fill in at the side of a highway. It is still stored, because the validation below
-    # depends on it — someone who joined the line after the scheduled time but before a late
-    # sailing actually left is telling the truth, and must not be refused.
+    # The board publishes the actual time to the minute ("9:25 am Departed 9:56 am"), so
+    # the form pre-fills from it and nobody has to remember. But the board only carries
+    # *today's* sailings — report on last Friday and there is nothing to read — so a typed
+    # value is still accepted and still wins. Board first, person second, scheduled last.
     from .aggregate import _board_departure
 
-    departed_at = _board_departure(
-        conn, route.id, origin, service_date.isoformat(), depart_hhmm, config
-    )
+    departed_at = combine_local(service_date, departed, config.tz) if departed else None
+    if departed_at is not None:
+        drift = abs((departed_at - scheduled).total_seconds()) / 3600
+        if drift > MAX_DEPARTURE_DRIFT_HOURS:
+            raise ReportError(
+                f"a departure at {departed.strftime('%H:%M')} is too far from the scheduled "
+                f"{depart_hhmm} to be the same sailing"
+            )
+    else:
+        departed_at = _board_departure(
+            conn, route.id, origin, service_date.isoformat(), depart_hhmm, config
+        )
+
+    if sailings_waited is not None:
+        if boarded:
+            raise ReportError("you cannot have waited for sailings you were on")
+        if sailings_waited not in (1, 2):
+            raise ReportError("say whether you waited one sailing or two or more")
 
     joined_at = combine_local(service_date, joined, config.tz) if joined else None
     if joined_at is not None:
@@ -144,8 +163,9 @@ def submit_report(
     cur = conn.execute(
         """INSERT INTO sailing_reports
                (route, origin, service_date, depart_hhmm, joined_queue_at, departed_at,
+                sailings_waited,
                 boarded, deck_fullness, source, submitted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             route.id,
             origin,
@@ -153,6 +173,7 @@ def submit_report(
             depart_hhmm,
             iso(joined_at) if joined_at else None,
             iso(departed_at) if departed_at else None,
+            sailings_waited,
             int(boarded),
             deck_fullness or None,
             source,
@@ -187,14 +208,29 @@ def outcome_from_reports(rows: list[sqlite3.Row]) -> str | None:
 
     One person left behind is proof the sailing ran out of room; several people getting on
     is not proof that nobody was turned away later. So a single "no" outweighs any number
-    of "yes"es, and the outcome is `filled` rather than `waited_1` — how long that person
-    ended up waiting is a different question, and one report cannot answer it.
+    of "yes"es.
+
+    How long they then waited is a separate fact, and the form asks for it — without that
+    question a report could only ever produce `filled`, so the distribution could never
+    contain waited_1 or waited_2plus from the one source that actually knows. Unanswered it
+    stays `filled`: "did not get on" is certain, "waited exactly one sailing" is not.
+
+    The longest wait reported wins, for the same reason the single "no" does — somebody who
+    waited two sailings was not on the one the person who waited one caught.
     """
     if not rows:
         return None
-    if any(not row["boarded"] for row in rows):
+    missed = [row for row in rows if not row["boarded"]]
+    if not missed:
+        return "boarded"
+    waits = [
+        row["sailings_waited"]
+        for row in missed
+        if "sailings_waited" in row.keys() and row["sailings_waited"]
+    ]
+    if not waits:
         return "filled"
-    return "boarded"
+    return "waited_2plus" if max(waits) >= 2 else "waited_1"
 
 
 def report_confidence(rows: list[sqlite3.Row]) -> float:

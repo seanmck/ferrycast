@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS sailing_reports (
     joined_queue_at TEXT,                  -- UTC ISO8601; optional, half a memory still helps
     departed_at     TEXT,                  -- UTC ISO8601, when the vessel actually left
     boarded         INTEGER NOT NULL,      -- 0/1 — the only required fact
+    sailings_waited INTEGER,               -- if they missed it: 1, or 2 for "two or more"
     deck_fullness   TEXT,                  -- room | half | nearly_full | full
     source          TEXT    NOT NULL DEFAULT 'web',
     submitted_at    TEXT    NOT NULL

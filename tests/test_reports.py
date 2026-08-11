@@ -415,3 +415,68 @@ def test_reports_export(client):
     response = client.get("/export/reports.csv")
     assert response.status_code == 200
     assert "nearly_full" in response.text
+
+
+# ---- How long they waited ---------------------------------------------------------------
+#
+# Without this question a report could only ever say "did not get on", stored as `filled`.
+# The distribution could never contain waited_1 or waited_2plus from the one source that
+# actually knows — so a page showed "1 filled up" while the headline said nobody waited.
+
+
+def test_waiting_one_sailing_is_recorded_as_such(conn, config):
+    file_report(conn, config, boarded=False, sailings_waited=1)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "waited_1"
+
+
+def test_waiting_two_or_more_is_recorded_as_such(conn, config):
+    file_report(conn, config, boarded=False, sailings_waited=2)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "waited_2plus"
+
+
+def test_not_answering_stays_filled(conn, config):
+    """"Did not get on" is certain; "waited exactly one sailing" is not. An unanswered
+    follow-up must not be turned into a number nobody supplied."""
+    file_report(conn, config, boarded=False)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "filled"
+
+
+def test_the_longest_wait_reported_wins(conn, config):
+    """Somebody who waited two sailings was not on the one the other person caught."""
+    file_report(conn, config, boarded=False, sailings_waited=1)
+    file_report(conn, config, boarded=False, sailings_waited=2)
+    assert outcome_of(conn, SAILED, "12:30")["outcome"] == "waited_2plus"
+
+
+def test_you_cannot_have_waited_for_a_sailing_you_were_on(conn, config):
+    with pytest.raises(ReportError, match="you were on"):
+        file_report(conn, config, boarded=True, sailings_waited=1)
+
+
+def test_a_nonsense_wait_is_refused(conn, config):
+    with pytest.raises(ReportError, match="one sailing or two"):
+        file_report(conn, config, boarded=False, sailings_waited=7)
+
+
+# ---- The departure time, back but pre-filled --------------------------------------------
+
+
+def test_a_typed_departure_still_wins_for_a_past_date(conn, config):
+    """The board carries today's sailings only. Report on last Friday and there is nothing
+    to read — only the person who was there can say."""
+    file_report(conn, config, joined=time(12, 50), departed=time(13, 5))
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+    assert rows[0]["departed_at"] is not None
+
+
+def test_the_board_is_used_when_nothing_is_typed(conn, config):
+    board_says_departed(conn, config, "12:42")
+    file_report(conn, config)
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+    assert rows[0]["departed_at"].endswith("Z")
+
+
+def test_an_am_pm_flip_in_a_typed_departure_is_still_caught(conn, config):
+    """The guard that came back with the field: a 12:30 sailing reported as leaving 00:30."""
+    with pytest.raises(ReportError, match="too far from the scheduled"):
+        file_report(conn, config, departed=time(0, 30))

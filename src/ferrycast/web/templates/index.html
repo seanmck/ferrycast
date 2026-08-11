@@ -86,7 +86,12 @@
 
 {% if distribution and distribution.n %}
   {% set d = distribution %}
-  {% set waited = (d.shares.get('waited_1', 0) + d.shares.get('waited_2plus', 0)) %}
+  {# `filled` belongs in this number. It means the vessel ran out of room, so counting only
+     waited_1 and waited_2plus produced "0% waited at least one sailing" directly above
+     "1 filled up" — two lines of the same panel contradicting each other. The wording is
+     about the sailing rather than the person, because deck-space evidence can show a vessel
+     filling without proving anyone was actually turned away. #}
+  {% set waited = d.filled_share %}
   {% set top = d.counts | dictsort(by='value') | last %}
 
   {# ---- The answer, on the one inverted panel. ---- #}
@@ -95,7 +100,7 @@
 
     <div class="headline">
       <span class="pct">{{ (waited * 100) | round | int }}%</span>
-      <span class="of">waited at least one sailing</span>
+      <span class="of">ran out of room</span>
     </div>
 
     <div class="bar" role="img"
@@ -368,10 +373,33 @@
           </div>
         </div>
 
+        {# Only asked of someone who missed it. Without it a report can only ever say "did
+           not get on", which is recorded as `filled` — so the distribution could never
+           contain waited_1 or waited_2plus from the one source that actually knows. #}
+        <label class="field" id="waited-field">
+          <span class="label">How long did you wait?</span>
+          <select name="sailings_waited">
+            <option value="" {% if not rf.get('sailings_waited') %}selected{% endif %}>Not sure</option>
+            <option value="1" {% if rf.get('sailings_waited') == '1' %}selected{% endif %}>One sailing</option>
+            <option value="2" {% if rf.get('sailings_waited') == '2' %}selected{% endif %}>Two or more</option>
+          </select>
+        </label>
+
         <div class="row">
           <label class="field">
             <span class="label">Joined the line</span>
             <input type="time" name="joined" value="{{ rf.get('joined', '') }}">
+          </label>
+          {# Pre-filled from the departures board, which publishes the actual time — but the
+             board only carries today's sailings. Report on last Friday and it is blank, and
+             only the person who was there can fill it in. #}
+          <label class="field">
+            <span class="label">Ferry left</span>
+            <input type="time" name="departed"
+                   value="{{ rf.get('departed') or board_departed or '' }}">
+            {% if board_departed and not rf.get('departed') %}
+              <span class="hint">From the departures board.</span>
+            {% endif %}
           </label>
         </div>
 

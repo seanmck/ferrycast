@@ -335,7 +335,22 @@ def test_index_shows_the_share_that_waited(client, conn, config):
         seed_record(conn, config, day, "12:30", outcome)
     response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
     assert "75%" in response.text
-    assert "waited at least one sailing" in response.text
+    assert "ran out of room" in response.text
+
+
+def test_a_sailing_that_filled_counts_in_the_headline(client, conn, config):
+    """The live page showed "0% waited at least one sailing" directly above "1 filled up".
+    `filled` means the vessel ran out of room; excluding it made the panel contradict
+    itself in two adjacent lines."""
+    import re
+
+    seed_record(conn, config, date(2026, 7, 3), "12:30", "filled")
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    # The headline figure itself, not any "100%" in the stylesheet.
+    headline = re.search(r'<span class="pct">([^<]+)</span>', body).group(1)
+    assert headline == "100%", f"headline said {headline} for a sailing that filled"
+    assert "filled up" in body
 
 
 def test_arrival_curve_exposes_both_band_edges(client, conn, config):
@@ -549,3 +564,28 @@ def test_the_page_itself_does_not_promise_tomorrow_two_days_out(client, monkeypa
 
     assert '<span class="in">in 2 days</span>' in body
     assert "tomorrow" not in body
+
+
+def test_the_report_form_prefills_the_departure_from_the_board(client, conn, config):
+    """Pre-filled, not removed: the board only carries today's sailings, so on any past
+    date the field is the only way the time can be supplied at all."""
+    from .test_reports import board_says_departed
+
+    board_says_departed(conn, config, "12:42", hhmm="12:30")
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+
+    assert 'name="departed"' in body
+    assert 'value="12:42"' in body
+    assert "From the departures board" in body
+
+
+def test_the_departure_field_is_empty_when_the_board_has_nothing(client, conn, config):
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+    assert 'name="departed"' in body
+    assert "From the departures board" not in body
+
+
+def test_the_form_asks_how_long_they_waited(client, conn, config):
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+    assert 'name="sailings_waited"' in body
+    assert "Two or more" in body
