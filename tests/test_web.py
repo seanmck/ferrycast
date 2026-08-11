@@ -471,6 +471,24 @@ def test_collection_evidence_is_hidden_once_there_is_a_real_answer(client, conn,
     assert "Collected for the" not in body
 
 
+def test_the_page_never_claims_frames_for_a_deck_space_answer(client, conn, config):
+    """A fixed footer used to assert every outcome was counted from webcam frames. That was
+    true when frames were the only source; a deck-space answer says the opposite, and the
+    two ended up one above the other. Provenance belongs to the answer, not to the page."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_deckspace_history import add_deck_space
+
+    for day in fridays(4):
+        add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
+        aggregate_day(conn, config, day)
+
+    body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+
+    assert "not how many vehicles were still queued" in body  # what this evidence is
+    assert "counted from terminal webcam frames" not in body  # and what it is not
+
+
 # ---- The countdown ---------------------------------------------------------------------
 #
 # "tomorrow" is a claim about the calendar, so it has to be measured on the calendar. The
