@@ -407,6 +407,53 @@
    webcam frames, which was true when frames were the only source; a deck-space answer now
    sits directly above it saying the opposite. The evidence note under the distribution is
    the one that knows which source this answer actually used. #}
+{# ---- Fill in this slot's history. Frames are archived continuously; reading them is the
+   step that is deferred, so it happens when somebody asks rather than nightly over the whole
+   backlog. The frame count is on the button so the tap is not blind — but no price. This is
+   the operator's own cost, not the reader's, and a figure on the control made a trivial
+   action read as a purchase. `/health` is where spend belongs. ---- #}
+{% if fill_result %}
+  <section class="card">
+    <p class="label">Filled</p>
+    {% if fill_result.capped %}
+      <p class="note flag">{{ fill_result.message }}</p>
+    {% elif fill_result.filled %}
+      <p class="note">Read {{ fill_result.frames_read }} frame{{ '' if fill_result.frames_read == 1 else 's' }}
+        across {{ fill_result.filled }} sailing{{ '' if fill_result.filled == 1 else 's' }},
+        and the answer above includes them now.
+        {%- if fill_result.budget_stopped %} It stopped early — this month's reading limit has
+        been reached.{% endif %}</p>
+    {% else %}
+      <p class="note flag">Nothing was added.
+        {%- if fill_result.skipped_no_frames %} {{ fill_result.skipped_no_frames }} comparable
+        sailing{{ '' if fill_result.skipped_no_frames == 1 else 's' }} had no archived frames —
+        usually days before capture was running.{% endif %}
+        {%- if fill_result.budget_stopped %} This month's reading limit has been reached.{% endif %}</p>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if fill_offer %}
+  <form method="post" action="/fill" class="card">
+    <input type="hidden" name="origin" value="{{ origin }}">
+    <input type="hidden" name="service_date" value="{{ service_date }}">
+    <input type="hidden" name="time" value="{{ selected_time }}">
+    <p class="label">{{ 'Deepen this answer' if fill_offer.reason == 'thin' else 'Newer sailings available' }}</p>
+    <p class="note">
+      {%- if fill_offer.reason == 'thin' %}
+        {{ fill_offer.sailings }} comparable sailing{{ '' if fill_offer.sailings == 1 else 's' }}
+        {{ 'has' if fill_offer.sailings == 1 else 'have' }} archived camera frames that have not
+        been read yet.
+      {%- else %}
+        {{ fill_offer.sailings }} comparable sailing{{ '' if fill_offer.sailings == 1 else 's' }}
+        more recent than the ones above {{ 'has' if fill_offer.sailings == 1 else 'have' }} not
+        been read. The answer above is sound, but it is not the latest.
+      {%- endif %}
+    </p>
+    <button type="submit">Read {{ fill_offer.frames }} frame{{ '' if fill_offer.frames == 1 else 's' }}</button>
+  </form>
+{% endif %}
+
 <p class="note"><a href="/health">Pipeline health</a></p>
 {% endblock %}
 

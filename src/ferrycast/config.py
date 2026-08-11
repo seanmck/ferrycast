@@ -105,6 +105,11 @@ class WebConfig:
     # A web request that spends money is a footgun, so on-demand checks from the browser
     # are opt-in and separately capped even though the UI is household-only.
     allow_on_demand_checks: bool = False
+    # The "fill in this slot's history" button. Off by default for the same reason as the
+    # line above: a public URL that spends money on a stranger's tap is a bad default. The
+    # cap counts frames, not taps, so one expensive slot cannot exhaust the day on its own.
+    allow_on_demand_backfill: bool = False
+    backfill_daily_frame_cap: int = 120
     on_demand_daily_cap: int = 40
     # Public origin, e.g. "https://ferrycast.example.com". Open Graph needs absolute URLs,
     # and behind a TLS-terminating proxy the app cannot always work out its own scheme.

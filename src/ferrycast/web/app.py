@@ -22,6 +22,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 
+from ..backfill import fill_for_slot, fill_offer
 from ..config import Config, load_config
 from ..db import connect
 from ..export import export
@@ -176,6 +177,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         report_error: str | None = None,
         report_values: dict | None = None,
         report_saved: bool = False,
+        fill_result: dict | None = None,
         status_code: int = 200,
     ):
         upcoming = upcoming_sailings(config, origin=origin, limit=1)
@@ -284,6 +286,22 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     else None
                 ),
                 "preview": index_preview(request, config),
+                # What filling this slot's history would cost, when there is anything worth
+                # filling. None hides the button entirely — including when the feature is
+                # off, so a disabled deployment never shows a control that would 403.
+                "fill_offer": (
+                    fill_offer(
+                        conn,
+                        config,
+                        origin=chosen_origin,
+                        target_date=chosen_date,
+                        depart_hhmm=chosen_time,
+                        distribution=distribution,
+                    )
+                    if chosen_time and config.web.allow_on_demand_backfill
+                    else None
+                ),
+                "fill_result": fill_result,
                 "line_bounds": line_bounds,
                 "reports": reports,
                 "webcam": webcam,
@@ -411,6 +429,73 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(400, f"bad time {time!r}; expected HH:MM") from exc
         rows = fetch_reports(conn, config.route.id, origin, target.isoformat(), time)
         return describe_reports(config, rows, departure) or {"n": 0, "entries": []}
+
+    @app.post("/fill", response_class=HTMLResponse)
+    def post_fill(
+        request: Request,
+        origin: str = Form(...),
+        service_date: str = Form(...),
+        time: str = Form(...),
+        conn: sqlite3.Connection = Depends(get_conn),
+        config: Config = Depends(get_config),
+    ):
+        """Read the archived frames that answer this slot. Spends money, so it is guarded.
+
+        Renders the result rather than redirecting: the point of the tap is to see what it
+        bought, and a redirect would drop the "$0.02, 5 sailings" line the person just paid
+        for. Re-submitting is harmless — extraction is idempotent, and a second run finds
+        nothing to fill.
+        """
+        if not config.web.allow_on_demand_backfill:
+            raise HTTPException(
+                403,
+                "on-demand backfill is disabled; set [web] allow_on_demand_backfill = true "
+                "to enable it (each fill spends a small amount on vision calls)",
+            )
+        _validate_origin(config, origin)
+        target = _parse_date(config, service_date)
+
+        spent_today = _frames_read_today(conn, config)
+        remaining = config.web.backfill_daily_frame_cap - spent_today
+        if remaining <= 0:
+            result = {
+                "capped": True,
+                "message": (
+                    f"the daily limit of {config.web.backfill_daily_frame_cap} frames is "
+                    "already used; the CLI is not capped"
+                ),
+            }
+        else:
+            outcome = fill_for_slot(
+                conn,
+                config,
+                origin=origin,
+                target_date=target,
+                depart_hhmm=time,
+                # Never let one tap spend more than the day has left.
+                max_sailings=max(1, remaining // max(1, len(config.vision.essential_offsets_minutes))),
+            )
+            result = outcome.to_dict()
+
+        return _render_index(
+            request, conn, config, origin, service_date, time, fill_result=result
+        )
+
+    def _frames_read_today(conn: sqlite3.Connection, config: Config) -> int:
+        """Frames read today, by any path.
+
+        Counts frames rather than taps, so one expensive slot cannot exhaust the day while
+        a cheap one barely registers. Deliberately not scoped to the web path: this is a
+        spend cap, and money spent from the CLI is the same money. The CLI itself stays
+        uncapped — someone with shell access can already edit the config.
+        """
+        today = local_date(now_utc(), config.tz).isoformat()
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM observations WHERE created_at >= ?", (today,)
+            ).fetchone()[0]
+            or 0
+        )
 
     @app.post("/api/report")
     def api_report(
