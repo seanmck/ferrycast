@@ -39,7 +39,6 @@ DECK_FULLNESS = {
 # does not have such a sailing, and a report that crossed midnight is refused rather than
 # quietly filed against the wrong day.
 MAX_QUEUE_HOURS = 12
-MAX_DEPARTURE_DRIFT_HOURS = 3
 
 # One sailing does not need a hundred accounts, and the form is unauthenticated.
 MAX_REPORTS_PER_SAILING = 50
@@ -80,7 +79,6 @@ def submit_report(
     depart_hhmm: str,
     boarded: bool,
     joined: time | None = None,
-    departed: time | None = None,
     deck_fullness: str | None = None,
     source: str = "web",
     now: datetime | None = None,
@@ -112,14 +110,16 @@ def submit_report(
     if scheduled > reference:
         raise ReportError("that sailing has not departed yet")
 
-    departed_at = combine_local(service_date, departed, config.tz) if departed else None
-    if departed_at is not None:
-        drift = abs((departed_at - scheduled).total_seconds()) / 3600
-        if drift > MAX_DEPARTURE_DRIFT_HOURS:
-            raise ReportError(
-                f"a departure at {departed.strftime('%H:%M')} is too far from the scheduled "
-                f"{depart_hhmm} to be the same sailing"
-            )
+    # Not asked for any more: the departures board publishes the actual time to the minute
+    # ("9:25 am Departed 9:56 am"), which beats a recollection and is one fewer field to
+    # fill in at the side of a highway. It is still stored, because the validation below
+    # depends on it — someone who joined the line after the scheduled time but before a late
+    # sailing actually left is telling the truth, and must not be refused.
+    from .aggregate import _board_departure
+
+    departed_at = _board_departure(
+        conn, route.id, origin, service_date.isoformat(), depart_hhmm, config
+    )
 
     joined_at = combine_local(service_date, joined, config.tz) if joined else None
     if joined_at is not None:
