@@ -60,13 +60,43 @@ def test_the_button_appears_when_frames_are_waiting(enabled, conn, config):
 
 
 def test_the_button_states_the_work_before_it_is_tapped(enabled, conn, config):
-    """How much it will read, so the tap is not a blind one. Not the price: a dollar figure
-    on the button turned a 1-cent action into something that looked like a purchase."""
+    """How much it will read, so the tap is not blind."""
     _fridays_with_frames(conn, config, count=2)
     body = enabled.get(SLOT).text
     # 2 sailings x 4 essential offsets = 8 frames.
     assert "Read 8 frames" in body
-    assert "$" not in body.split('action="/fill"')[1].split("</form>")[0]
+
+
+def test_the_page_never_talks_about_money(enabled, conn, config, monkeypatch):
+    """Spend is the operator's business and belongs on /health, not on the page someone
+    reads at the terminal. A price on a trivial action made it read as a purchase."""
+    _fridays_with_frames(conn, config, count=2)
+
+    def fake_extract(conn_, config_, frames, **kw):
+        from ferrycast.vision import ExtractionStats
+
+        stats = ExtractionStats()
+        stats.extracted = len(frames)
+        stats.cost_usd = 0.008
+        return stats
+
+    monkeypatch.setattr("ferrycast.vision.extract_frames", fake_extract)
+
+    offered = enabled.get(SLOT).text
+    filled = enabled.post(
+        "/fill",
+        data={"origin": "SLT", "service_date": PLAIN_FRIDAY.isoformat(), "time": "12:30"},
+    ).text
+
+    import re
+
+    for body in (offered, filled):
+        # Strip <script> and <style>: the chart is full of JS `${...}` literals and the
+        # inline CSS has a comment about repaint *cost* — neither is money. ("cent" is out
+        # of the word list for the same reason: it is inside "recent".)
+        visible = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", "", body)
+        for word in ("$", "cost", "budget", "spend", "¢", "usd"):
+            assert word not in visible.lower(), f"{word!r} on the page"
 
 
 def test_no_button_when_there_is_nothing_to_buy(enabled, conn, config):

@@ -407,10 +407,11 @@
    webcam frames, which was true when frames were the only source; a deck-space answer now
    sits directly above it saying the opposite. The evidence note under the distribution is
    the one that knows which source this answer actually used. #}
-{# ---- Buy this slot's history. The frames are already archived and free; reading them is
-   the only paid step, so it happens when somebody asks rather than nightly over the whole
-   backlog. The count and the price are on the button: a control that spends money says how
-   much before it is tapped, not after. ---- #}
+{# ---- Fill in this slot's history. Frames are archived continuously; reading them is the
+   step that is deferred, so it happens when somebody asks rather than nightly over the whole
+   backlog. The frame count is on the button so the tap is not blind — but no price. This is
+   the operator's own cost, not the reader's, and a figure on the control made a trivial
+   action read as a purchase. `/health` is where spend belongs. ---- #}
 {% if fill_result %}
   <section class="card">
     <p class="label">Filled</p>
@@ -419,14 +420,15 @@
     {% elif fill_result.filled %}
       <p class="note">Read {{ fill_result.frames_read }} frame{{ '' if fill_result.frames_read == 1 else 's' }}
         across {{ fill_result.filled }} sailing{{ '' if fill_result.filled == 1 else 's' }},
-        for ${{ '%.4f' | format(fill_result.cost_usd) }}. The answer above includes them now.
-        {%- if fill_result.budget_stopped %} Stopped early: the monthly vision budget is spent.{% endif %}</p>
+        and the answer above includes them now.
+        {%- if fill_result.budget_stopped %} It stopped early — this month's reading limit has
+        been reached.{% endif %}</p>
     {% else %}
       <p class="note flag">Nothing was added.
         {%- if fill_result.skipped_no_frames %} {{ fill_result.skipped_no_frames }} comparable
         sailing{{ '' if fill_result.skipped_no_frames == 1 else 's' }} had no archived frames —
         usually days before capture was running.{% endif %}
-        {%- if fill_result.budget_stopped %} The monthly vision budget is spent.{% endif %}</p>
+        {%- if fill_result.budget_stopped %} This month's reading limit has been reached.{% endif %}</p>
     {% endif %}
   </section>
 {% endif %}
@@ -441,7 +443,7 @@
       {%- if fill_offer.reason == 'thin' %}
         {{ fill_offer.sailings }} comparable sailing{{ '' if fill_offer.sailings == 1 else 's' }}
         {{ 'has' if fill_offer.sailings == 1 else 'have' }} archived camera frames that have not
-        been read. Reading them is the only step that costs anything.
+        been read yet.
       {%- else %}
         {{ fill_offer.sailings }} comparable sailing{{ '' if fill_offer.sailings == 1 else 's' }}
         more recent than the ones above {{ 'has' if fill_offer.sailings == 1 else 'have' }} not
