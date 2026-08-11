@@ -133,6 +133,44 @@ def _deck_space_min(
     return row[0] if row and row[0] is not None else None
 
 
+def _board_departure(
+    conn: sqlite3.Connection,
+    route: str,
+    terminal: str,
+    service_date: str,
+    hhmm: str,
+    config: Config,
+) -> datetime | None:
+    """When the board said this sailing actually left.
+
+    The published departure works where the camera cannot: at night, in fog, and — on this
+    route, at both terminals — where the camera faces the approach road rather than the
+    berth. Reported to the minute rather than to the nearest 15-minute frame.
+
+    The latest reading wins: the board fills the time in once the vessel has gone, so the
+    most recent scrape is the one that has it.
+    """
+    row = conn.execute(
+        """SELECT departed_hhmm FROM deck_space
+            WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
+              AND departed_hhmm IS NOT NULL AND fetch_status = 'ok'
+            ORDER BY observed_at DESC
+            LIMIT 1""",
+        (route, terminal, service_date, hhmm),
+    ).fetchone()
+    if row is None:
+        return None
+    from .timeutil import combine_local, parse_hhmm
+
+    departed = combine_local(date.fromisoformat(service_date), parse_hhmm(row[0]), config.tz)
+    # A sailing scheduled at 23:50 that leaves at 00:05 belongs to the previous service
+    # date. Without this the "actual" departure lands 24 hours early.
+    scheduled = combine_local(date.fromisoformat(service_date), parse_hhmm(hhmm), config.tz)
+    if departed < scheduled - timedelta(hours=12):
+        departed += timedelta(days=1)
+    return departed
+
+
 def _deck_space_series(
     conn: sqlite3.Connection, route: str, terminal: str, service_date: str, hhmm: str
 ) -> list[sqlite3.Row]:
@@ -187,6 +225,26 @@ def classify_from_deck_space(
     return "boarded", None, confidence
 
 
+def _departure_from_frames(observations, grace_from) -> tuple[datetime | None, bool]:
+    """When the vessel actually left, and whether it was still there at the end.
+
+    Returns (left_at, still_at_dock). `left_at` is the first frame showing an empty berth
+    after one that showed a vessel — the best the camera can say about a departure. It is
+    None both when no vessel was ever seen and when one never left.
+    """
+    window = [o for o in observations if o.at >= grace_from]
+    dock_times = [o.at for o in window if o.ferry_at_dock]
+    if not dock_times:
+        return None, False
+    last_dock = max(dock_times)
+    gone = [o for o in window if o.at > last_dock]
+    if not gone:
+        # A vessel was berthed in the last frame we have. It has not left yet — which is
+        # not the same as never leaving, and must not be read as a cancellation.
+        return None, True
+    return gone[0].at, False
+
+
 def classify(
     *,
     residual: int | None,
@@ -194,9 +252,16 @@ def classify(
     departure_seen: bool,
     capacity: int,
     residual_threshold: int,
+    still_at_dock: bool = False,
+    berth_visible: bool = False,
 ) -> tuple[str, bool, bool, int | None]:
     """Return (outcome, overload, cancelled, carryover)."""
     if residual is None or queue_at_departure is None:
+        return "unknown", False, False, None
+
+    # A vessel berthed in the last frame means the sailing had not gone by the time the
+    # evidence runs out. Anything else is a guess: the queue in shot may be boarding.
+    if still_at_dock:
         return "unknown", False, False, None
 
     if residual < residual_threshold:
@@ -205,8 +270,12 @@ def classify(
         return "boarded", False, False, 0
 
     if not departure_seen:
-        # A queue that persists with no vessel ever at the dock is a cancellation, not an
-        # overload — the distinction matters to anyone reading the history.
+        # A queue that persists with no vessel ever seen is a cancellation ONLY where the
+        # camera can see the berth. Earls Cove's points up the approach road, so "no ferry
+        # in any frame" is the normal state there and says nothing about whether the
+        # sailing ran — reading it as a cancellation marked every busy sailing cancelled.
+        if not berth_visible:
+            return "unknown", False, False, None
         return "cancelled", False, True, residual
 
     if residual > capacity:
@@ -238,23 +307,29 @@ def compute_record(
 
     before = [o for o in observations if o.at <= departure]
     counted_before = [o for o in before if o.vehicle_count is not None]
-    settle_from = departure + timedelta(minutes=cfg.settle_minutes)
+
+    grace_from = departure - timedelta(minutes=cfg.departure_grace_minutes)
+    left_at, still_at_dock = _departure_from_frames(observations, grace_from)
+
+    # Never read the residual before the vessel has actually gone. A sailing that leaves 30
+    # minutes late is routine here — the live board showed 9:25 departing at 9:56 — and
+    # measuring at scheduled+12 would photograph a compound that is still loading, counting
+    # every vehicle about to board as left behind.
+    #
+    # `left_at` is already the first frame showing an empty berth, so no further settle is
+    # added on top of it; the normal settle still applies when the sailing ran to time.
+    settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), left_at or departure)
     after = [
         o for o in observations if o.at >= settle_from and o.vehicle_count is not None
     ]
 
     peak = max((o.vehicle_count for o in counted_before), default=None)
 
-    grace_from = departure - timedelta(minutes=cfg.departure_grace_minutes)
     at_departure_candidates = [o for o in counted_before if o.at >= grace_from]
     queue_at_departure = at_departure_candidates[-1].vehicle_count if at_departure_candidates else None
 
     residual = after[0].vehicle_count if after else None
 
-    # A vessel counts as having departed if it was at the dock near the scheduled time and
-    # is gone afterwards, or if the deck-space feed published a figure for this sailing.
-    dock_before = any(o.ferry_at_dock for o in before if o.at >= grace_from)
-    dock_after = any(o.ferry_at_dock for o in observations if o.at >= settle_from)
     deck_min = _deck_space_min(
         conn,
         sailing_row["route"],
@@ -262,12 +337,33 @@ def compute_record(
         sailing_row["service_date"],
         sailing_row["depart_hhmm"],
     )
-    departure_seen = (dock_before and not dock_after) or deck_min is not None
+    # The board's published departure outranks the camera's: it is to the minute rather
+    # than to the nearest frame, and it works where the camera cannot see the berth.
+    board_departure = _board_departure(
+        conn,
+        sailing_row["route"],
+        sailing_row["origin"],
+        sailing_row["service_date"],
+        sailing_row["depart_hhmm"],
+        config,
+    )
+    if board_departure is not None:
+        left_at = board_departure
+        still_at_dock = False
+        settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), board_departure)
+        after = [
+            o for o in observations if o.at >= settle_from and o.vehicle_count is not None
+        ]
+        residual = after[0].vehicle_count if after else None
+
+    departure_seen = left_at is not None or deck_min is not None
 
     outcome, overload, cancelled, carryover = classify(
         residual=residual,
         queue_at_departure=queue_at_departure,
         departure_seen=departure_seen,
+        still_at_dock=still_at_dock,
+        berth_visible=config.route.terminal(sailing_row["origin"]).camera_sees_berth,
         capacity=cfg.vessel_capacity,
         residual_threshold=cfg.residual_threshold,
     )

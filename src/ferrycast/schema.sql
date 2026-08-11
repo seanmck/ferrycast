@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS deck_space (
     observed_at       TEXT    NOT NULL,      -- UTC ISO8601
     service_date      TEXT    NOT NULL,
     sailing_hhmm      TEXT,                  -- local HH:MM the row refers to, when parseable
+    departed_hhmm     TEXT,                  -- local HH:MM it ACTUALLY left, per the board
     percent_available INTEGER,
     vessel            TEXT,
     status_text       TEXT,

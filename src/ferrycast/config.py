@@ -23,6 +23,12 @@ DECK_SPACE_ENV_PREFIX = "FERRYCAST_DECKSPACE_"
 # The public origin is only known once the app is deployed, so it comes from the
 # environment rather than the committed config.
 BASE_URL_ENV_VAR = "FERRYCAST_BASE_URL"
+# The two switches that let a request spend money. Overridable from the environment because
+# a spend toggle has to be killable without a commit, a build and a deploy — on a host like
+# Railway that is a variable change and a restart.
+ALLOW_BACKFILL_ENV_VAR = "FERRYCAST_ALLOW_BACKFILL"
+ALLOW_CHECKS_ENV_VAR = "FERRYCAST_ALLOW_CHECKS"
+BACKFILL_CAP_ENV_VAR = "FERRYCAST_BACKFILL_DAILY_FRAME_CAP"
 
 
 class ConfigError(Exception):
@@ -36,6 +42,12 @@ class Terminal:
     destination: str
     webcam_url: str = ""
     deck_space_url: str = ""
+    # Whether this terminal's camera actually shows the berth. Earls Cove's points up the
+    # approach road and never sees a vessel, so "no ferry in any frame" there means nothing
+    # — while at a berth-facing camera it is evidence a sailing did not run. Defaults to
+    # false so an unverified camera cannot manufacture cancellations; set it true only
+    # after looking at a frame.
+    camera_sees_berth: bool = False
 
     @property
     def configured_for_capture(self) -> bool:
@@ -187,6 +199,16 @@ class Config:
         raise ConfigError(f"unknown route {route_id!r}; known routes: {known}")
 
 
+# Anything not clearly affirmative is off. A spend switch must not be turned on by a typo,
+# and "false"/"0"/"" set by a deploy script must never read as true — which is what
+# bool(os.environ[...]) would do for every one of them.
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUE
+
+
 def _dataclass_from(cls, raw: dict, section: str):
     fields = cls.__dataclass_fields__
     unknown = set(raw) - set(fields)
@@ -223,6 +245,7 @@ def _parse_route(raw: dict) -> Route:
                 deck_space_url=os.environ.get(
                     f"{DECK_SPACE_ENV_PREFIX}{code.upper()}", entry.get("deck_space_url", "")
                 ),
+                camera_sees_berth=bool(entry.get("camera_sees_berth", False)),
             )
         )
     codes = {t.code for t in terminals}
@@ -312,6 +335,20 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     web = _dataclass_from(WebConfig, raw.get("web", {}), "web")
     if os.environ.get(BASE_URL_ENV_VAR):
         web = replace(web, base_url=os.environ[BASE_URL_ENV_VAR])
+    if os.environ.get(ALLOW_BACKFILL_ENV_VAR) is not None:
+        web = replace(web, allow_on_demand_backfill=_env_flag(ALLOW_BACKFILL_ENV_VAR))
+    if os.environ.get(ALLOW_CHECKS_ENV_VAR) is not None:
+        web = replace(web, allow_on_demand_checks=_env_flag(ALLOW_CHECKS_ENV_VAR))
+    if os.environ.get(BACKFILL_CAP_ENV_VAR):
+        try:
+            web = replace(
+                web, backfill_daily_frame_cap=int(os.environ[BACKFILL_CAP_ENV_VAR])
+            )
+        except ValueError as exc:
+            raise ConfigError(
+                f"{BACKFILL_CAP_ENV_VAR} must be a whole number, "
+                f"got {os.environ[BACKFILL_CAP_ENV_VAR]!r}"
+            ) from exc
 
     return Config(
         timezone_name=app.get("timezone", "America/Vancouver"),

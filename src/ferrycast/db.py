@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -29,9 +29,21 @@ def _add_filled_at(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sailing_records ADD COLUMN filled_at TEXT")
 
 
+def _add_departed_hhmm(conn: sqlite3.Connection) -> None:
+    """v2 -> v3: record the actual departure time the departures board publishes.
+
+    The board says "9:25 am Departed 9:56 am". That is the only source of a real departure
+    time at a terminal whose camera does not face the berth — which, on this route, is both
+    of them.
+    """
+    if not _column_exists(conn, "deck_space", "departed_hhmm"):
+        conn.execute("ALTER TABLE deck_space ADD COLUMN departed_hhmm TEXT")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
+    2: _add_departed_hhmm,
 }
 
 
