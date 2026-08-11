@@ -231,3 +231,81 @@ def describe(result: FillResult) -> str:
     if result.budget_stopped:
         parts.append("stopped on the monthly budget")
     return ", ".join(parts)
+
+
+# A frame at the configured width costs about this much to read. Measured, not derived:
+# 20 frames came to $0.0200 at Haiku list price. Used only to price the button — the real
+# cost is metered per call and recorded as it is spent.
+TYPICAL_INPUT_TOKENS = 800
+TYPICAL_OUTPUT_TOKENS = 40
+
+
+def estimate_cost(config: Config, frames: int) -> float:
+    return (
+        frames * TYPICAL_INPUT_TOKENS / 1_000_000 * config.vision.input_usd_per_mtok
+        + frames * TYPICAL_OUTPUT_TOKENS / 1_000_000 * config.vision.output_usd_per_mtok
+    )
+
+
+def fill_offer(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    depart_hhmm: str,
+    distribution: dict | None,
+    limit: int = DEFAULT_MAX_SAILINGS,
+) -> dict | None:
+    """What filling this slot would buy, or None if there is nothing worth buying.
+
+    Offered in two cases, which are different questions:
+
+    - The sample is thin. The answer needs this, so the offer is the point of the page.
+    - The sample is sufficient but there are *newer* comparable sailings unread. Without
+      this the distribution would freeze at whatever the first fill produced and age
+      silently — still showing five sailings, still saying "sufficient", quietly describing
+      a season that has passed.
+
+    Returns None once every comparable sailing has a record, so the button disappears rather
+    than inviting a tap that would do nothing.
+    """
+    candidates = [
+        candidate
+        for candidate in estimate_frames(
+            conn,
+            config,
+            fillable_sailings(
+                conn,
+                config,
+                origin=origin,
+                target_date=target_date,
+                depart_hhmm=depart_hhmm,
+                limit=limit,
+            ),
+        )
+        if candidate.frames
+    ]
+    if not candidates:
+        return None
+
+    n = (distribution or {}).get("n") or 0
+    sufficient = bool((distribution or {}).get("sufficient"))
+    newest_sample = max(
+        (s["service_date"] for s in (distribution or {}).get("samples") or []), default=""
+    )
+    newer_available = any(c.service_date > newest_sample for c in candidates)
+
+    if sufficient and not newer_available:
+        return None
+
+    frames = sum(c.frames for c in candidates)
+    return {
+        "sailings": len(candidates),
+        "frames": frames,
+        "cost_usd": round(estimate_cost(config, frames), 4),
+        # "more" when it is deepening a thin answer, "newer" when it is refreshing a
+        # sufficient one — the two read differently and should not share a label.
+        "reason": "thin" if not sufficient else "newer",
+        "has_history": n > 0,
+    }

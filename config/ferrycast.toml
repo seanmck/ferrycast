@@ -93,6 +93,8 @@ on_demand_max_age_minutes = 90
 # on to enable the "check now" button and POST /api/check.
 allow_on_demand_checks = false
 on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
+allow_on_demand_backfill = false  # the "fill this slot's history" button; spends money
+backfill_daily_frame_cap = 120
 
 [aggregate]
 vessel_capacity         = 125  # Island Sky, approx. vehicle equivalents — verify

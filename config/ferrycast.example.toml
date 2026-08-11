@@ -83,6 +83,13 @@ on_demand_max_age_minutes = 90
 allow_on_demand_checks = false
 on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
 
+# The "fill in this slot's history" button. Off by default for the same reason: a public URL
+# that spends money on a stranger's tap is a bad default. Behind auth, or on a LAN, turning
+# it on is what makes the history build itself — the frames are already archived and free,
+# and reading them is the only step that costs anything.
+allow_on_demand_backfill = false
+backfill_daily_frame_cap = 120   # counts frames, not taps, so one slot cannot exhaust the day
+
 # Public origin, used to make the link-preview URLs absolute — Open Graph requires it.
 # Leave empty to use whatever address the request arrived on, which is right for a LAN and
 # usually right behind a proxy that sets X-Forwarded-Proto. Set it if previews come back
