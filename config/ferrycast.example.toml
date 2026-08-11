@@ -97,7 +97,11 @@ backfill_daily_frame_cap = 120   # counts frames, not taps, so one slot cannot e
 base_url = ""   # e.g. "https://ferrycast.example.com"
 
 [aggregate]
-vessel_capacity         = 125  # Island Sky, approx. vehicle equivalents — verify
+# Malaspina Sky (BC Ferries code ISKY, built 2008) — the same vessel formerly named
+# Island Sky, renamed rather than replaced, so 125 was right all along. This number is the
+# waited_1 / waited_2plus boundary: a residual queue larger than the vessel means more than
+# one sailing's worth was left behind. Re-check it if the route ever changes ship.
+vessel_capacity         = 125  # approx. vehicle equivalents
 lookback_minutes        = 120  # how far before a departure to look for queue build-up
 departure_grace_minutes = 20   # "queue at departure" comes from this window before it
 settle_minutes          = 12   # wait this long after departure before reading the residual
