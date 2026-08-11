@@ -99,6 +99,10 @@ residual_threshold      = 5    # a residual at or above this means vehicles were
 
 [query]
 min_sample                     = 5   # below this, the search widens and says so
+# Only the most recent N comparable sailings count. Without a cap the distribution
+# accumulates forever and quietly ages: a sailing from two timetables and a different vessel
+# ago would weigh as much as last week's, while still looking well-evidenced.
+max_samples                    = 5
 time_tolerance_minutes         = 15
 relaxed_time_tolerance_minutes = 60
 

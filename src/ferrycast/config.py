@@ -127,6 +127,10 @@ class QueryConfig:
     min_sample: int = 5
     time_tolerance_minutes: int = 15
     relaxed_time_tolerance_minutes: int = 60
+    # Only the most recent N comparable sailings count. Without a cap the distribution
+    # accumulates forever, and a sailing from two timetables and a different vessel ago
+    # weighs as much as last week's — ageing quietly, while still looking well-evidenced.
+    max_samples: int = 5
 
 
 @dataclass(frozen=True)

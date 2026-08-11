@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from ferrycast.web.app import _countdown, create_app
 
-from .test_query import fridays, seed_record
+from .test_query import PLAIN_FRIDAY, fridays, seed_record
 from .test_report_bounds import add_report
 
 
@@ -29,7 +29,7 @@ def test_index_renders_the_distribution_server_side(client, conn, config):
     ):
         seed_record(conn, config, day, "12:30", outcome)
 
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
 
     assert response.status_code == 200
     # The answer is in the first response, not fetched afterwards by script.
@@ -39,7 +39,7 @@ def test_index_renders_the_distribution_server_side(client, conn, config):
 
 def test_index_warns_when_the_sample_is_thin(client, conn, config):
     seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
     assert "Small sample" in response.text
 
 
@@ -50,7 +50,7 @@ def test_index_carries_the_bounds_from_the_line(client, conn, config):
         seed_record(conn, config, day, "12:30", "filled")
     add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:20", boarded=False)
 
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
 
     assert "On days like this" in response.text
     assert "11:20" in response.text
@@ -64,7 +64,7 @@ def test_the_index_never_turns_boarding_into_an_arrival_time(client, conn, confi
     add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:15", boarded=True)
     add_report(conn, config, date(2026, 7, 10), "12:30", joined="11:05", boarded=True)
 
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
 
     assert "everyone who did get on had" in response.text
     assert "11:15" in response.text
@@ -201,7 +201,7 @@ def test_api_query_returns_the_distribution(client, conn, config):
     for day in fridays(3):
         seed_record(conn, config, day, "12:30", "waited_1")
 
-    response = client.get("/api/query", params={"origin": "SLT", "service_date": "2026-07-31", "time": "12:30"})
+    response = client.get("/api/query", params={"origin": "SLT", "service_date": PLAIN_FRIDAY.isoformat(), "time": "12:30"})
 
     assert response.status_code == 200
     payload = response.json()
@@ -333,7 +333,7 @@ def test_index_shows_the_share_that_waited(client, conn, config):
         fridays(4), ["boarded", "waited_1", "waited_1", "waited_2plus"], strict=True
     ):
         seed_record(conn, config, day, "12:30", outcome)
-    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+    response = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30")
     assert "75%" in response.text
     assert "waited at least one sailing" in response.text
 
@@ -389,7 +389,7 @@ def test_preview_stays_generic_whichever_sailing_the_link_names(client, conn, co
         seed_record(conn, config, day, "12:30", outcome)
 
     bare = client.get("/").text
-    sailing = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+    sailing = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
     assert _meta(sailing, "og:title") == _meta(bare, "og:title")
     assert _meta(sailing, "og:description") == _meta(bare, "og:description")
@@ -399,7 +399,7 @@ def test_preview_stays_generic_whichever_sailing_the_link_names(client, conn, co
 
 
 def test_preview_url_is_the_bare_page(client):
-    html = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+    html = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
     assert _meta(html, "og:url") == "http://testserver/"
 
 
@@ -466,7 +466,7 @@ def test_collection_evidence_is_hidden_once_there_is_a_real_answer(client, conn,
     for day in fridays(6):
         seed_record(conn, config, day, "12:30", "waited_1")
 
-    body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
     assert "comparable sailing" in body
     assert "Collected for the" not in body
 
@@ -483,7 +483,7 @@ def test_the_page_never_claims_frames_for_a_deck_space_answer(client, conn, conf
         add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
         aggregate_day(conn, config, day)
 
-    body = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30").text
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
     assert "not how many vehicles were still queued" in body  # what this evidence is
     assert "counted from terminal webcam frames" not in body  # and what it is not

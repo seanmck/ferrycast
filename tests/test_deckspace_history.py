@@ -14,6 +14,7 @@ from ferrycast.query import arrival_curve, query_distribution
 from ferrycast.timeutil import combine_local, iso, parse_hhmm
 
 from .conftest import add_observation
+from .test_query import PLAIN_FRIDAY
 
 
 def add_deck_space(conn, config, terminal, service_date, hhmm, readings, *, route=None):
@@ -215,7 +216,7 @@ def test_distribution_reports_filled_sailings(conn, config):
     _seed_history(conn, config, [30, 45, None, 20])
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.n == 4
@@ -229,7 +230,7 @@ def test_distribution_reports_when_it_typically_fills(conn, config):
     _seed_history(conn, config, [30, 45, 20, 30])
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.typical_fill_minutes_before == 30
@@ -240,7 +241,7 @@ def test_distribution_says_what_the_evidence_can_support(conn, config):
     _seed_history(conn, config, [30, 45, 20, 30])
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.evidence == "deck_space"
@@ -252,7 +253,7 @@ def test_samples_carry_the_fill_time(conn, config):
     _seed_history(conn, config, [30, 45, 20, 30])
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     filled = [s for s in result.samples if s.outcome == "filled"]
@@ -264,7 +265,7 @@ def test_arrival_curve_falls_back_to_deck_space(conn, config):
     _seed_history(conn, config, [30, 45, 20, 30])
 
     curve = arrival_curve(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert curve["source"] == "deck_space"

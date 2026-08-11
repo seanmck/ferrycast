@@ -92,3 +92,37 @@ departures = ["22:15"]
 def test_missing_schedule_is_a_clear_error(tmp_path):
     with pytest.raises(ConfigError, match="no schedule"):
         load_schedule(tmp_path / "absent.toml")
+
+
+# ---- Where summer ends ------------------------------------------------------------------
+
+
+def test_summer_ends_on_the_first_day_of_school():
+    """BC schools open the Tuesday after Labour Day. 2026's first day is September 8."""
+    from ferrycast.schedule import summer_ends
+
+    assert summer_ends(2026) == date(2026, 9, 8)
+    assert summer_ends(2026).strftime("%A") == "Tuesday"
+
+
+def test_the_boundary_tracks_labour_day_rather_than_a_fixed_date():
+    """A hardcoded 'September 8' is right for 2026 and wrong every year after."""
+    from ferrycast.schedule import summer_ends
+
+    assert summer_ends(2027) == date(2027, 9, 7)
+    assert summer_ends(2028) == date(2028, 9, 5)
+
+
+def test_labour_day_itself_is_still_peak_summer():
+    """The last big travel day of the summer, and the busiest sailing of the weekend."""
+    assert season(date(2026, 9, 7)) == "peak_summer"
+
+
+def test_the_first_day_of_school_is_not_peak_summer():
+    """The whole point: the traffic stops when school starts, not on an arbitrary date."""
+    assert season(date(2026, 9, 8)) == "shoulder"
+
+
+def test_a_september_sailing_is_not_compared_with_an_august_one(conn, config):
+    """Before and after school starts are different worlds; the season split has to hold."""
+    assert season(date(2026, 8, 20)) != season(date(2026, 9, 10))

@@ -103,6 +103,7 @@ residual_threshold      = 5    # a residual at or above this means vehicles were
 
 [query]
 min_sample                     = 5   # below this, the search widens and says so
+max_samples                    = 5   # only the most recent N comparable sailings count
 time_tolerance_minutes         = 15
 relaxed_time_tolerance_minutes = 60
 
