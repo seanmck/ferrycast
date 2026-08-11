@@ -53,6 +53,30 @@ def file_report(conn, config, **kwargs):
     return submit_report(conn, config, **fields)
 
 
+def board_says_departed(conn, config, departed: str, *, hhmm="12:30", origin="SLT"):
+    """The departures board publishing an actual departure time.
+
+    Reports no longer ask for it — the board gives it to the minute, and one fewer field
+    matters when the form is filled in at the side of a highway. The stored value still
+    drives validation, so tests that used to pass `departed=` now seed the board instead.
+    """
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                departed_hhmm, status_text, fetch_status)
+           VALUES (?, ?, ?, ?, ?, ?, 'Departed', 'ok')""",
+        (
+            config.route.id,
+            origin,
+            f"{SAILED.isoformat()}T20:00:00Z",
+            SAILED.isoformat(),
+            hhmm,
+            departed,
+        ),
+    )
+    conn.commit()
+
+
 def outcome_of(conn, service_date: date, hhmm: str, origin: str = "SLT") -> str:
     row = conn.execute(
         """SELECT r.outcome, r.method, r.filled_at
@@ -67,7 +91,8 @@ def outcome_of(conn, service_date: date, hhmm: str, origin: str = "SLT") -> str:
 
 
 def test_a_report_is_stored_against_the_scheduled_sailing(conn, config):
-    file_report(conn, config, joined=time(11, 55), departed=time(12, 42), deck_fullness="full")
+    board_says_departed(conn, config, "12:42")
+    file_report(conn, config, joined=time(11, 55), deck_fullness="full")
 
     rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
 
@@ -98,14 +123,24 @@ def test_a_sailing_not_in_the_timetable_is_refused(conn, config):
 
 
 def test_joining_after_the_ferry_left_is_refused(conn, config):
+    board_says_departed(conn, config, "12:35")
     with pytest.raises(ReportError, match="after the ferry left"):
-        file_report(conn, config, joined=time(13, 10), departed=time(12, 35))
+        file_report(conn, config, joined=time(13, 10))
 
 
-def test_a_departure_hours_from_the_scheduled_one_is_refused(conn, config):
-    """The am/pm flip: a 12:30 sailing reported as leaving at 00:30."""
-    with pytest.raises(ReportError, match="too far from the scheduled"):
-        file_report(conn, config, departed=time(0, 30))
+def test_joining_after_the_scheduled_time_is_fine_when_the_sailing_ran_late(conn, config):
+    """The reason the departure time is still needed at all. Someone who joined at 12:50 for
+    a 12:30 that left at 13:05 is telling the truth, and asking them for the time by hand was
+    the previous way of knowing it."""
+    board_says_departed(conn, config, "13:05")
+    file_report(conn, config, joined=time(12, 50))
+    assert len(fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")) == 1
+
+
+def test_without_a_board_departure_the_scheduled_time_bounds_the_report(conn, config):
+    """No board reading yet — fall back to the timetable rather than accepting anything."""
+    with pytest.raises(ReportError, match="after the ferry left"):
+        file_report(conn, config, joined=time(13, 10))
 
 
 def test_an_unknown_deck_fullness_is_refused(conn, config):
@@ -251,7 +286,8 @@ def test_the_two_bounds_are_reported_the_honest_way_round(conn, config):
 
 
 def test_lateness_is_measured_against_the_scheduled_departure(conn, config):
-    file_report(conn, config, departed=time(12, 47))
+    board_says_departed(conn, config, "12:47")
+    file_report(conn, config)
     departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
 
     summary = describe_reports(
@@ -272,7 +308,6 @@ def _form(**overrides) -> dict:
         "time": "12:30",
         "boarded": "yes",
         "joined": "11:55",
-        "departed": "12:35",
         "deck_fullness": "nearly_full",
     }
     body.update(overrides)
@@ -313,7 +348,7 @@ def test_a_submitted_report_shows_on_the_page(client):
 
 
 def test_a_rejected_report_says_why_and_keeps_what_was_typed(client):
-    response = client.post("/report", data=_form(joined="12:50", departed="12:35"))
+    response = client.post("/report", data=_form(joined="12:50"))
 
     assert response.status_code == 400
     assert "Not recorded: you cannot have joined the line after the ferry left" in response.text
@@ -327,7 +362,8 @@ def test_a_report_with_no_answer_is_refused(client):
     assert "say whether you got on" in response.text
 
 
-def test_the_api_lists_a_sailings_reports(client):
+def test_the_api_lists_a_sailings_reports(client, conn, config):
+    board_says_departed(conn, config, "12:35")
     client.post("/report", data=_form())
 
     payload = client.get(

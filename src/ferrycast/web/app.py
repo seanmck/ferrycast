@@ -343,7 +343,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
         time: str,
         boarded: str,
         joined: str = "",
-        departed: str = "",
         deck_fullness: str = "",
     ) -> int:
         """Everything the two submission paths agree on, in one place."""
@@ -361,7 +360,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
             depart_hhmm=time,
             boarded=boarded == "yes",
             joined=parse_clock(joined),
-            departed=parse_clock(departed),
             deck_fullness=deck_fullness or None,
         )
 
@@ -375,7 +373,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # actually make here, and it deserves the page's own message rather than a 422.
         boarded: str = Form(""),
         joined: str = Form(""),
-        departed: str = Form(""),
         deck_fullness: str = Form(""),
         conn: sqlite3.Connection = Depends(get_conn),
         config: Config = Depends(get_config),
@@ -390,7 +387,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 time=time,
                 boarded=boarded,
                 joined=joined,
-                departed=departed,
                 deck_fullness=deck_fullness,
             )
         except ReportError as exc:
@@ -407,7 +403,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 report_values={
                     "boarded": boarded,
                     "joined": joined,
-                    "departed": departed,
                     "deck_fullness": deck_fullness,
                 },
                 status_code=400,
@@ -504,7 +499,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
         time: str,
         boarded: bool,
         joined: str = "",
-        departed: str = "",
         deck_fullness: str = "",
         conn: sqlite3.Connection = Depends(get_conn),
         config: Config = Depends(get_config),
@@ -518,7 +512,6 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 time=time,
                 boarded="yes" if boarded else "no",
                 joined=joined,
-                departed=departed,
                 deck_fullness=deck_fullness,
             )
         except ReportError as exc:
