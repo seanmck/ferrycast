@@ -305,3 +305,41 @@ def test_a_sailing_read_but_unresolved_is_not_counted_as_recorded(conn, config, 
     assert result.frames_read > 0
     assert result.recorded == 0
     assert result.unresolved == 1
+
+
+def test_the_essential_set_does_not_move_as_frames_are_read(conn, config):
+    """Choosing the nearest *unread* frame to each offset made the set shift: once the
+    nearest four were read, the next call picked the next-nearest four. A slot never
+    exhausted, so every fill spent money on progressively worse frames while the outcome
+    never changed — and the button never went away.
+    """
+    from ferrycast.selection import essential_frames_for_sailing
+    from ferrycast.timeutil import parse_iso
+
+    sailing_id = add_sailing(conn, config, MONDAYS[0], "12:30")
+    add_frames(conn, config, MONDAYS[0], "12:30")
+    departure = parse_iso(
+        conn.execute(
+            "SELECT scheduled_departure FROM sailings WHERE id = ?", (sailing_id,)
+        ).fetchone()[0]
+    )
+
+    first = essential_frames_for_sailing(conn, config, origin="SLT", departure=departure)
+    assert len(first) == len(config.vision.essential_offsets_minutes)
+
+    for frame in first:
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, usable, confidence,
+                    created_at)
+               VALUES (?, ?, ?, 10, 1, 0.9, '2026-01-01T00:00:00Z')""",
+            (frame["id"], config.vision.prompt_version, config.vision.model),
+        )
+    conn.commit()
+
+    assert essential_frames_for_sailing(conn, config, origin="SLT", departure=departure) == []
+    # The canonical set is unchanged — it is the same four frames, now all read.
+    everything = essential_frames_for_sailing(
+        conn, config, origin="SLT", departure=departure, only_unextracted=False
+    )
+    assert [r["id"] for r in everything] == [r["id"] for r in first]

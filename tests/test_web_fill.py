@@ -258,3 +258,44 @@ def test_a_nonsense_cap_is_rejected_rather_than_ignored(config, monkeypatch):
     monkeypatch.setenv("FERRYCAST_BACKFILL_DAILY_FRAME_CAP", "lots")
     with pytest.raises(ConfigError, match="whole number"):
         load_config(config.source_path)
+
+
+def test_an_exhausted_slot_explains_itself_instead_of_going_blank(
+    enabled, conn, config, monkeypatch
+):
+    """After a fill that resolved nothing, the button correctly disappears — re-reading
+    would cost money and change nothing. It disappearing *silently* left an unexplained gap
+    that looked exactly like the feature being broken."""
+    _fridays_with_frames(conn, config, count=1)
+
+    def fake_extract(conn_, config_, frames, **kw):
+        from ferrycast.vision import ExtractionStats
+
+        # Mark them read, as a real extraction would, without resolving anything. Uses the
+        # request's own connection — the app runs in another thread and SQLite objects do
+        # not cross threads.
+        for frame in frames:
+            conn_.execute(
+                """INSERT INTO observations
+                       (frame_id, prompt_version, model, vehicle_count, usable, confidence,
+                        created_at)
+                   VALUES (?, ?, ?, NULL, 0, 0.1, '2026-01-01T00:00:00Z')""",
+                (frame["id"], config_.vision.prompt_version, config_.vision.model),
+            )
+        conn_.commit()
+        stats = ExtractionStats()
+        stats.extracted = len(frames)
+        return stats
+
+    monkeypatch.setattr("ferrycast.vision.extract_frames", fake_extract)
+    enabled.post(
+        "/fill",
+        data={"origin": "SLT", "service_date": PLAIN_FRIDAY.isoformat(), "time": "12:30"},
+    )
+
+    body = enabled.get(SLOT).text
+    assert 'action="/fill"' not in body, "re-reading would cost money and change nothing"
+    assert "Nothing more to read" in body
+    # Phrase chosen to sit on one template line: the explanation wraps, so a longer match
+    # would fail on the newline rather than on the behaviour.
+    assert "Reading them again would change nothing" in body

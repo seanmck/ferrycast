@@ -175,6 +175,10 @@ def essential_frames_for_sailing(
     chosen: dict[int, sqlite3.Row] = {}
     for offset in config.vision.essential_offsets_minutes:
         target = departure + timedelta(minutes=offset)
+        # Choose from *all* frames, then drop the ones already read. Choosing from the
+        # unread ones instead made the set move: once the nearest four were read, the next
+        # call picked the next-nearest four, so a slot never exhausted — every fill spent
+        # money on progressively worse frames and the outcome never changed.
         row = _nearest(
             frames_between(
                 conn,
@@ -182,10 +186,30 @@ def essential_frames_for_sailing(
                 origin,
                 target - tolerance,
                 target + tolerance,
-                only_unextracted=only_unextracted,
+                only_unextracted=False,
             ),
             target,
         )
         if row is not None:
             chosen[row["id"]] = row
-    return sorted(chosen.values(), key=lambda row: row["captured_at"])
+
+    rows = sorted(chosen.values(), key=lambda row: row["captured_at"])
+    if not only_unextracted:
+        return rows
+    return [row for row in rows if row["id"] in _unread_ids(conn, config, chosen)]
+
+
+def _unread_ids(conn: sqlite3.Connection, config: Config, chosen: dict) -> set[int]:
+    """Which of these frames have no observation at the current prompt version."""
+    if not chosen:
+        return set()
+    placeholders = ",".join("?" for _ in chosen)
+    read = {
+        row[0]
+        for row in conn.execute(
+            f"""SELECT frame_id FROM observations
+                 WHERE prompt_version = ? AND frame_id IN ({placeholders})""",
+            (config.vision.prompt_version, *chosen),
+        )
+    }
+    return set(chosen) - read

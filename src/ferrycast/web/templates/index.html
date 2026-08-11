@@ -516,7 +516,22 @@
   </section>
 {% endif %}
 
-{% if fill_offer %}
+{% if fill_offer and fill_offer.reason == 'exhausted' %}
+  {# Read already, still unresolved, and nothing left to read — so there is no button. It
+     used to simply disappear, which left an unexplained gap that looked identical to the
+     feature being broken. #}
+  <section class="card">
+    <p class="label">Nothing more to read</p>
+    <p class="note">{{ fill_offer.sailings }} comparable
+      sailing{{ '' if fill_offer.sailings == 1 else 's' }}
+      {{ 'has' if fill_offer.sailings == 1 else 'have' }} had their frames read and still
+      cannot be resolved. The queue was counted; what is missing is evidence the vessel
+      actually left — the departures board publishes that only for today's sailings, and
+      neither camera shows the berth. Reading them again would change nothing.</p>
+    <p class="note">Sailings from today onward record normally. For an older one, reporting
+      what happened is the only thing that settles it.</p>
+  </section>
+{% elif fill_offer %}
   <form method="post" action="/fill" class="card">
     <input type="hidden" name="origin" value="{{ origin }}">
     <input type="hidden" name="service_date" value="{{ service_date }}">

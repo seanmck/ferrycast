@@ -36,7 +36,11 @@ class Candidate:
     depart_hhmm: str
     scheduled_departure: str
     origin: str
+    # Unread frames — what a fill would cost. `archived` is every frame in the window,
+    # read or not, which is what tells "already read, still unresolved" apart from "no
+    # frames were ever captured for that day".
     frames: int = 0
+    archived: int = 0
 
 
 @dataclass
@@ -142,12 +146,19 @@ def estimate_frames(
     from .selection import essential_frames_for_sailing
 
     for candidate in candidates:
+        departure = parse_iso(candidate.scheduled_departure)
         candidate.frames = len(
+            essential_frames_for_sailing(
+                conn, config, origin=candidate.origin, departure=departure
+            )
+        )
+        candidate.archived = len(
             essential_frames_for_sailing(
                 conn,
                 config,
                 origin=candidate.origin,
-                departure=parse_iso(candidate.scheduled_departure),
+                departure=departure,
+                only_unextracted=False,
             )
         )
     return candidates
@@ -302,23 +313,34 @@ def fill_offer(
     Returns None once every comparable sailing has a record, so the button disappears rather
     than inviting a tap that would do nothing.
     """
-    candidates = [
-        candidate
-        for candidate in estimate_frames(
+    all_candidates = estimate_frames(
+        conn,
+        config,
+        fillable_sailings(
             conn,
             config,
-            fillable_sailings(
-                conn,
-                config,
-                origin=origin,
-                target_date=target_date,
-                depart_hhmm=depart_hhmm,
-                limit=limit,
-            ),
-        )
-        if candidate.frames
-    ]
+            origin=origin,
+            target_date=target_date,
+            depart_hhmm=depart_hhmm,
+            limit=limit,
+        ),
+    )
+    candidates = [c for c in all_candidates if c.frames]
+
     if not candidates:
+        # Nothing left to read. If frames were read and the sailing is still unresolved,
+        # say so: the button simply vanishing left somebody looking at an unexplained gap
+        # with no idea whether it was working. Re-reading would cost money and change
+        # nothing, so this is a note rather than a control.
+        exhausted = [c for c in all_candidates if c.archived]
+        if exhausted:
+            return {
+                "reason": "exhausted",
+                "sailings": len(exhausted),
+                "frames": 0,
+                "cost_usd": 0.0,
+                "has_history": bool((distribution or {}).get("n")),
+            }
         return None
 
     n = (distribution or {}).get("n") or 0
