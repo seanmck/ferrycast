@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from ferrycast.web.app import create_app
 
 from .test_query import fridays, seed_record
+from .test_report_bounds import add_report
 
 
 @pytest.fixture
@@ -40,6 +41,35 @@ def test_index_warns_when_the_sample_is_thin(client, conn, config):
     seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
     response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
     assert "Small sample" in response.text
+
+
+def test_index_carries_the_bounds_from_the_line(client, conn, config):
+    """Reports on comparable sailings reach a date nobody has reported on — which is the
+    only kind of date anybody plans against."""
+    for day in fridays(4):
+        seed_record(conn, config, day, "12:30", "filled")
+    add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:20", boarded=False)
+
+    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+
+    assert "On days like this" in response.text
+    assert "11:20" in response.text
+
+
+def test_the_index_never_turns_boarding_into_an_arrival_time(client, conn, config):
+    """Two people got on at 11:15. The page says so and stops there: no "arrive by 11:15",
+    because whether it worked depended on how many were ahead of them."""
+    for day in fridays(4):
+        seed_record(conn, config, day, "12:30", "boarded")
+    add_report(conn, config, date(2026, 7, 3), "12:30", joined="11:15", boarded=True)
+    add_report(conn, config, date(2026, 7, 10), "12:30", joined="11:05", boarded=True)
+
+    response = client.get("/?origin=SLT&service_date=2026-07-31&time=12:30")
+
+    assert "everyone who did get on had" in response.text
+    assert "11:15" in response.text
+    assert "not a target" in response.text
+    assert "Arrive before" not in response.text
 
 
 def test_index_offers_both_directions(client):

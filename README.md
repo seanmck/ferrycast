@@ -237,6 +237,39 @@ and the bound the report does establish is stated on the page instead:
 > Someone joined the line at **11:50** and did not get on, so the cutoff was earlier than that.
 > There was still room for someone who joined at **11:05**.
 
+#### The same bounds, on a date nobody has reported on
+
+Stated that way they only ever appear on the sailing being reported, which means they are
+blank on every future date — every date anybody actually plans against. So they are also
+pooled across *comparable* sailings, scoped as the collected-sailings panel is scoped: same
+terminal, same day type, same departure time within the tolerance. That block appears under
+the "arrive before" time:
+
+> **ON DAYS LIKE THIS**
+> Someone joined the line at **11:20** on a comparable sailing (Fri 10 Jul) and did not get
+> on, so on a day like this 11:20 has been too late.
+> Across 3 comparable sailings, everyone who did get on had joined by **11:05** — not a
+> target, since it depended on how many were ahead of them.
+
+The two lines are not mirror images, and only the first is advice. Somebody turned away at
+11:20 proves arriving that late has *failed* here, which transfers to you and can only move
+the advice earlier. Somebody boarding at 11:05 proves nothing transferable — whether it
+worked depended on how many vehicles were ahead of them that day — so it stays a
+description and never becomes an "arrive by" time. That asymmetry is why the pooled bound
+is an extreme rather than a median: one person turned away is an observed failure, not a
+sample, and a median of the people who *made it* would measure how cautiously travellers
+happen to arrive rather than when the boat filled.
+
+Two consequences worth knowing. The turned-away line is suppressed when deck space already
+tells you to be earlier, because a bound that agrees with the headline is a line of type
+carrying no information. And it is the *only* arrival guidance on a sailing that filled
+without the feed ever showing zero — an overload out on the approach road, which deck space
+structurally cannot see. The "everyone who got on" line waits for a second report; the
+turned-away line does not.
+
+Pooling is done in minutes before departure, not by wall clock: the tolerance admits
+neighbouring departures, and 11:20 is 70 minutes early for a 12:30 but 55 for a 12:15.
+
 The same thing over the API, for scripting or a bulk backfill:
 
 ```bash

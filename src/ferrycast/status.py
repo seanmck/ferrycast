@@ -173,7 +173,13 @@ def check_and_compare(
 
     The historical half costs nothing — it reads sailing records that already exist.
     """
-    from .query import default_sailing_time, query_distribution, sailing_times, upcoming_sailings
+    from .query import (
+        comparable_report_bounds,
+        default_sailing_time,
+        query_distribution,
+        sailing_times,
+        upcoming_sailings,
+    )
 
     reference = at or now_utc()
     target_date = target_date or local(reference, config.tz).date()
@@ -197,10 +203,19 @@ def check_and_compare(
     )
 
     distribution = None
+    line_bounds = None
     if depart_hhmm:
         distribution = query_distribution(
             conn, config, origin=origin, target_date=target_date, depart_hhmm=depart_hhmm
         ).to_dict()
+        line_bounds = comparable_report_bounds(
+            conn,
+            config,
+            origin=origin,
+            target_date=target_date,
+            depart_hhmm=depart_hhmm,
+            cutline_minutes_before=distribution["typical_fill_minutes_before"],
+        )
 
     return {
         "status": status.to_dict(),
@@ -211,5 +226,6 @@ def check_and_compare(
             "depart_hhmm": depart_hhmm,
         },
         "history": distribution,
+        "line_bounds": line_bounds,
         "cost_usd": status.cost_usd,
     }
