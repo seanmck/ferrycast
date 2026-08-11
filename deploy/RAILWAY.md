@@ -149,6 +149,9 @@ a minute — it creates the database on first tick — then check the deploy log
 | `FERRYCAST_WEBCAM_ERL` | optional | As above. |
 | `FERRYCAST_DECKSPACE_SLT` / `_ERL` | optional | Deck-space page URLs. |
 | `FERRYCAST_BASE_URL` | recommended | Public origin, e.g. `https://ferrycast.up.railway.app`. Makes shared links preview with an image. |
+| `FERRYCAST_ALLOW_BACKFILL` | optional | `true` enables the page's "read these frames" button. Off unless set. |
+| `FERRYCAST_BACKFILL_DAILY_FRAME_CAP` | optional | Frames the page may read per day (default 120). |
+| `FERRYCAST_ALLOW_CHECKS` | optional | `true` enables the live "check now" button. Off unless set. |
 | `PORT` | injected | Railway sets it; `ferrycast run` binds it automatically. |
 
 The `FERRYCAST_WEBCAM_*` overrides exist so you can keep camera URLs out of git entirely if
@@ -216,6 +219,11 @@ The web endpoints in step 5 are the other way in, and need no CLI at all.
   avoids any minimum-interval restriction on platform cron. `ferrycast schedule` shows the
   plan; `ferrycast schedule --once` runs whatever is due and exits, if you ever do want to
   drive it externally.
+- **The two spend switches are environment variables, not just config.** `FERRYCAST_ALLOW_BACKFILL`
+  and `FERRYCAST_ALLOW_CHECKS` override the committed config, so turning either on — or
+  killing it in a hurry — is a variable change and a restart rather than a commit, a build
+  and a deploy. Only `true`/`1`/`yes`/`on` count as on: a deploy script setting the variable
+  to `false` or to nothing must not read as enabled.
 - **On-demand checks from the browser are disabled by default.** A public URL that spends
   money is a bad idea. To enable the button, set `[web] allow_on_demand_checks = true` and
   keep `on_demand_daily_cap` sane — and consider that a Railway domain is public unless you

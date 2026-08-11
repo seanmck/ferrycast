@@ -179,3 +179,58 @@ def test_the_daily_cap_stops_the_button_spending(enabled, conn, config, monkeypa
 
     assert called == [], "the cap must be checked before anything is read"
     assert "daily limit" in body
+
+
+# ---- Turning it on --------------------------------------------------------------------
+#
+# The switch has to be reachable without a commit, a build and a deploy. On a host like
+# Railway that means an environment variable and a restart — and, more importantly, that
+# turning it *off* in a hurry is one field rather than a release.
+
+
+def test_the_switch_can_be_thrown_from_the_environment(config, monkeypatch):
+    from ferrycast.config import load_config
+
+    monkeypatch.setenv("FERRYCAST_ALLOW_BACKFILL", "true")
+    assert load_config(config.source_path).web.allow_on_demand_backfill is True
+
+
+def test_the_environment_can_also_turn_it_off(config, monkeypatch):
+    """A config file saying true must be overridable to false, or the kill switch does not
+    work — which is the direction that matters when something is spending money."""
+    from ferrycast.config import load_config
+
+    path = config.source_path
+    path.write_text(path.read_text() + "\n[web]\nallow_on_demand_backfill = true\n")
+    assert load_config(path).web.allow_on_demand_backfill is True
+
+    monkeypatch.setenv("FERRYCAST_ALLOW_BACKFILL", "false")
+    assert load_config(path).web.allow_on_demand_backfill is False
+
+
+@pytest.mark.parametrize("value", ["false", "0", "", "no", "maybe", "TRUE-ish"])
+def test_only_an_affirmative_value_enables_spending(config, monkeypatch, value):
+    """bool(os.environ[...]) would read "false" as true. So would "0", and "". A spend
+    switch must not be flipped on by a deploy script setting the variable to nothing."""
+    from ferrycast.config import load_config
+
+    monkeypatch.setenv("FERRYCAST_ALLOW_BACKFILL", value)
+    assert load_config(config.source_path).web.allow_on_demand_backfill is False
+
+
+@pytest.mark.parametrize("value", ["true", "1", "on", "YES", " True "])
+def test_affirmative_values_are_accepted_generously(config, monkeypatch, value):
+    from ferrycast.config import load_config
+
+    monkeypatch.setenv("FERRYCAST_ALLOW_BACKFILL", value)
+    assert load_config(config.source_path).web.allow_on_demand_backfill is True
+
+
+def test_a_nonsense_cap_is_rejected_rather_than_ignored(config, monkeypatch):
+    """Silently falling back to the default would leave the operator believing they had
+    lowered the cap."""
+    from ferrycast.config import ConfigError, load_config
+
+    monkeypatch.setenv("FERRYCAST_BACKFILL_DAILY_FRAME_CAP", "lots")
+    with pytest.raises(ConfigError, match="whole number"):
+        load_config(config.source_path)
