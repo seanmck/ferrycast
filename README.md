@@ -190,8 +190,7 @@ under the answer:
 > **SALTERY BAY NOW**
 > *[live image]*
 > Live from BC Ferries. You are seeing the compound — vehicles still queued on the approach
-> road may be out of frame, which is the whole reason this app keeps a record rather than
-> trusting a glance.
+> road may be out of frame.
 
 The restriction is the point. A photograph is persuasive in a way a caption cannot undo, and
 a full compound attached to a sailing three days out would be read as that sailing's queue.
