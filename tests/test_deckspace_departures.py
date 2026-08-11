@@ -128,3 +128,25 @@ def test_health_flags_fetching_fine_and_recognising_nothing(conn, config):
 
     problems = health_report(conn, config, window_days=30).problems
     assert any("none named a scheduled sailing" in p for p in problems), problems
+
+
+# ---- The published departure time -------------------------------------------------------
+#
+# "9:25 am Departed 9:56 am". This is the only source of a real departure time at a terminal
+# whose camera does not face the berth — which on this route is both of them. Without it,
+# frames alone can say "the compound cleared" or "cannot tell", and nothing in between.
+
+
+def test_the_actual_departure_time_is_captured():
+    assert parsed()["09:25"].departed_hhmm == "09:56"
+    assert parsed()["05:35"].departed_hhmm == "05:39"
+
+
+def test_an_upcoming_sailing_has_no_departure_time_yet():
+    assert parsed()["11:45"].departed_hhmm is None
+
+
+def test_the_arrival_time_is_not_mistaken_for_a_departure():
+    """Every entry carries "Arrived: 10:41 am" as well, on the following line."""
+    assert parsed()["09:25"].departed_hhmm != "10:41"
+    assert parsed()["07:25"].departed_hhmm == "07:39"   # not 08:24, its arrival

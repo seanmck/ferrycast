@@ -32,6 +32,12 @@ CANCELLED_RE = re.compile(r"\bcancell?ed\b", re.IGNORECASE)
 # footer carries a "Cancelled Sailings" link — the status that matters is "Upcoming",
 # which appears first.
 STATUS_RE = re.compile(r"\b(cancell?ed|departed|upcoming|arrived|delayed)\b", re.IGNORECASE)
+# "9:25 am Departed 9:56 am" — the actual departure, which is the only source of one at a
+# terminal whose camera does not face the berth. Anchored on the word so the arrival time
+# on the next line ("Arrived: 10:41 am") cannot be mistaken for it.
+DEPARTED_RE = re.compile(
+    r"\bdeparted\b[^\d]{0,12}(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE
+)
 
 # How far past a sailing time its own status can run. Without a cap the final entry's
 # segment swallows the page footer, and the site's "Cancelled Sailings" link with it.
@@ -48,6 +54,7 @@ class DeckSpaceRow:
     percent_available: int | None
     vessel: str | None = None
     status_text: str | None = None
+    departed_hhmm: str | None = None
 
 
 def visible_text(html: str) -> str:
@@ -134,10 +141,19 @@ def parse_deck_space(html: str, expected: Sequence[str] | None = None) -> list[D
                 else:
                     available = value
 
+        departed = DEPARTED_RE.search(segment)
+        departed_hhmm = (
+            _to_24h(int(departed.group(1)), int(departed.group(2)), departed.group(3))
+            if departed
+            else None
+        )
+
         note = _snippet(segment)
         if available is None and not note:
             continue
-        rows.append(DeckSpaceRow(hhmm, available, status_text=note))
+        rows.append(
+            DeckSpaceRow(hhmm, available, status_text=note, departed_hhmm=departed_hhmm)
+        )
 
     return _dedupe(rows)
 
@@ -170,8 +186,8 @@ def store_rows(
         cur = conn.execute(
             """INSERT OR IGNORE INTO deck_space
                    (route, terminal, observed_at, service_date, sailing_hhmm,
-                    percent_available, vessel, status_text, fetch_status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok')""",
+                    percent_available, vessel, status_text, departed_hhmm, fetch_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')""",
             (
                 config.route.id,
                 terminal,
@@ -181,6 +197,7 @@ def store_rows(
                 row.percent_available,
                 row.vessel,
                 row.status_text,
+                row.departed_hhmm,
             ),
         )
         stored += cur.rowcount or 0

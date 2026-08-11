@@ -324,3 +324,68 @@ def test_an_on_time_sailing_still_settles_the_normal_way(conn, config):
     ).fetchone()
     assert row["outcome"] == "waited_1"
     assert row["residual_queue"] == 40
+
+
+def _board_row(conn, config, day, hhmm, departed, origin="SLT"):
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                departed_hhmm, status_text, fetch_status)
+           VALUES (?, ?, ?, ?, ?, ?, 'Departed', 'ok')""",
+        (
+            config.route.id,
+            origin,
+            combine_local(day, parse_hhmm(hhmm), config.tz).isoformat(),
+            day.isoformat(),
+            hhmm,
+            departed,
+        ),
+    )
+    conn.commit()
+
+
+def test_the_board_departure_rescues_a_berth_blind_camera(conn, config):
+    """Earls Cove's camera never shows a vessel, so frames alone can never establish that a
+    sailing ran — and an overload is exactly "it ran and left people behind". The board's
+    published departure is what makes that outcome reachable at all."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    for minutes, count in [(-45, 40), (-15, 95), (30, 60)]:
+        add_observation(
+            conn, config, "ERL", departure + timedelta(minutes=minutes), count,
+            ferry_at_dock=False,
+        )
+    _board_row(conn, config, day, "13:30", "13:35", origin="ERL")
+
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'ERL' AND s.depart_hhmm = '13:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+
+    assert row["outcome"] == "waited_1"
+    assert row["carryover"] == 60
+
+
+def test_the_board_departure_beats_the_scheduled_time_for_a_late_sailing(conn, config):
+    """A 30-minute delay, and the camera cannot see the berth to notice."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    for minutes, count in [(-45, 40), (-15, 95), (15, 90), (45, 3)]:
+        add_observation(
+            conn, config, "ERL", departure + timedelta(minutes=minutes), count,
+            ferry_at_dock=False,
+        )
+    _board_row(conn, config, day, "13:30", "14:00", origin="ERL")
+
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'ERL' AND s.depart_hhmm = '13:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+
+    # The +15 frame shows 90 vehicles still waiting — but it had not left yet.
+    assert row["residual_queue"] == 3
+    assert row["outcome"] == "boarded"

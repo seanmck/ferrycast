@@ -133,6 +133,44 @@ def _deck_space_min(
     return row[0] if row and row[0] is not None else None
 
 
+def _board_departure(
+    conn: sqlite3.Connection,
+    route: str,
+    terminal: str,
+    service_date: str,
+    hhmm: str,
+    config: Config,
+) -> datetime | None:
+    """When the board said this sailing actually left.
+
+    The published departure works where the camera cannot: at night, in fog, and — on this
+    route, at both terminals — where the camera faces the approach road rather than the
+    berth. Reported to the minute rather than to the nearest 15-minute frame.
+
+    The latest reading wins: the board fills the time in once the vessel has gone, so the
+    most recent scrape is the one that has it.
+    """
+    row = conn.execute(
+        """SELECT departed_hhmm FROM deck_space
+            WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
+              AND departed_hhmm IS NOT NULL AND fetch_status = 'ok'
+            ORDER BY observed_at DESC
+            LIMIT 1""",
+        (route, terminal, service_date, hhmm),
+    ).fetchone()
+    if row is None:
+        return None
+    from .timeutil import combine_local, parse_hhmm
+
+    departed = combine_local(date.fromisoformat(service_date), parse_hhmm(row[0]), config.tz)
+    # A sailing scheduled at 23:50 that leaves at 00:05 belongs to the previous service
+    # date. Without this the "actual" departure lands 24 hours early.
+    scheduled = combine_local(date.fromisoformat(service_date), parse_hhmm(hhmm), config.tz)
+    if departed < scheduled - timedelta(hours=12):
+        departed += timedelta(days=1)
+    return departed
+
+
 def _deck_space_series(
     conn: sqlite3.Connection, route: str, terminal: str, service_date: str, hhmm: str
 ) -> list[sqlite3.Row]:
@@ -299,6 +337,25 @@ def compute_record(
         sailing_row["service_date"],
         sailing_row["depart_hhmm"],
     )
+    # The board's published departure outranks the camera's: it is to the minute rather
+    # than to the nearest frame, and it works where the camera cannot see the berth.
+    board_departure = _board_departure(
+        conn,
+        sailing_row["route"],
+        sailing_row["origin"],
+        sailing_row["service_date"],
+        sailing_row["depart_hhmm"],
+        config,
+    )
+    if board_departure is not None:
+        left_at = board_departure
+        still_at_dock = False
+        settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), board_departure)
+        after = [
+            o for o in observations if o.at >= settle_from and o.vehicle_count is not None
+        ]
+        residual = after[0].vehicle_count if after else None
+
     departure_seen = left_at is not None or deck_min is not None
 
     outcome, overload, cancelled, carryover = classify(
