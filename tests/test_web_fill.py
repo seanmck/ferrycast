@@ -59,13 +59,14 @@ def test_the_button_appears_when_frames_are_waiting(enabled, conn, config):
     assert "Deepen this answer" in body
 
 
-def test_the_button_states_the_price_before_it_is_tapped(enabled, conn, config):
-    """A control that spends money says how much beforehand, not after."""
+def test_the_button_states_the_work_before_it_is_tapped(enabled, conn, config):
+    """How much it will read, so the tap is not a blind one. Not the price: a dollar figure
+    on the button turned a 1-cent action into something that looked like a purchase."""
     _fridays_with_frames(conn, config, count=2)
     body = enabled.get(SLOT).text
     # 2 sailings x 4 essential offsets = 8 frames.
     assert "Read 8 frames" in body
-    assert "$0.01" in body
+    assert "$" not in body.split('action="/fill"')[1].split("</form>")[0]
 
 
 def test_no_button_when_there_is_nothing_to_buy(enabled, conn, config):

@@ -448,8 +448,7 @@
         been read. The answer above is sound, but it is not the latest.
       {%- endif %}
     </p>
-    <button type="submit">Read {{ fill_offer.frames }} frame{{ '' if fill_offer.frames == 1 else 's' }}
-      — about ${{ '%.2f' | format(fill_offer.cost_usd) }}</button>
+    <button type="submit">Read {{ fill_offer.frames }} frame{{ '' if fill_offer.frames == 1 else 's' }}</button>
   </form>
 {% endif %}
 
