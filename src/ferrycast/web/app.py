@@ -241,10 +241,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 ),
                 # Shown when there is no distribution to show. A new install is correctly
                 # blank for weeks, which is indistinguishable from a broken scraper unless
-                # the page says what it has collected.
+                # the page says what it has collected — for *this* sailing, not for the
+                # route at large, or every page carries the same list and none of them
+                # is about the sailing on screen.
                 "collection": (
-                    collection_status(conn, config)
-                    if not (distribution and distribution["n"])
+                    collection_status(
+                        conn,
+                        config,
+                        origin=chosen_origin,
+                        target_date=chosen_date,
+                        depart_hhmm=chosen_time,
+                    )
+                    if chosen_time and not (distribution and distribution["n"])
                     else None
                 ),
                 "preview": index_preview(request, config),
