@@ -44,6 +44,12 @@ class FillResult:
     candidates: int = 0
     attempted: int = 0
     filled: int = 0
+    # Sailings that gained a *usable* outcome. Not the same as `filled`, which counts the
+    # ones whose frames were read: a sailing can be read in full and still classify as
+    # `unknown`, and `unknown` is excluded from the distribution. Reporting the wrong one
+    # told somebody the answer now included frames that had changed nothing.
+    recorded: int = 0
+    unresolved: int = 0
     frames_read: int = 0
     cost_usd: float = 0.0
     budget_stopped: bool = False
@@ -55,6 +61,8 @@ class FillResult:
             "candidates": self.candidates,
             "attempted": self.attempted,
             "filled": self.filled,
+            "recorded": self.recorded,
+            "unresolved": self.unresolved,
             "frames_read": self.frames_read,
             "cost_usd": round(self.cost_usd, 4),
             "budget_stopped": self.budget_stopped,
@@ -214,18 +222,42 @@ def fill_for_slot(
     if not dry_run:
         for service_date in sorted(touched_days):
             aggregate_day(conn, config, date.fromisoformat(service_date))
+        _count_outcomes(conn, candidates, result)
 
     return result
+
+
+def _count_outcomes(
+    conn: sqlite3.Connection, candidates: list[Candidate], result: FillResult
+) -> None:
+    """How many of the sailings just read now carry an outcome the query layer will use.
+
+    Reading a sailing's frames and classifying it are different things. With no berth view
+    and no published departure time, a busy sailing reads perfectly and still comes out
+    `unknown` — so counting frames as success reported a fill that changed nothing.
+    """
+    ids = [c.sailing_id for c in candidates if c.frames]
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""SELECT outcome FROM sailing_records WHERE sailing_id IN ({placeholders})""",
+        tuple(ids),
+    ).fetchall()
+    result.recorded = sum(1 for row in rows if row["outcome"] != "unknown")
+    result.unresolved = sum(1 for row in rows if row["outcome"] == "unknown")
 
 
 def describe(result: FillResult) -> str:
     if not result.candidates:
         return "nothing to fill: every comparable sailing already has a record"
     parts = [
-        f"{result.filled}/{result.attempted} sailing(s) filled",
+        f"{result.recorded}/{result.attempted} sailing(s) recorded",
         f"{result.frames_read} frame(s) read",
         f"${result.cost_usd:.4f}",
     ]
+    if result.unresolved:
+        parts.append(f"{result.unresolved} read but still unresolved")
     if result.skipped_no_frames:
         parts.append(f"{result.skipped_no_frames} had no archived frames")
     if result.budget_stopped:

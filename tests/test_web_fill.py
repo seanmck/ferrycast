@@ -159,6 +159,30 @@ def test_a_fill_reports_what_it_bought(enabled, conn, config, monkeypatch):
     assert "8 frames" in body
 
 
+def test_a_fill_that_resolved_nothing_says_so(enabled, conn, config, monkeypatch):
+    """The live failure: the panel said the answer now included the frames it had read,
+    while the distribution was unchanged — because a busy past sailing with no departure
+    evidence classifies as `unknown`, which the distribution excludes."""
+    _fridays_with_frames(conn, config, count=1)
+
+    def fake_extract(conn_, config_, frames, **kw):
+        from ferrycast.vision import ExtractionStats
+
+        stats = ExtractionStats()
+        stats.extracted = len(frames)
+        return stats
+
+    monkeypatch.setattr("ferrycast.vision.extract_frames", fake_extract)
+    body = enabled.post(
+        "/fill",
+        data={"origin": "SLT", "service_date": PLAIN_FRIDAY.isoformat(), "time": "12:30"},
+    ).text
+
+    assert "still unresolved" in body
+    assert "evidence the vessel actually left" in body
+    assert "the answer above now includes" not in body
+
+
 def test_the_daily_cap_stops_the_button_spending(enabled, conn, config, monkeypatch):
     """One slot must not be able to exhaust the day, and the message has to say so."""
     _fridays_with_frames(conn, config)

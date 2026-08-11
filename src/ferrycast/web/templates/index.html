@@ -489,12 +489,23 @@
     <p class="label">Filled</p>
     {% if fill_result.capped %}
       <p class="note flag">{{ fill_result.message }}</p>
-    {% elif fill_result.filled %}
+    {% elif fill_result.recorded %}
       <p class="note">Read {{ fill_result.frames_read }} frame{{ '' if fill_result.frames_read == 1 else 's' }}
-        across {{ fill_result.filled }} sailing{{ '' if fill_result.filled == 1 else 's' }},
-        and the answer above includes them now.
+        and recorded {{ fill_result.recorded }} sailing{{ '' if fill_result.recorded == 1 else 's' }},
+        which the answer above now includes.
+        {%- if fill_result.unresolved %} {{ fill_result.unresolved }} other{{ '' if
+        fill_result.unresolved == 1 else 's' }} could not be resolved.{% endif %}
         {%- if fill_result.budget_stopped %} It stopped early — this month's reading limit has
         been reached.{% endif %}</p>
+    {% elif fill_result.unresolved %}
+      {# Frames read, nothing concluded. The message used to claim the answer had changed,
+         which it had not — and this is the common case for a past sailing, so it has to say
+         what is missing rather than look like a failure of the frames. #}
+      <p class="note flag">Read {{ fill_result.frames_read }} frame{{ '' if
+        fill_result.frames_read == 1 else 's' }}, but the outcome is still unresolved. The
+        queue was counted; what is missing is evidence the vessel actually left — the
+        departures board only publishes that for today's sailings, and neither camera shows
+        the berth. Reporting what happened is the way to settle it.</p>
     {% else %}
       <p class="note flag">Nothing was added.
         {%- if fill_result.skipped_no_frames %} {{ fill_result.skipped_no_frames }} comparable

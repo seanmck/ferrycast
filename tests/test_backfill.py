@@ -276,3 +276,32 @@ def test_candidates_are_scoped_to_the_terminal_asked_about(conn, config, origin)
     )
     assert all(c.origin == origin for c in found)
     assert found
+
+
+def test_a_sailing_read_but_unresolved_is_not_counted_as_recorded(conn, config, monkeypatch):
+    """Reading a sailing's frames and classifying it are different things.
+
+    With no berth view and no published departure time, a busy sailing reads perfectly and
+    still comes out `unknown` — which the distribution excludes. Counting frames as success
+    told somebody the answer now included frames that had changed nothing.
+    """
+    add_sailing(conn, config, MONDAYS[0], "12:30")
+    add_frames(conn, config, MONDAYS[0], "12:30")
+
+    def fake_extract(conn_, config_, frames, **kw):
+        from ferrycast.vision import ExtractionStats
+
+        stats = ExtractionStats()
+        stats.extracted = len(frames)
+        return stats
+
+    monkeypatch.setattr("ferrycast.vision.extract_frames", fake_extract)
+    result = fill_for_slot(
+        conn, config, origin="SLT", target_date=TARGET, depart_hhmm="12:30", now=TARGET
+    )
+
+    # Frames were read, but nothing usable came of them: no observations were written by
+    # the stub, so the sailing stays unknown.
+    assert result.frames_read > 0
+    assert result.recorded == 0
+    assert result.unresolved == 1
