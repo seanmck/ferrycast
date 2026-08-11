@@ -547,6 +547,59 @@ def cmd_import_records(args) -> int:
     return 0
 
 
+def cmd_fill(args) -> int:
+    """Pay for one slot's history, on request.
+
+    The frames are already archived; this is the step that costs money, so it is a
+    deliberate command rather than something the schedule does to the whole backlog.
+    """
+    from .backfill import (
+        DEFAULT_MAX_SAILINGS,
+        describe,
+        estimate_frames,
+        fill_for_slot,
+        fillable_sailings,
+    )
+
+    config = _config(args)
+    conn = _open(config)
+    day = _parse_day(args.date or "today")
+    limit = args.max or DEFAULT_MAX_SAILINGS
+
+    if args.dry_run:
+        candidates = estimate_frames(
+            conn,
+            config,
+            fillable_sailings(
+                conn,
+                config,
+                origin=args.origin,
+                target_date=day,
+                depart_hhmm=args.time,
+                limit=limit,
+            ),
+        )
+        frames = sum(c.frames for c in candidates)
+        print(f"{len(candidates)} comparable sailing(s) without a record, {frames} frame(s) to read")
+        for candidate in candidates:
+            note = f"{candidate.frames} frame(s)" if candidate.frames else "no archived frames"
+            print(f"  {candidate.service_date} {candidate.depart_hhmm}  {note}")
+        return 0
+
+    result = fill_for_slot(
+        conn,
+        config,
+        origin=args.origin,
+        target_date=day,
+        depart_hhmm=args.time,
+        max_sailings=limit,
+    )
+    print(describe(result))
+    for error in result.errors:
+        print(f"  {error}", file=sys.stderr)
+    return 0
+
+
 def _serve(args, *, with_scheduler: bool) -> int:
     import uvicorn
 
@@ -659,6 +712,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="use stored frames only; do not fetch a fresh one",
     )
     check.set_defaults(func=cmd_check)
+
+    fill = sub.add_parser(
+        "fill",
+        help="on-demand: analyse the archived frames that answer one slot's history",
+    )
+    fill.add_argument("--origin", required=True, help="terminal code you are leaving from")
+    fill.add_argument("--date", help="target date (default: today)")
+    fill.add_argument("--time", required=True, help="sailing time HH:MM")
+    fill.add_argument(
+        "--max", type=int, default=None, help="most comparable sailings to read (default 6)"
+    )
+    fill.add_argument(
+        "--dry-run", action="store_true", help="report what it would read and cost, spend nothing"
+    )
+    fill.set_defaults(func=cmd_fill)
 
     aggregate = sub.add_parser("aggregate", help="roll frames up into sailing records (R4)")
     aggregate.add_argument("--date", help="a single service date (default: today)")
