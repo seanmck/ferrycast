@@ -187,6 +187,26 @@ def classify_from_deck_space(
     return "boarded", None, confidence
 
 
+def _departure_from_frames(observations, grace_from) -> tuple[datetime | None, bool]:
+    """When the vessel actually left, and whether it was still there at the end.
+
+    Returns (left_at, still_at_dock). `left_at` is the first frame showing an empty berth
+    after one that showed a vessel — the best the camera can say about a departure. It is
+    None both when no vessel was ever seen and when one never left.
+    """
+    window = [o for o in observations if o.at >= grace_from]
+    dock_times = [o.at for o in window if o.ferry_at_dock]
+    if not dock_times:
+        return None, False
+    last_dock = max(dock_times)
+    gone = [o for o in window if o.at > last_dock]
+    if not gone:
+        # A vessel was berthed in the last frame we have. It has not left yet — which is
+        # not the same as never leaving, and must not be read as a cancellation.
+        return None, True
+    return gone[0].at, False
+
+
 def classify(
     *,
     residual: int | None,
@@ -194,9 +214,15 @@ def classify(
     departure_seen: bool,
     capacity: int,
     residual_threshold: int,
+    still_at_dock: bool = False,
 ) -> tuple[str, bool, bool, int | None]:
     """Return (outcome, overload, cancelled, carryover)."""
     if residual is None or queue_at_departure is None:
+        return "unknown", False, False, None
+
+    # A vessel berthed in the last frame means the sailing had not gone by the time the
+    # evidence runs out. Anything else is a guess: the queue in shot may be boarding.
+    if still_at_dock:
         return "unknown", False, False, None
 
     if residual < residual_threshold:
@@ -238,23 +264,29 @@ def compute_record(
 
     before = [o for o in observations if o.at <= departure]
     counted_before = [o for o in before if o.vehicle_count is not None]
-    settle_from = departure + timedelta(minutes=cfg.settle_minutes)
+
+    grace_from = departure - timedelta(minutes=cfg.departure_grace_minutes)
+    left_at, still_at_dock = _departure_from_frames(observations, grace_from)
+
+    # Never read the residual before the vessel has actually gone. A sailing that leaves 30
+    # minutes late is routine here — the live board showed 9:25 departing at 9:56 — and
+    # measuring at scheduled+12 would photograph a compound that is still loading, counting
+    # every vehicle about to board as left behind.
+    #
+    # `left_at` is already the first frame showing an empty berth, so no further settle is
+    # added on top of it; the normal settle still applies when the sailing ran to time.
+    settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), left_at or departure)
     after = [
         o for o in observations if o.at >= settle_from and o.vehicle_count is not None
     ]
 
     peak = max((o.vehicle_count for o in counted_before), default=None)
 
-    grace_from = departure - timedelta(minutes=cfg.departure_grace_minutes)
     at_departure_candidates = [o for o in counted_before if o.at >= grace_from]
     queue_at_departure = at_departure_candidates[-1].vehicle_count if at_departure_candidates else None
 
     residual = after[0].vehicle_count if after else None
 
-    # A vessel counts as having departed if it was at the dock near the scheduled time and
-    # is gone afterwards, or if the deck-space feed published a figure for this sailing.
-    dock_before = any(o.ferry_at_dock for o in before if o.at >= grace_from)
-    dock_after = any(o.ferry_at_dock for o in observations if o.at >= settle_from)
     deck_min = _deck_space_min(
         conn,
         sailing_row["route"],
@@ -262,12 +294,13 @@ def compute_record(
         sailing_row["service_date"],
         sailing_row["depart_hhmm"],
     )
-    departure_seen = (dock_before and not dock_after) or deck_min is not None
+    departure_seen = left_at is not None or deck_min is not None
 
     outcome, overload, cancelled, carryover = classify(
         residual=residual,
         queue_at_departure=queue_at_departure,
         departure_seen=departure_seen,
+        still_at_dock=still_at_dock,
         capacity=cfg.vessel_capacity,
         residual_threshold=cfg.residual_threshold,
     )

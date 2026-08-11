@@ -205,3 +205,95 @@ def test_frames_from_the_previous_sailing_do_not_leak_in(conn, config):
     ).fetchone()
     assert row["peak_queue"] == 10
     assert row["outcome"] == "boarded"
+
+
+# ---- Late sailings ----------------------------------------------------------------------
+#
+# The offsets are relative to the *scheduled* departure, and this route runs late routinely:
+# the live board showed a 9:25 leaving at 9:56. Reading the "residual" at scheduled + 12 min
+# photographs a compound that is still loading, and every vehicle about to board looks like
+# a vehicle left behind.
+
+
+def test_a_late_sailing_is_not_read_as_an_overload(conn, config):
+    """The compound is full at scheduled+12 because the vessel has not gone yet."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+
+    # Queue builds, vessel berths and is STILL there 15 minutes after the scheduled time.
+    for minutes, count, docked in [(-45, 30, False), (-15, 80, True), (15, 78, True)]:
+        add_observation(
+            conn, config, "SLT", departure + timedelta(minutes=minutes), count,
+            ferry_at_dock=docked,
+        )
+    # It leaves late; by the time it has, the compound is nearly clear.
+    add_observation(conn, config, "SLT", departure + timedelta(minutes=35), 2)
+
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+
+    assert row["outcome"] == "boarded", "everyone got on; the sailing was simply late"
+    assert row["residual_queue"] == 2, "residual must come from after it actually left"
+
+
+def test_a_vessel_still_at_the_dock_is_not_a_cancellation(conn, config):
+    """The old rule was 'queue persists and no departure seen -> cancelled'. A vessel sitting
+    at the berth is the opposite of a cancellation, and the two must not share an outcome."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    for minutes, count in [(-45, 30), (-15, 80), (15, 78), (30, 75)]:
+        add_observation(
+            conn, config, "SLT", departure + timedelta(minutes=minutes), count,
+            ferry_at_dock=True,
+        )
+
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+
+    assert row["outcome"] == "unknown"
+    assert row["cancelled"] == 0
+
+
+def test_a_vessel_that_never_arrives_is_still_a_cancellation(conn, config):
+    """The genuine case the rule was written for: no vessel at all, queue never clears."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    for minutes, count in [(-45, 30), (-15, 80), (15, 78), (30, 75)]:
+        add_observation(
+            conn, config, "SLT", departure + timedelta(minutes=minutes), count,
+            ferry_at_dock=False,
+        )
+
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+
+    assert row["outcome"] == "cancelled"
+
+
+def test_an_on_time_sailing_still_settles_the_normal_way(conn, config):
+    """The late-departure rule must not shift the reading on a sailing that ran to time."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    build_sailing_frames(
+        conn, config, departure, before=[20, 55, 90], after=[40, 45], dock_before=True
+    )
+    aggregate_day(conn, config, day)
+    row = conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30' AND s.service_date = ?""",
+        (day.isoformat(),),
+    ).fetchone()
+    assert row["outcome"] == "waited_1"
+    assert row["residual_queue"] == 40
