@@ -589,3 +589,20 @@ def test_the_form_asks_how_long_they_waited(client, conn, config):
     body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
     assert 'name="sailings_waited"' in body
     assert "Two or more" in body
+
+
+def test_each_report_question_is_marked_for_the_answer_it_applies_to(client, conn, config):
+    """"How full was the deck" is for somebody who was on it; "how long did you wait" is for
+    somebody who missed it. Asking both of everyone invites an answer to a question the
+    person could not have observed.
+
+    The toggle itself is JavaScript, so what is pinned here is the markup it keys off — and
+    that with JS off both stay visible, which the server's own validation makes safe.
+    """
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+
+    assert 'id="waited-field" data-when-boarded="no"' in body
+    assert 'id="fullness-field" data-when-boarded="yes"' in body
+    # No `hidden` attribute in the markup: before either radio is touched both apply, and a
+    # form that renders half its questions is one somebody assumes they have finished.
+    assert 'data-when-boarded="no" hidden' not in body
