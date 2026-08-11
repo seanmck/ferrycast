@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 
 from .config import Config
+from .holidays import is_long_weekend
 from .schedule import Sailing, day_tags, day_type, load_schedule_cached, sailings_for_day, season
 from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
@@ -128,6 +129,11 @@ class _Level:
     day_types: tuple[str, ...]
     same_season: bool
     description: str
+    # A long-weekend Monday behaves nothing like an ordinary one, and the difference is not
+    # captured by day type alone: a stat Monday already buckets as sunday_holiday, but the
+    # Friday and Sunday *around* it look like ordinary Fridays and Sundays to the schedule.
+    # This is the last dimension to be relaxed, because it is the strongest one.
+    same_long_weekend: bool = True
 
 
 def _levels(config: Config, target_day_type: str) -> list[_Level]:
@@ -138,12 +144,24 @@ def _levels(config: Config, target_day_type: str) -> list[_Level]:
         _Level("exact", tight, (target_day_type,), True, "same sailing time, day type and season"),
         _Level("any_season", tight, (target_day_type,), False, "widened to all seasons"),
         _Level("wider_time", wide, (target_day_type,), False, f"widened to +/-{wide} min"),
+        # Long-weekend context is relaxed before day type, not after: for a long-weekend
+        # Friday, ordinary Fridays are a closer comparison than long-weekend Saturdays.
+        # Day type is the more fundamental dimension; this one is a strong modifier on it.
+        _Level(
+            "any_long_weekend",
+            wide,
+            (target_day_type,),
+            False,
+            "widened to include days outside a long weekend, which behave differently",
+            same_long_weekend=False,
+        ),
         _Level(
             "grouped_days",
             wide,
             group,
             False,
             f"widened to similar day types ({', '.join(group)})",
+            same_long_weekend=False,
         ),
     ]
 
@@ -208,7 +226,7 @@ def query_distribution(
     origin: str,
     target_date: date,
     depart_hhmm: str,
-    max_samples: int = 40,
+    max_samples: int | None = None,
     route_id: str | None = None,
 ) -> Distribution:
     route = config.route_by_id(route_id) if route_id else config.route
@@ -216,6 +234,8 @@ def query_distribution(
     target_type = day_type(target_date)
     target_season = season(target_date)
     target_minutes = _hhmm_to_minutes(depart_hhmm)
+    target_long_weekend = is_long_weekend(target_date)
+    cap = max_samples if max_samples is not None else config.query.max_samples
 
     matches: list[sqlite3.Row] = []
     used = _levels(config, target_type)[0]
@@ -234,7 +254,15 @@ def query_distribution(
             row
             for row in rows
             if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= level.tolerance
+            and (
+                not level.same_long_weekend
+                or is_long_weekend(date.fromisoformat(row["service_date"])) == target_long_weekend
+            )
         ]
+        # Newest first from the query, so truncating here keeps the most recent sailings.
+        # The cap applies to the counts as well as the listed dates: a distribution that
+        # says "5 sailings" must be computed from those five and no others.
+        matches = matches[:cap]
         used = level
         # Record the widening *before* deciding to stop, so the level that finally
         # succeeded is reported rather than silently omitted.
@@ -250,7 +278,7 @@ def query_distribution(
     n = sum(counts.values())
     shares = {k: (round(v / n, 4) if n else 0.0) for k, v in counts.items()}
 
-    samples = [_sample(conn, config, row) for row in matches[:max_samples]]
+    samples = [_sample(conn, config, row) for row in matches]
 
     fill_gaps = [
         gap

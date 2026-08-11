@@ -13,7 +13,7 @@ from ferrycast.status import check_and_compare, check_now
 from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm
 from ferrycast.vision import extract_pending
 
-from .test_query import fridays, seed_record
+from .test_query import PLAIN_FRIDAY, fridays, seed_record
 from .test_vision import GOOD_PAYLOAD, FakeClient, _add_frame, _bright_png
 
 
@@ -201,7 +201,7 @@ def test_check_and_compare_pairs_live_with_history(conn, config):
         conn,
         config,
         origin="SLT",
-        target_date=date(2026, 7, 31),
+        target_date=PLAIN_FRIDAY,
         depart_hhmm="12:30",
         capture_fresh=False,
         client=FakeClient(GOOD_PAYLOAD),
@@ -223,7 +223,7 @@ def test_history_side_of_a_check_costs_nothing(conn, config):
         conn,
         config,
         origin="SLT",
-        target_date=date(2026, 7, 31),
+        target_date=PLAIN_FRIDAY,
         depart_hhmm="12:30",
         capture_fresh=False,
         client=client,

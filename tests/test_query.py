@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 
+from ferrycast.holidays import is_long_weekend
 from ferrycast.query import (
     arrival_curve,
     default_sailing_time,
@@ -50,6 +51,12 @@ def seed_record(conn, config, service_date: date, hhmm: str, outcome: str, origi
     return sailing_id
 
 
+# A Friday with no long weekend attached. 2026-07-31 looks like an ordinary Friday but sits
+# against BC Day, so it is deliberately NOT comparable to plain Fridays — using it as a test
+# target silently exercises the relaxation ladder instead of the exact match.
+PLAIN_FRIDAY = date(2026, 8, 14)
+
+
 def fridays(count: int, *, start: date = date(2026, 7, 3)):
     """Consecutive Fridays inside the peak-summer bucket."""
     return [start + timedelta(days=7 * i) for i in range(count)]
@@ -61,7 +68,7 @@ def test_distribution_counts_and_shares(conn, config):
         seed_record(conn, config, day, "12:30", outcome)
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.n == 4
@@ -83,7 +90,7 @@ def test_samples_carry_the_underlying_dates(conn, config):
         seed_record(conn, config, day, "12:30", "waited_1", peak_queue=88, carryover=30)
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert len(result.samples) == 3
@@ -93,7 +100,7 @@ def test_samples_carry_the_underlying_dates(conn, config):
 
 
 def test_target_day_itself_is_excluded_from_its_own_history(conn, config):
-    target = date(2026, 7, 31)
+    target = PLAIN_FRIDAY
     seed_record(conn, config, target, "12:30", "boarded")
     result = query_distribution(
         conn, config, origin="SLT", target_date=target, depart_hhmm="12:30"
@@ -109,7 +116,7 @@ def test_only_matching_day_types_are_comparable(conn, config):
         seed_record(conn, config, day - timedelta(days=2), "12:30", "boarded")
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
     assert result.n == 3
     assert result.counts["waited_1"] == 3
@@ -119,7 +126,7 @@ def test_direction_matters(conn, config):
     for day in fridays(3):
         seed_record(conn, config, day, "12:30", "waited_1", origin="SLT")
     result = query_distribution(
-        conn, config, origin="ERL", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="ERL", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
     assert result.n == 0
 
@@ -132,7 +139,7 @@ def test_search_widens_when_the_exact_bucket_is_thin(conn, config):
         seed_record(conn, config, day, "12:30", "boarded")
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.n == 5
@@ -146,7 +153,7 @@ def test_widening_reports_every_step_it_took(conn, config):
         seed_record(conn, config, day, "13:30", "boarded")
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert result.n == 3
@@ -157,7 +164,7 @@ def test_widening_reports_every_step_it_took(conn, config):
 def test_thin_result_is_marked_insufficient(conn, config):
     seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
     assert result.n == 1
     assert result.sufficient is False
@@ -169,7 +176,7 @@ def test_unknown_outcomes_are_excluded_but_counted(conn, config):
     seed_record(conn, config, date(2026, 7, 24), "12:30", "unknown")
 
     result = query_distribution(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
     assert result.n == 3
     assert result.unknown_excluded == 1
@@ -252,7 +259,7 @@ def test_arrival_curve_buckets_by_minutes_before_departure(conn, config):
             )
 
     curve = arrival_curve(
-        conn, config, origin="SLT", target_date=date(2026, 7, 31), depart_hhmm="12:30"
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
     )
 
     assert curve["sailings"] == 3
@@ -264,3 +271,80 @@ def test_arrival_curve_buckets_by_minutes_before_departure(conn, config):
     assert [p["minutes_before"] for p in curve["points"]] == sorted(
         buckets, reverse=True
     )
+
+
+# ---- Likeness of days: a long weekend is not an ordinary one ----------------------------
+#
+# A stat Monday already buckets as sunday_holiday, so it never pooled with ordinary Mondays.
+# The days *around* it did: the Friday before BC Day looked like any other Friday to the
+# schedule, and pooled with them. It is one of the busiest Fridays of the year.
+
+LONG_WEEKEND_FRIDAY = date(2026, 7, 31)   # BC Day falls on the following Monday
+
+
+def test_a_long_weekend_friday_does_not_match_ordinary_fridays(conn, config):
+    for day in fridays(6):
+        seed_record(conn, config, day, "12:30", "boarded")
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=LONG_WEEKEND_FRIDAY, depart_hhmm="12:30"
+    )
+    assert d.match_level != "exact"
+    assert any("long weekend" in r for r in d.relaxations), d.relaxations
+
+
+def test_long_weekend_fridays_match_each_other(conn, config):
+    """Victoria Day, Labour Day and Thanksgiving Fridays. NB 2026-06-26 is *not* one —
+    Canada Day 2026 falls on a Wednesday — which is exactly the sort of thing worth
+    computing rather than eyeballing."""
+    for day in (date(2026, 5, 15), date(2026, 9, 4), date(2026, 10, 9)):
+        assert is_long_weekend(day), day
+        seed_record(conn, config, day, "12:30", "filled")
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=LONG_WEEKEND_FRIDAY, depart_hhmm="12:30"
+    )
+    assert d.n >= 1
+    assert all("long weekend" not in r for r in d.relaxations), d.relaxations
+
+
+def test_an_ordinary_friday_is_not_polluted_by_long_weekend_ones(conn, config):
+    """The failure this prevents: a busy long-weekend Friday inflating every other Friday."""
+    for day in fridays(5):
+        seed_record(conn, config, day, "12:30", "boarded")
+    seed_record(conn, config, LONG_WEEKEND_FRIDAY, "12:30", "filled")
+
+    d = query_distribution(conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30")
+    assert d.match_level == "exact"
+    assert d.counts["filled"] == 0, "the long-weekend Friday should not be in this sample"
+
+
+# ---- Recency cap ------------------------------------------------------------------------
+
+
+def test_only_the_most_recent_sailings_count(conn, config):
+    """Without a cap the distribution accumulates forever, and a sailing from two timetables
+    ago weighs as much as last week's — ageing quietly while still looking well-evidenced."""
+    plain = [d for d in fridays(20) if not is_long_weekend(d)]
+    old, recent = plain[:-3], plain[-3:]
+    for day in old:
+        seed_record(conn, config, day, "12:30", "filled")
+    for day in recent:
+        seed_record(conn, config, day, "12:30", "boarded")
+
+    target = recent[-1] + timedelta(days=7)
+    assert not is_long_weekend(target)
+    d = query_distribution(conn, config, origin="SLT", target_date=target, depart_hhmm="12:30")
+
+    assert d.n == config.query.max_samples
+    assert len(d.samples) == config.query.max_samples
+    # All three recent 'boarded' sailings are in; the older 'filled' ones are crowded out.
+    assert d.counts["boarded"] == 3
+
+
+def test_the_cap_applies_to_the_counts_not_just_the_listed_dates(conn, config):
+    """A distribution that says "5 sailings" must be computed from those five and no others."""
+    for day in fridays(20):
+        seed_record(conn, config, day, "12:30", "boarded")
+    d = query_distribution(conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30")
+    assert d.n == len(d.samples) == config.query.max_samples
