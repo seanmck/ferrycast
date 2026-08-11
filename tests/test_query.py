@@ -30,7 +30,12 @@ def seed_record(conn, config, service_date: date, hhmm: str, outcome: str, origi
             season(service_date),
         ),
     )
-    sailing_id = cur.lastrowid or conn.execute(
+    # Always look the id up. On INSERT OR IGNORE that ignores, `cur.lastrowid` still holds
+    # the *previous* successful insert's rowid, so `cur.lastrowid or ...` silently attaches
+    # the record to whichever sailing was inserted last — invisible until a test seeds more
+    # than one sailing before recording against an earlier one.
+    del cur
+    sailing_id = conn.execute(
         "SELECT id FROM sailings WHERE origin = ? AND scheduled_departure = ?",
         (origin, departure.isoformat()),
     ).fetchone()["id"]

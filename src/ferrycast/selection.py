@@ -155,3 +155,37 @@ def recent_frames(
     sql += " ORDER BY f.captured_at DESC LIMIT ?"
     params.append(limit)
     return _rows(conn, sql, tuple(params))
+
+
+def essential_frames_for_sailing(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    departure: datetime,
+    only_unextracted: bool = True,
+) -> list[sqlite3.Row]:
+    """The few frames that decide one sailing's outcome.
+
+    The per-sailing counterpart to `essential_frames_for_day`. On-demand backfill pays per
+    sailing, not per day, so it needs to price exactly one: four frames at the configured
+    offsets rather than a whole day's worth.
+    """
+    tolerance = timedelta(minutes=config.vision.essential_tolerance_minutes)
+    chosen: dict[int, sqlite3.Row] = {}
+    for offset in config.vision.essential_offsets_minutes:
+        target = departure + timedelta(minutes=offset)
+        row = _nearest(
+            frames_between(
+                conn,
+                config,
+                origin,
+                target - tolerance,
+                target + tolerance,
+                only_unextracted=only_unextracted,
+            ),
+            target,
+        )
+        if row is not None:
+            chosen[row["id"]] = row
+    return sorted(chosen.values(), key=lambda row: row["captured_at"])
