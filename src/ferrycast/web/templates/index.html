@@ -7,6 +7,17 @@
   .depart .time { font-family: "Instrument Serif", Georgia, serif; font-size: 4.5rem; line-height: 0.9; }
   .depart .in { font-family: "IBM Plex Mono", monospace; font-size: 1rem; color: var(--muted); }
 
+  /* Once the boat has gone at a time of its own, the board's time joins the schedule as
+     a mirror image: its own label over its own serif time at the same size, right-aligned
+     on the far edge. Same structure both sides, so the two times share a baseline; on a
+     screen too narrow for the pair the actual wraps below rather than shrinking. */
+  .depart-pair { display: flex; justify-content: space-between; align-items: flex-start;
+                 gap: 1rem 2rem; flex-wrap: wrap; }
+  .depart-pair .actual { text-align: right; margin-left: auto; }
+  .depart-pair .actual .time, .depart-pair .actual .qual { color: var(--late); }
+  .depart-pair .qual { font-family: "IBM Plex Mono", monospace; font-size: 0.75rem;
+                       font-variant-numeric: tabular-nums; margin: 0.45rem 0 0; }
+
   .headline { display: flex; align-items: baseline; gap: 0.625rem; flex-wrap: wrap; margin-top: 0.75rem; }
   .headline .pct { font-family: "Instrument Serif", Georgia, serif; font-size: 3.75rem;
                    line-height: 0.85; color: var(--buoy); }
@@ -77,11 +88,26 @@
 </form>
 
 {% if selected_time %}
-  <p class="label">Departure</p>
-  <div class="depart">
-    <span class="time">{{ selected_time }}</span>
-    {% if countdown %}<span class="in">{{ countdown }}</span>{% endif %}
-  </div>
+  {% if actual_departure %}
+    <div class="depart-pair">
+      <div>
+        <p class="label">Scheduled departure</p>
+        <div class="depart"><span class="time">{{ selected_time }}</span></div>
+      </div>
+      <div class="actual">
+        <p class="label">Actual departure</p>
+        <div class="depart"><span class="time">{{ actual_departure.hhmm }}</span></div>
+        <p class="qual">{{ actual_departure.qual }}</p>
+      </div>
+    </div>
+  {% else %}
+    <p class="label">Scheduled departure</p>
+    <div class="depart">
+      <span class="time">{{ selected_time }}</span>
+      {% if countdown %}<span class="in">{{ countdown }}</span>
+      {% elif departed_note %}<span class="in">{{ departed_note }}</span>{% endif %}
+    </div>
+  {% endif %}
 {% endif %}
 
 {% if distribution and distribution.n %}

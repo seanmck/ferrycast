@@ -566,6 +566,78 @@ def test_the_page_itself_does_not_promise_tomorrow_two_days_out(client, monkeypa
     assert "tomorrow" not in body
 
 
+# ---- The departure header --------------------------------------------------------------
+#
+# The big time is the timetable's, and the label says so. Once the vessel has gone, the
+# time the board published joins it as a mirrored block — but only when the two disagree;
+# an on-time boat would repeat the same number, so it gets a word instead, as does a
+# departed sailing the board never timed.
+
+
+def _pin_clock(monkeypatch, when):
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: when)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: when)
+
+
+# Mid-afternoon on SAILED's own Friday — its 12:30 has gone, nothing else has changed.
+FRIDAY_AFTERNOON = datetime(2026, 7, 3, 22, 0, tzinfo=UTC)  # Fri 3 Jul, 15:00 PDT
+
+
+def test_the_departure_time_is_named_as_scheduled(client, conn, config, monkeypatch):
+    _pin_clock(monkeypatch, datetime(2026, 8, 14, 17, 0, tzinfo=UTC))
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+    assert "Scheduled departure" in body
+    assert "Actual departure" not in body
+
+
+def test_a_late_departure_shows_the_board_s_time_beside_the_schedule(
+    client, conn, config, monkeypatch
+):
+    from .test_reports import board_says_departed
+
+    _pin_clock(monkeypatch, FRIDAY_AFTERNOON)
+    board_says_departed(conn, config, "12:42", hhmm="12:30")
+
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+
+    assert "Actual departure" in body
+    assert "12:42" in body
+    assert "12 min late" in body
+
+
+def test_an_early_departure_is_called_early(client, conn, config, monkeypatch):
+    from .test_reports import board_says_departed
+
+    _pin_clock(monkeypatch, FRIDAY_AFTERNOON)
+    board_says_departed(conn, config, "12:24", hhmm="12:30")
+
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+
+    assert "Actual departure" in body
+    assert "6 min early" in body
+
+
+def test_an_on_time_departure_repeats_nothing(client, conn, config, monkeypatch):
+    from .test_reports import board_says_departed
+
+    _pin_clock(monkeypatch, FRIDAY_AFTERNOON)
+    board_says_departed(conn, config, "12:30", hhmm="12:30")
+
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+
+    assert "Actual departure" not in body
+    assert "left on time" in body
+
+
+def test_a_departed_sailing_the_board_never_timed_still_says_so(
+    client, conn, config, monkeypatch
+):
+    _pin_clock(monkeypatch, FRIDAY_AFTERNOON)
+    body = client.get("/?origin=SLT&service_date=2026-07-03&time=12:30").text
+    assert "Actual departure" not in body
+    assert '<span class="in">departed</span>' in body
+
+
 def test_the_report_form_prefills_the_departure_from_the_board(client, conn, config):
     """Pre-filled, not removed: the board only carries today's sailings, so on any past
     date the field is the only way the time can be supplied at all."""
