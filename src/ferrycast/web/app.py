@@ -159,16 +159,20 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, f"bad date {value!r}; expected YYYY-MM-DD") from exc
 
-    def _board_clock(
+    def _board_when(
         conn: sqlite3.Connection, config: Config, origin: str, day: date, hhmm: str | None
-    ) -> str:
-        """The board's departure time as HH:MM, or "" if it has not published one."""
+    ):
+        """When the board said this sailing actually left, or None while it has not said.
+
+        The datetime rather than a clock string: the header needs it against the schedule
+        to say how late the boat was, and the report form needs it as HH:MM — one lookup
+        serves both.
+        """
         if not hhmm:
-            return ""
+            return None
         from ..aggregate import _board_departure
 
-        when = _board_departure(conn, config.route.id, origin, day.isoformat(), hhmm, config)
-        return when.astimezone(config.tz).strftime("%H:%M") if when else ""
+        return _board_departure(conn, config.route.id, origin, day.isoformat(), hhmm, config)
 
     def _validate_origin(config: Config, origin: str) -> str:
         if origin not in config.route.codes:
@@ -242,6 +246,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # explains itself before then rather than vanishing.
         reports = None
         departed = False
+        board_when = _board_when(conn, config, chosen_origin, chosen_date, chosen_time)
+        # What the header says once the vessel has gone. The board's time gets the full
+        # mirrored block only when it differs from the timetable — repeating the same
+        # number would say nothing, so an on-time departure is a word in the countdown's
+        # slot instead, as is a departed sailing the board never published a time for.
+        # Nothing changes before the scheduled time: a boat the board says left early is
+        # still the countdown's business until the timetable agrees it has gone.
+        actual_departure = None
+        departed_note = None
         if chosen_time:
             departure = combine_local(chosen_date, parse_hhmm(chosen_time), config.tz)
             departed = departure <= local(now_utc(), config.tz)
@@ -256,6 +269,21 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 ),
                 departure,
             )
+            if departed and board_when is None:
+                departed_note = "departed"
+            elif departed:
+                off_schedule = int((board_when - departure).total_seconds() // 60)
+                if off_schedule == 0:
+                    departed_note = "left on time"
+                else:
+                    actual_departure = {
+                        "hhmm": board_when.astimezone(config.tz).strftime("%H:%M"),
+                        "qual": (
+                            f"{off_schedule} min late"
+                            if off_schedule > 0
+                            else f"{-off_schedule} min early"
+                        ),
+                    }
 
         # The live camera, shown only for the sailing you could still catch — the next
         # departure from this terminal. On any other sailing the picture answers a
@@ -316,7 +344,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 # The board publishes the actual departure for *today's* sailings only, so
                 # this pre-fills the field rather than replacing it: report on last Friday
                 # and there is nothing to read, and only the person was there.
-                "board_departed": _board_clock(conn, config, chosen_origin, chosen_date, chosen_time),
+                "board_departed": (
+                    board_when.astimezone(config.tz).strftime("%H:%M") if board_when else ""
+                ),
+                "actual_departure": actual_departure,
+                "departed_note": departed_note,
                 "line_bounds": line_bounds,
                 "reports": reports,
                 "webcam": webcam,
