@@ -2,15 +2,16 @@
 # .gitignore) because the Docker image needs it. It holds no secrets: the API key is the
 # ANTHROPIC_API_KEY environment variable.
 #
-# ⚠️  webcam_url now points at BC Ferries' terminal cameras, which publish a still JPEG per
-#     terminal at a fixed address: ccimg.bcferries.com/cc/support/terminals/cam1_<CODE>.jpg,
-#     where <CODE> is the same terminal code used below. SLT was confirmed by hand; ERL is
-#     inferred from that pattern and has NOT been fetched — run `ferrycast doctor`, which
-#     reports whether each URL actually returns an image, before trusting either.
+# ⚠️  webcam_url points at BC Ferries' terminal cameras, which publish a still JPEG per
+#     terminal under ccimg.bcferries.com/cc/support/terminals/. There is NO reliable pattern:
+#     Saltery Bay is cam1_SLT.jpg and Earls Cove is cam2_erl.jpg — a different camera number
+#     AND a different case. Deriving one terminal's URL from another's is what left Earls
+#     Cove failing every capture for its first day while every other signal looked fine.
+#     Both of these were supplied by hand. Add any new terminal's URL the same way, and run
+#     `ferrycast doctor`, which reports whether each one actually returns an image.
 #
 #     Still to satisfy yourself about: that the address stays fixed rather than acquiring an
-#     expiring token, and that low-rate archival is acceptable use. `cam1` implies there may
-#     be a cam2 at some terminals.
+#     expiring token, and that low-rate archival is acceptable use.
 #
 #     Blank is safe: deck-space scraping is the history source and needs no camera. Only
 #     `ferrycast check` requires one. You can supply them here or, to keep them out of git,
@@ -51,8 +52,8 @@ name = "Saltery Bay – Earls Cove"
   code           = "ERL"
   name           = "Earls Cove"
   destination    = "SLT"
-  # Inferred from the SLT pattern, not yet fetched — confirm with `ferrycast doctor`.
-  webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_ERL.jpg"
+  # cam2, lowercase. Not cam1_ERL.jpg — that was inferred from Saltery Bay and 404s.
+  webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam2_erl.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
 
 [capture]
