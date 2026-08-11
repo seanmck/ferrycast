@@ -39,11 +39,25 @@ def test_carryover_beyond_one_vessel_means_two_or_more_sailings():
 
 
 def test_persistent_queue_with_no_vessel_is_a_cancellation():
-    outcome, overload, cancelled, carryover = _classify(residual=60, departure_seen=False)
+    """Only where the camera actually shows the berth."""
+    outcome, overload, cancelled, carryover = _classify(
+        residual=60, departure_seen=False, berth_visible=True
+    )
     assert outcome == "cancelled"
     assert cancelled is True
     assert overload is False
     assert carryover == 60
+
+
+def test_a_camera_that_cannot_see_the_berth_never_reports_a_cancellation():
+    """Earls Cove's camera points up the approach road and never sees a vessel, so "no
+    ferry in any frame" is its normal state. Reading that as a cancellation marked every
+    busy sailing at that terminal cancelled."""
+    outcome, _, cancelled, _ = _classify(
+        residual=60, departure_seen=False, berth_visible=False
+    )
+    assert outcome == "unknown"
+    assert cancelled is False
 
 
 def test_missing_frames_yield_unknown_rather_than_a_guess():
@@ -263,7 +277,20 @@ def test_a_vessel_still_at_the_dock_is_not_a_cancellation(conn, config):
 
 
 def test_a_vessel_that_never_arrives_is_still_a_cancellation(conn, config):
-    """The genuine case the rule was written for: no vessel at all, queue never clears."""
+    """The genuine case the rule was written for: no vessel at all, queue never clears —
+    and a camera that can actually see the berth, so its absence means something."""
+    from dataclasses import replace as _replace
+
+    config = _replace(
+        config,
+        routes=tuple(
+            _replace(
+                r,
+                terminals=tuple(_replace(t, camera_sees_berth=True) for t in r.terminals),
+            )
+            for r in config.routes
+        ),
+    )
     day = date(2026, 8, 14)
     departure = _departure(config, day, "12:30")
     for minutes, count in [(-45, 30), (-15, 80), (15, 78), (30, 75)]:

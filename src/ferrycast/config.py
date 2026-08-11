@@ -42,6 +42,12 @@ class Terminal:
     destination: str
     webcam_url: str = ""
     deck_space_url: str = ""
+    # Whether this terminal's camera actually shows the berth. Earls Cove's points up the
+    # approach road and never sees a vessel, so "no ferry in any frame" there means nothing
+    # — while at a berth-facing camera it is evidence a sailing did not run. Defaults to
+    # false so an unverified camera cannot manufacture cancellations; set it true only
+    # after looking at a frame.
+    camera_sees_berth: bool = False
 
     @property
     def configured_for_capture(self) -> bool:
@@ -239,6 +245,7 @@ def _parse_route(raw: dict) -> Route:
                 deck_space_url=os.environ.get(
                     f"{DECK_SPACE_ENV_PREFIX}{code.upper()}", entry.get("deck_space_url", "")
                 ),
+                camera_sees_berth=bool(entry.get("camera_sees_berth", False)),
             )
         )
     codes = {t.code for t in terminals}

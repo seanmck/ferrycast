@@ -47,6 +47,10 @@ name = "Saltery Bay – Earls Cove"
   destination    = "ERL"
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_SLT.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
+  # Set true ONLY if this camera actually shows the berth — look at a frame first. When
+  # false, frames still count the queue; they just cannot say whether a sailing ran.
+  camera_sees_berth = false
+
 
   [[route.terminals]]
   code           = "ERL"
@@ -55,6 +59,10 @@ name = "Saltery Bay – Earls Cove"
   # cam2, lowercase. Not cam1_ERL.jpg — that was inferred from Saltery Bay and 404s.
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam2_erl.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
+  # This camera looks up the approach road, not at the berth — it never shows a vessel, so
+  # frames from it can neither time a departure nor evidence a cancellation. Leave false.
+  camera_sees_berth = false
+
 
 [capture]
 interval_minutes = 15      # keep at 15 or higher: be a polite scraper

@@ -215,6 +215,7 @@ def classify(
     capacity: int,
     residual_threshold: int,
     still_at_dock: bool = False,
+    berth_visible: bool = False,
 ) -> tuple[str, bool, bool, int | None]:
     """Return (outcome, overload, cancelled, carryover)."""
     if residual is None or queue_at_departure is None:
@@ -231,8 +232,12 @@ def classify(
         return "boarded", False, False, 0
 
     if not departure_seen:
-        # A queue that persists with no vessel ever at the dock is a cancellation, not an
-        # overload — the distinction matters to anyone reading the history.
+        # A queue that persists with no vessel ever seen is a cancellation ONLY where the
+        # camera can see the berth. Earls Cove's points up the approach road, so "no ferry
+        # in any frame" is the normal state there and says nothing about whether the
+        # sailing ran — reading it as a cancellation marked every busy sailing cancelled.
+        if not berth_visible:
+            return "unknown", False, False, None
         return "cancelled", False, True, residual
 
     if residual > capacity:
@@ -301,6 +306,7 @@ def compute_record(
         queue_at_departure=queue_at_departure,
         departure_seen=departure_seen,
         still_at_dock=still_at_dock,
+        berth_visible=config.route.terminal(sailing_row["origin"]).camera_sees_berth,
         capacity=cfg.vessel_capacity,
         residual_threshold=cfg.residual_threshold,
     )
