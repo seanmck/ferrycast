@@ -36,7 +36,11 @@ class Candidate:
     depart_hhmm: str
     scheduled_departure: str
     origin: str
+    # Unread frames — what a fill would cost. `archived` is every frame in the window,
+    # read or not, which is what tells "already read, still unresolved" apart from "no
+    # frames were ever captured for that day".
     frames: int = 0
+    archived: int = 0
 
 
 @dataclass
@@ -44,6 +48,12 @@ class FillResult:
     candidates: int = 0
     attempted: int = 0
     filled: int = 0
+    # Sailings that gained a *usable* outcome. Not the same as `filled`, which counts the
+    # ones whose frames were read: a sailing can be read in full and still classify as
+    # `unknown`, and `unknown` is excluded from the distribution. Reporting the wrong one
+    # told somebody the answer now included frames that had changed nothing.
+    recorded: int = 0
+    unresolved: int = 0
     frames_read: int = 0
     cost_usd: float = 0.0
     budget_stopped: bool = False
@@ -55,6 +65,8 @@ class FillResult:
             "candidates": self.candidates,
             "attempted": self.attempted,
             "filled": self.filled,
+            "recorded": self.recorded,
+            "unresolved": self.unresolved,
             "frames_read": self.frames_read,
             "cost_usd": round(self.cost_usd, 4),
             "budget_stopped": self.budget_stopped,
@@ -134,12 +146,19 @@ def estimate_frames(
     from .selection import essential_frames_for_sailing
 
     for candidate in candidates:
+        departure = parse_iso(candidate.scheduled_departure)
         candidate.frames = len(
+            essential_frames_for_sailing(
+                conn, config, origin=candidate.origin, departure=departure
+            )
+        )
+        candidate.archived = len(
             essential_frames_for_sailing(
                 conn,
                 config,
                 origin=candidate.origin,
-                departure=parse_iso(candidate.scheduled_departure),
+                departure=departure,
+                only_unextracted=False,
             )
         )
     return candidates
@@ -214,18 +233,42 @@ def fill_for_slot(
     if not dry_run:
         for service_date in sorted(touched_days):
             aggregate_day(conn, config, date.fromisoformat(service_date))
+        _count_outcomes(conn, candidates, result)
 
     return result
+
+
+def _count_outcomes(
+    conn: sqlite3.Connection, candidates: list[Candidate], result: FillResult
+) -> None:
+    """How many of the sailings just read now carry an outcome the query layer will use.
+
+    Reading a sailing's frames and classifying it are different things. With no berth view
+    and no published departure time, a busy sailing reads perfectly and still comes out
+    `unknown` — so counting frames as success reported a fill that changed nothing.
+    """
+    ids = [c.sailing_id for c in candidates if c.frames]
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""SELECT outcome FROM sailing_records WHERE sailing_id IN ({placeholders})""",
+        tuple(ids),
+    ).fetchall()
+    result.recorded = sum(1 for row in rows if row["outcome"] != "unknown")
+    result.unresolved = sum(1 for row in rows if row["outcome"] == "unknown")
 
 
 def describe(result: FillResult) -> str:
     if not result.candidates:
         return "nothing to fill: every comparable sailing already has a record"
     parts = [
-        f"{result.filled}/{result.attempted} sailing(s) filled",
+        f"{result.recorded}/{result.attempted} sailing(s) recorded",
         f"{result.frames_read} frame(s) read",
         f"${result.cost_usd:.4f}",
     ]
+    if result.unresolved:
+        parts.append(f"{result.unresolved} read but still unresolved")
     if result.skipped_no_frames:
         parts.append(f"{result.skipped_no_frames} had no archived frames")
     if result.budget_stopped:
@@ -270,23 +313,34 @@ def fill_offer(
     Returns None once every comparable sailing has a record, so the button disappears rather
     than inviting a tap that would do nothing.
     """
-    candidates = [
-        candidate
-        for candidate in estimate_frames(
+    all_candidates = estimate_frames(
+        conn,
+        config,
+        fillable_sailings(
             conn,
             config,
-            fillable_sailings(
-                conn,
-                config,
-                origin=origin,
-                target_date=target_date,
-                depart_hhmm=depart_hhmm,
-                limit=limit,
-            ),
-        )
-        if candidate.frames
-    ]
+            origin=origin,
+            target_date=target_date,
+            depart_hhmm=depart_hhmm,
+            limit=limit,
+        ),
+    )
+    candidates = [c for c in all_candidates if c.frames]
+
     if not candidates:
+        # Nothing left to read. If frames were read and the sailing is still unresolved,
+        # say so: the button simply vanishing left somebody looking at an unexplained gap
+        # with no idea whether it was working. Re-reading would cost money and change
+        # nothing, so this is a note rather than a control.
+        exhausted = [c for c in all_candidates if c.archived]
+        if exhausted:
+            return {
+                "reason": "exhausted",
+                "sailings": len(exhausted),
+                "frames": 0,
+                "cost_usd": 0.0,
+                "has_history": bool((distribution or {}).get("n")),
+            }
         return None
 
     n = (distribution or {}).get("n") or 0
