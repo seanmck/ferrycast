@@ -22,6 +22,7 @@ from ferrycast.marine import (
     parse_forecast,
     store_forecast,
     summary,
+    wind_brief,
     wind_speed,
 )
 from ferrycast.timeutil import combine_local, iso, parse_hhmm
@@ -237,6 +238,40 @@ def test_a_warning_survives_whatever_shape_it_arrives_in(marine_config, markup):
 def test_the_band_is_read_off_the_strongest_wind_named(text, knots, band):
     assert wind_speed(text) == knots
     assert band_for(wind_speed(text)) == band
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The wind the period opens with. What it does later is in the sentence, and the
+        # sentence is one tap below the line this goes on.
+        (
+            "Wind northwest 15 to 20 knots diminishing to northwest 10 to 15 near midnight"
+            " and to light Thursday morning.",
+            "NW 15–20 kt",
+        ),
+        # The direction the sentence starts with, not the one this module happens to list
+        # first: a table order would answer with the wind that arrives late in the day.
+        ("Wind southeast 5 to 15 knots becoming northwest 5 to 15 late in the day.", "SE 5–15 kt"),
+        # "northwest" is never read as the "north" inside it.
+        ("Wind northwest 20 knots.", "NW 20 kt"),
+        ("Wind light increasing to northwest 15 to 20 knots late this evening.", "NW 15–20 kt"),
+        # The speed the period opens at, whether or not the one after it is a span.
+        (
+            "Wind southeast 10 knots increasing to southeast 15 to 20 knots this afternoon.",
+            "SE 10 kt",
+        ),
+        # No number anywhere: ECCC's own adjective, which is a quotation and not a summary.
+        ("Wind light.", "light"),
+        ("Wind 15 to 20 knots.", "15–20 kt"),
+        (None, None),
+        ("Wind variable.", None),
+    ],
+)
+def test_the_cue_gives_a_direction_and_a_speed_and_nothing_else(text, expected):
+    """A phone header has room for about a dozen characters. It gets the numbers, which are
+    quantities rather than prose — never a reworded forecast."""
+    assert wind_brief(text) == expected
 
 
 def test_an_unreadable_forecast_is_unknown_rather_than_calm(marine_config):
@@ -603,6 +638,106 @@ def test_no_shape_is_claimed_from_a_day_nobody_has_data_for(marine_client, marin
     body = marine_client.get("/?origin=SLT&service_date=2026-08-21").text
     assert "Hardest stretch" not in body
     assert "Easiest sailings" not in body
+
+
+# ---- The cue and the sheet on a phone -----------------------------------------------------
+#
+# The phone gets the forecast in two pieces: a line saying whether it is blowing, and a
+# sheet holding what ECCC actually said. What matters is that the cue is never mistaken for
+# the forecast — the wording, the issue time and the attribution travel with it.
+
+
+def today_of(config) -> date:
+    from ferrycast.timeutil import local, now_utc
+
+    return local(now_utc(), config.tz).date()
+
+
+def test_the_phone_gets_the_wind_at_a_glance(marine_client, marine_conn, marine_config):
+    seed_forecast(marine_conn, marine_config, date(2026, 8, 20), "strong", kt=20)
+    marine_conn.execute(
+        "UPDATE marine_forecast SET wind = 'Wind northwest 15 to 20 knots.' "
+        "WHERE service_date = '2026-08-20'"
+    )
+    marine_conn.commit()
+
+    body = body_of(marine_client.get("/?origin=SLT&service_date=2026-08-20").text)
+
+    assert "NW 15–20 kt" in body
+    assert "marine-line" in body
+
+
+def test_the_cue_never_stands_in_for_what_was_said(marine_client, marine_conn, marine_config):
+    """Everything the wide strip prints is on the phone too, one tap below the line: the
+    sentence whole, which water it is about, when it was issued, and who issued it."""
+    seed_forecast(marine_conn, marine_config, date(2026, 8, 20), "light", kt=15)
+
+    body = body_of(marine_client.get("/?origin=SLT&service_date=2026-08-20").text)
+
+    assert "Wind 15 knots." in body
+    assert "Environment and Climate Change Canada" in body
+    assert "Strait of Georgia - north of Nanaimo" in body
+    assert "issued" in body.lower()
+
+
+def test_the_sheet_opens_without_script(marine_client, marine_conn, marine_config):
+    """A disclosure the browser owns. The page ships no script for this, so a phone with
+    scripting off still gets the forecast rather than a line it cannot open."""
+    seed_forecast(marine_conn, marine_config, date(2026, 8, 20), "light", kt=15)
+
+    body = marine_client.get("/?origin=SLT&service_date=2026-08-20").text
+
+    assert '<details class="marine-cue' in body
+    assert "marine-sheet" in body
+
+
+def test_today_the_cue_is_a_line_and_not_a_card(marine_client, marine_conn, marine_config):
+    """Today the page is answering a boat you could still catch, so the forecast shrinks to
+    one line — enough to answer "is it blowing?" without competing with the departure."""
+    today = today_of(marine_config)
+    for back in range(1, MIN_BAND_DAYS + 5):
+        day = today - timedelta(days=back)
+        seed_forecast(marine_conn, marine_config, day, "light", kt=15)
+        seed_record(marine_conn, marine_config, day, "12:30", "boarded")
+    seed_forecast(marine_conn, marine_config, today, "light", kt=15)
+
+    body = body_of(marine_client.get(f"/?origin=SLT&service_date={today}").text)
+
+    assert 'class="marine-cue now"' in body
+    assert "tap for marine" in body
+    # The record is earned and is in the sheet, but the cue on today does not carry it.
+    assert "No cancellations in" not in body
+    assert "No sailing on this route was cancelled" in body
+
+
+def test_planning_ahead_the_cue_carries_the_record(marine_client, marine_conn, marine_config):
+    """On a day being planned rather than caught there is header room for the one line that
+    turns weather into a decision."""
+    target = date(2026, 8, 20)
+    for back in range(1, MIN_BAND_DAYS + 5):
+        day = target - timedelta(days=back)
+        seed_forecast(marine_conn, marine_config, day, "light", kt=15)
+        seed_record(marine_conn, marine_config, day, "12:30", "boarded")
+    seed_forecast(marine_conn, marine_config, target, "light", kt=15)
+
+    body = body_of(marine_client.get(f"/?origin=SLT&service_date={target}").text)
+
+    assert "No cancellations in" in body
+    assert "tap for marine" not in body
+
+
+def test_a_warning_reaches_the_cue_itself(marine_client, marine_conn, marine_config):
+    """A warning outranks everything else the line could be saying, on today's page as much
+    as on any other — it is the one thing that must not wait for a tap to be noticed."""
+    today = today_of(marine_config)
+    seed_forecast(
+        marine_conn, marine_config, today, "gale", kt=40, warning="Gale warning in effect"
+    )
+
+    body = body_of(marine_client.get(f"/?origin=SLT&service_date={today}").text)
+
+    assert 'class="marine-flag">Warning' in body
+    assert "Gale warning in effect" in body  # worded in full, in the sheet
 
 
 def test_a_marine_section_without_a_site_is_rejected(tmp_path):

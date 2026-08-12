@@ -54,6 +54,15 @@ HREF_RE = re.compile(r'href="([^"]+_MSC_MarineWeather_[A-Za-z0-9]+_[a-z]{2}\.xml
 # describes water this route crosses, and 30 is the number that decides whether it sails.
 KNOTS_RE = re.compile(r"\b(\d{1,3})\b")
 
+# A speed written as a span, which is how most of them are written: "15 to 20 knots".
+RANGE_RE = re.compile(r"\b(\d{1,3})\s+to\s+(\d{1,3})\b")
+
+# Compass points as ECCC spells them, abbreviated as a phone header can carry them.
+DIRECTIONS = (
+    ("northwest", "NW"), ("northeast", "NE"), ("southwest", "SW"), ("southeast", "SE"),
+    ("north", "N"), ("south", "S"), ("east", "E"), ("west", "W"),
+)
+
 # ECCC's own vocabulary, most severe first. Only consulted when the sentence carries no
 # number at all — "Wind light" is a complete forecast, and reading it as unknown would
 # withhold an answer ECCC actually gave. Ordered so "storm" is tested before "light" for a
@@ -129,6 +138,55 @@ def wind_speed(wind: str | None) -> int | None:
         if word in lowered:
             return floor
     return None
+
+
+def wind_brief(wind: str | None) -> str | None:
+    """The wind sentence at a glance: a compass point and a speed, and nothing else.
+
+    A phone header has room for about a dozen characters, and the sentence ECCC writes is
+    two lines of it — "Wind northwest 15 to 20 knots diminishing to northwest 10 to 15 near
+    midnight and to light Thursday morning." So the compact reading takes the direction and
+    the speed it opens with, which is the wind at the top of the period, and leaves the rest
+    to the sheet: this is a cue to tap, not the forecast. The full sentence is one tap away
+    on the same screen, never replaced by this.
+
+    Numbers only — the words around them are ECCC's and are not reworded here. A sentence
+    that names no speed at all falls back to ECCC's own adjective ("light"), which is a
+    quotation rather than a summary of one.
+    """
+    if not wind:
+        return None
+
+    lowered = wind.lower()
+
+    # The direction the sentence opens with, not the first one this table happens to list:
+    # "southeast 5 to 15 knots becoming northwest" starts southeast, and a table order would
+    # answer with the wind that arrives late in the day. Longer names win a tie so that
+    # "northwest" is never read as the "north" inside it.
+    direction = None
+    best: tuple[int, int] | None = None
+    for word, short in DIRECTIONS:
+        at = lowered.find(word)
+        if at == -1:
+            continue
+        key = (at, -len(word))
+        if best is None or key < best:
+            best, direction = key, short
+
+    # The first speed in the sentence, whether it was written as a span or on its own —
+    # "southeast 10 knots increasing to 15 to 20 this afternoon" opens at 10. A span wins a
+    # tie because it starts at the same character as its own first number.
+    speed = None
+    span = RANGE_RE.search(wind)
+    single = next((m for m in KNOTS_RE.finditer(wind) if int(m.group(1)) <= 150), None)
+    if span and int(span.group(2)) <= 150 and (single is None or span.start() <= single.start()):
+        speed = f"{span.group(1)}–{span.group(2)} kt"
+    elif single is not None:
+        speed = f"{single.group(1)} kt"
+    if speed is None:
+        speed = next((word for word, _ in NAMED_BANDS if word in lowered), None)
+
+    return " ".join(part for part in (direction, speed) if part) or None
 
 
 def band_for(knots: int | None) -> str:
@@ -491,6 +549,11 @@ class MarineSummary:
     # The cancellation record for this band, or None when too little has been recorded to
     # say anything at all. Never a zero-dressed-as-a-finding.
     record: dict | None = None
+
+    @property
+    def brief(self) -> str | None:
+        """The forecast in a phone header's worth of characters. See `wind_brief`."""
+        return wind_brief(self.wind)
 
     @property
     def issued_label(self) -> str:
