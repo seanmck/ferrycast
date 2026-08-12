@@ -45,6 +45,13 @@ DIFF_THRESHOLD = 22
 #: calibration can no longer be trusted.
 MAX_DRIFT_PX = 3.0
 
+#: How far a frame's illumination may sit from the background reference's before
+#: differencing them stops meaning anything. Measured on real frames: midday sits at
+#: 0.96-0.97 whether the compound is bare, building or packed, while every evening, dusk,
+#: dawn and night frame falls between 0.59 and 0.73. The band below is deliberately wider
+#: than the daylight spread and still nowhere near the night cluster.
+ILLUMINATION_BAND = (0.85, 1.20)
+
 
 class CalibrationError(Exception):
     pass
@@ -146,6 +153,30 @@ def occupancy(
                     changed += 1
         out[lane] = (changed / total) if total else 0.0
     return out
+
+
+def _lane_percentile(frame: str | Path | bytes, cal: LaneCalibration, q: float) -> float:
+    px, w, _ = _luma(frame)
+    vals = sorted(
+        px[y * w + x] for spans in cal.lane_spans.values() for y, x0, x1 in spans
+        for x in range(x0, x1)
+    )
+    return float(vals[int(q * (len(vals) - 1))]) if vals else 0.0
+
+
+def illumination_ratio(
+    frame: str | Path | bytes, background: str | Path | bytes, cal: LaneCalibration
+) -> float:
+    """How this frame's light compares with the reference's, ignoring how full it is.
+
+    Uses the 90th percentile of lane brightness rather than the median, because the median
+    tracks occupancy as much as illumination — a packed midday compound and a bare dusk one
+    both sit near 0.7 of the reference, and telling those apart is the entire job. The top
+    decile is asphalt highlights and paint, which stay bright however many vehicles are
+    parked on the rest of it.
+    """
+    ref = _lane_percentile(background, cal, 0.90)
+    return (_lane_percentile(frame, cal, 0.90) / ref) if ref else 0.0
 
 
 def occupied_lanes(shares: dict[int, float], *, cutoff: float = OCCUPIED_SHARE) -> list[int]:
@@ -267,6 +298,29 @@ def read_frame(
     unusable frame is excluded from aggregation, where a confidently wrong lane assignment
     would not be.
     """
+    # Illumination first, because it is the failure that looks most like a real answer.
+    # Differenced against a midday reference, a *bare* floodlit compound at 04:08 reports
+    # every lane occupied — a confident "overflowing" for an empty lot. Refusing costs a
+    # reading; not refusing would have filled the archive with phantom night overloads.
+    lit = illumination_ratio(frame, background, cal)
+    low, high = ILLUMINATION_BAND
+    if not (low <= lit <= high):
+        return {
+            "compound_visible": False,
+            "fullness": None,
+            "vehicle_count": None,
+            "lanes_occupied": None,
+            "queue_extends_beyond_frame": False,
+            "confidence": 0.0,
+            "notes": (
+                f"light differs from the reference (x{lit:.2f}); differencing across "
+                "illumination is not validated"
+            ),
+            "drift_px": None,
+            "illumination_ratio": round(lit, 3),
+            "lane_shares": {},
+        }
+
     drift = drift_px(frame, cal)
     if drift > MAX_DRIFT_PX:
         reason = (
@@ -283,6 +337,7 @@ def read_frame(
             "confidence": 0.0,
             "notes": reason,
             "drift_px": None if drift == float("inf") else round(drift, 2),
+            "illumination_ratio": round(lit, 3),
             "lane_shares": {},
         }
 
@@ -299,6 +354,7 @@ def read_frame(
         "confidence": round(max(0.5, 1.0 - drift / MAX_DRIFT_PX * 0.5), 3),
         "notes": f"lanes {occupied} of {cal.lanes} occupied" if occupied else "compound clear",
         "drift_px": round(drift, 2),
+        "illumination_ratio": round(lit, 3),
         "lane_shares": {str(k): round(v, 3) for k, v in sorted(shares.items())},
     }
 

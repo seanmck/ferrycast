@@ -35,8 +35,15 @@ class Job:
     enabled: Callable[[Config], bool] = lambda config: True
 
 
+# How many frames one capture run may read geometrically. Two terminals produce two new
+# frames per run, so anything above that is backlog catch-up. At ~19ms a frame this ceiling
+# costs under a second, and it keeps a large unread archive from stalling a single run.
+LANE_READS_PER_RUN = 40
+
+
 def _capture(conn, config: Config) -> str:
     from .capture import capture_once
+    from .lanes import extract_frames, pending_frames
 
     outcomes = capture_once(conn, config)
     ok = sum(1 for o in outcomes if o.ok)
@@ -46,6 +53,20 @@ def _capture(conn, config: Config) -> str:
         detail += f", {len(failed)} failed: " + "; ".join(
             f"{o.terminal} {o.error}" for o in failed
         )
+
+    # Read what we just captured, in the same job. This is geometry, not a model call — a
+    # frame costs ~19ms to read and nothing to run — so there is no reason to defer it the
+    # way vision extraction has to be deferred. Reading immediately is also what makes the
+    # frame safe to prune later: the measurement is already banked.
+    #
+    # Deliberately not limited to the frames just captured: a terminal that was calibrated
+    # after collection began, or one whose backlog was never read, catches up here a few
+    # frames at a time rather than needing a manual sweep.
+    read = extract_frames(conn, config, pending_frames(conn, limit=LANE_READS_PER_RUN))
+    if read.read:
+        detail += f", read {read.read}"
+        if read.unusable:
+            detail += f" ({read.unusable} unusable)"
     return detail
 
 
