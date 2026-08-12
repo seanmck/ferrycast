@@ -50,6 +50,128 @@
   .got-on { color: var(--o-boarded); }
   .left-behind { color: var(--o-waited_2plus); }
 
+  /* ==== The marine forecast on a phone =================================================
+     The wide board has a strip across the top with room for the forecast in full. A phone
+     header has no such room and already carries the answer the page is for, so the forecast
+     arrives in two pieces: a line that says whether it is blowing, and a sheet holding
+     everything ECCC actually said. The line is a cue, never the forecast — every word of
+     the quotation, the issue time and the attribution live one tap away.
+
+     No script anywhere below. The cue is a `<summary>` and the sheet is its `<details>`
+     body: the disclosure, the open state and the keyboard behaviour are the browser's, and
+     the scrim is the summary's own ::before, so tapping outside the sheet closes it because
+     tapping outside the sheet *is* tapping the control. */
+
+  .marine-cue { margin: 1rem 0; }
+  .marine-cue > summary { display: block; list-style: none; cursor: pointer; }
+  .marine-cue > summary::-webkit-details-marker { display: none; }
+  /* The arrow every other disclosure on the page wears, in both of its states. This one has
+     a chevron of its own on the far edge, and two would read as two controls. */
+  .marine-cue > summary::after, .marine-cue[open] > summary::after { content: none; }
+  .marine-cue > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .marine-line {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.8125rem 0.9375rem;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  /* Today the page is already answering a live question, and a bordered card competes with
+     it. So on today the cue gives up its box and becomes one quiet line under the picker —
+     enough to answer "is it blowing?" and nothing more. */
+  .marine-cue.now .marine-line {
+    padding: 0.125rem 0 0.875rem;
+    background: none; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  }
+
+  .marine-glyph { flex: none; color: var(--buoy); }
+  .marine-said { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+  .marine-brief { font-family: "IBM Plex Mono", monospace; font-size: 0.875rem;
+                  font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+  /* Two lines of it at the outside. The whole sentence is in the sheet, and a cue that grew
+     to fill the screen would be the forecast rather than the way in to it. */
+  .marine-sub {
+    font-size: 0.8125rem; line-height: 1.4; color: var(--muted);
+    display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+    -webkit-line-clamp: 2; line-clamp: 2;
+  }
+  .marine-hint { margin-left: auto; font-family: "IBM Plex Mono", monospace;
+                 font-size: 0.6875rem; letter-spacing: 0.1em; color: var(--label);
+                 white-space: nowrap; }
+  /* A warning outranks everything else this line could be saying, so it takes the slot the
+     hint would have had. Its wording is in the sheet: this only says that there is one. */
+  .marine-flag {
+    margin-left: auto; flex: none;
+    font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--accent-ink); background: var(--accent);
+    padding: 0.25rem 0.5rem; border-radius: var(--radius);
+  }
+  /* The select's chevron, turned to point the way this one goes. */
+  .marine-chev {
+    flex: none; width: 12px; height: 8px; margin-left: auto;
+    background: var(--chevron) center / 12px 8px no-repeat; transform: rotate(-90deg);
+  }
+  .marine-hint + .marine-chev, .marine-flag + .marine-chev { margin-left: 0.5rem; }
+
+  /* ---- The sheet. Fixed to the bottom edge, over a scrim that is the control. ---- */
+  .marine-cue[open] > summary::before {
+    content: ""; position: fixed; inset: 0; z-index: 20;
+    background: rgba(11, 26, 34, 0.6);
+  }
+  .marine-cue[open] > .marine-sheet {
+    position: fixed; inset: auto 0 0; z-index: 21;
+    margin-inline: auto; max-width: 34rem;
+    /* Its own scroll, so a long forecast never takes the whole screen. */
+    max-height: 80vh; overflow-y: auto; overscroll-behavior: contain;
+    padding: 0.625rem 1.25rem calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    background: var(--hero-bg); color: var(--hero-ink);
+    border-radius: 0.75rem 0.75rem 0 0;
+    box-shadow: 0 -0.5rem 2rem rgba(11, 26, 34, 0.35);
+  }
+  /* The panel is the hull side in both schemes, so the quiet colours have to be the hull
+     side's too — cream-page ink would vanish on it. */
+  .marine-sheet .label { color: var(--hero-label); }
+
+  .marine-grip { display: block; width: 2.25rem; height: 3px; border-radius: 2px;
+                 margin: 0.25rem auto 0.875rem; background: var(--hero-label); opacity: 0.6; }
+  .marine-title { display: flex; align-items: center; gap: 0.625rem; margin: 0 0 1rem;
+                  font-family: "Instrument Serif", Georgia, serif; font-size: 1.625rem;
+                  line-height: 1; }
+
+  .marine-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+                  gap: 0.875rem 1.25rem; margin-bottom: 1.125rem; }
+  .marine-stats > div { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+  .marine-stat { font-family: "IBM Plex Mono", monospace; font-size: 1.0625rem;
+                 font-variant-numeric: tabular-nums; }
+  /* A sentence ECCC wrote, sitting where a value goes. It keeps the label but not the
+     numeral treatment — mono at that size turns a clause into a readout. */
+  .marine-stat.said { font-family: inherit; font-size: 0.9375rem; line-height: 1.45; }
+
+  .marine-prose { margin: 0 0 1.125rem; font-size: 0.9375rem; line-height: 1.6;
+                  text-wrap: pretty; }
+  .marine-means { margin: 0 0 1.125rem; padding-top: 0.875rem;
+                  border-top: 1px solid rgba(232, 237, 236, 0.14); }
+  .marine-means .label { margin-bottom: 0.4rem; }
+
+  .marine-sheet .marine-flag {
+    display: inline-block; margin: 0 0 1rem; font-size: 0.75rem; letter-spacing: 0.04em;
+    text-transform: none; padding: 0.35rem 0.6rem;
+  }
+
+  .marine-source { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem;
+                   line-height: 1.7; letter-spacing: 0.08em; text-transform: uppercase;
+                   color: var(--hero-label); }
+  /* As on the wide strip: a day-old forecast is still what ECCC last said, and it says its
+     own age in cedar rather than in the quiet grey of a fresh one. */
+  .marine-source.stale { color: var(--accent); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* The sheet comes up from the edge it is attached to, rather than fading in place the
+       way the disclosures further down the page do. */
+    .marine-cue[open] > .marine-sheet { animation: sheet 180ms ease-out; }
+    @keyframes sheet { from { transform: translateY(1.5rem); opacity: 0 }
+                       to   { transform: none; opacity: 1 } }
+  }
+
   /* ==== The day board ==================================================================
      A phone answers one sailing per page load, which makes "which boat should I take" a
      question you can only ask by asking it ten times. A wide screen has room for the whole
@@ -289,9 +411,10 @@
       max-width: none; margin: 0; padding: 1.5rem 1.75rem 4rem;
       border-left: 1px solid var(--line); min-height: calc(100vh - 3.5rem);
     }
-    /* The chrome above says the name, the route, the direction and the date. Leaving these
-       would print every one of them twice. */
-    .masthead, .picker { display: none; }
+    /* The chrome above says the name, the route, the direction and the date, and the strip
+       across the board carries the forecast in full. Leaving these would print every one of
+       them twice. */
+    .masthead, .picker, .marine-cue { display: none; }
     main > .hero:first-child, main > section:first-child { margin-top: 0; }
   }
 
@@ -511,6 +634,121 @@
     <noscript><div class="wide"><button type="submit">Show</button></div></noscript>
   </div>
 </form>
+
+{# ---- The water this crossing is made on, as ECCC last described it.
+
+   The wide layout prints the forecast whole in the strip above its board. A phone has one
+   column and the answer to spend it on, so the forecast appears twice over: a cue that says
+   whether it is blowing, and a sheet holding the quotation, the issue time and the
+   attribution. The cue is a summary of the wind and nothing else — it never carries the
+   record on today, where the page is about a boat you could still catch, and it never
+   stands in for the wording, which is always one tap below it. ---- #}
+{% macro wind_glyph(cls) -%}
+<svg class="{{ cls }}" width="20" height="14" viewBox="0 0 20 14" fill="none"
+     stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
+     aria-hidden="true" focusable="false">
+  <path d="M1 3.2h11.2a2.2 2.2 0 1 0-2.2-2.2"/>
+  <path d="M1 7h13.6a2.2 2.2 0 1 1-2.2 2.2"/>
+  <path d="M1 10.8h7.4"/>
+</svg>
+{%- endmacro %}
+
+{% if marine %}
+  {% set brief = marine.brief or marine.period or 'Marine forecast' %}
+  {% set record = marine.record %}
+  {# One line under the wind, and only one: the record if there is one to state, otherwise
+     whatever ECCC said about visibility. Both are quoted in full in the sheet. #}
+  {% set cue_sub %}
+    {%- if record -%}
+      {%- if record.cancelled -%}
+        {{ record.cancelled }} of {{ record.sailings }} sailings cancelled in
+        {{ record.band_words }}
+      {%- else -%}
+        No cancellations in {{ record.days }} days of {{ record.band_words }}
+      {%- endif -%}
+    {%- elif marine.visibility -%}
+      {{ marine.visibility }}
+    {%- endif -%}
+  {% endset %}
+  {% set cue_sub = cue_sub | trim %}
+
+  {# The visible line is short by design, so the control says the whole of itself. #}
+  {% set cue_label %}
+    Marine forecast — {{ brief }}
+    {%- if marine.warning %}. Warning in force{% endif %}
+    {%- if cue_sub and not is_today %}. {{ cue_sub }}{% endif %}. Opens what ECCC said.
+  {% endset %}
+
+  <details class="marine-cue{{ ' now' if is_today }}">
+    <summary aria-label="{{ cue_label | trim }}">
+      <span class="marine-line">
+        {{ wind_glyph('marine-glyph') }}
+        <span class="marine-said">
+          <span class="marine-brief">{{ brief }}</span>
+          {% if cue_sub and not is_today %}<span class="marine-sub">{{ cue_sub }}</span>{% endif %}
+        </span>
+        {% if marine.warning %}
+          <span class="marine-flag">Warning</span>
+        {% elif is_today %}
+          <span class="marine-hint">tap for marine</span>
+        {% endif %}
+        <span class="marine-chev" aria-hidden="true"></span>
+      </span>
+    </summary>
+
+    <div class="marine-sheet">
+      <span class="marine-grip" aria-hidden="true"></span>
+      <p class="marine-title">{{ wind_glyph('marine-glyph') }}Marine forecast</p>
+
+      {% if marine.warning %}
+        {# Whatever shape the feed's warning arrived in, it is on the page. Being unable to
+           word it neatly is not a reason to leave it off. #}
+        <p class="marine-flag">⚠ {{ marine.warning }}</p>
+      {% endif %}
+
+      {# What the feed carries for this area, and only that. There is no sea state here:
+         ECCC publishes wave heights per marine area and this one's element is empty, and a
+         figure the forecast does not give is not one this page can print. #}
+      <div class="marine-stats">
+        <div>
+          <span class="label">Wind</span>
+          <span class="marine-stat">{{ marine.brief or '—' }}</span>
+        </div>
+        {% if marine.visibility %}
+          <div>
+            <span class="label">Visibility</span>
+            <span class="marine-stat said">{{ marine.visibility }}</span>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if marine.wind %}<p class="marine-prose">{{ marine.wind }}</p>{% endif %}
+
+      {% if record %}
+        <div class="marine-means">
+          <p class="label">What it means for sailings</p>
+          <p class="marine-prose">
+            {%- if record.cancelled %}
+              {{ record.cancelled }} of {{ record.sailings }} sailings on this route were
+              cancelled on the {{ record.days }} days forecast for {{ record.band_words }}
+              since {{ record.since }}.
+            {%- else %}
+              No sailing on this route was cancelled on the {{ record.days }} days forecast
+              for {{ record.band_words }} since {{ record.since }}.
+            {%- endif %}
+          </p>
+        </div>
+      {% endif %}
+
+      <p class="marine-source{{ ' stale' if marine.stale }}">
+        {{ marine.issued_label | capitalize }} · Environment and Climate Change Canada,
+        {{ marine.location or marine.area }}{% if marine.period %} ·
+        {{ marine.period }}{% endif %}{% if record %} · cancellation history is
+        FerryCast's own{% endif %}
+      </p>
+    </div>
+  </details>
+{% endif %}
 
 {% if selected_time %}
   {% if actual_departure %}
