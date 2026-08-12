@@ -94,6 +94,19 @@ def _marine(conn, config: Config) -> str:
     return detail
 
 
+def _shore(conn, config: Config) -> str:
+    from .shore import refresh
+
+    result = refresh(conn, config)
+    if result.get("skipped"):
+        return "no station configured"
+    detail = f"{result['rows']} period(s)"
+    failed = [r for r in result["terminals"] if not r["ok"]]
+    if failed:
+        detail += ", " + "; ".join(f"{r['terminal']} {r.get('error')}" for r in failed)
+    return detail
+
+
 def _aggregate(conn, config: Config) -> str:
     """Re-aggregate the last few days so today's sailings appear as the feed fills in."""
     from .aggregate import aggregate_range
@@ -138,6 +151,15 @@ JOBS: tuple[Job, ...] = (
         timedelta(hours=3),
         _marine,
         enabled=lambda c: c.route.marine is not None,
+    ),
+    # The city forecast is reissued about four times a day and amended between, so it keeps
+    # the marine feed's cadence. Both ends of the route come out of one directory listing
+    # per hour tried, so a second terminal costs one small document, not a second walk.
+    Job(
+        "shore",
+        timedelta(hours=3),
+        _shore,
+        enabled=lambda c: any(t.configured_for_weather for t in c.route.terminals),
     ),
     Job("aggregate", timedelta(hours=1), _aggregate),
     Job("prune", timedelta(days=7), _prune),

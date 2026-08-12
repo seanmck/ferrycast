@@ -220,6 +220,29 @@ def cmd_marine(args) -> int:
     return 0
 
 
+def cmd_shore(args) -> int:
+    from .db import init_db
+    from .shore import refresh
+
+    config = _config(args)
+    if not any(t.configured_for_weather for t in config.route.terminals):
+        print("skip  no terminal has a `weather_site`; the shore forecast is off")
+        return 0
+    # `init_db` rather than `_open`, as `marine` does: this command introduced a table, and
+    # an install that predates it would otherwise have to be told to run `init` first.
+    conn = init_db(config.db_path)
+    result = refresh(conn, config)
+    for terminal in result["terminals"]:
+        if terminal["ok"]:
+            print(
+                f"ok    {terminal['terminal']} {terminal['station']} issued "
+                f"{terminal['issued_at']}: {terminal['rows']} new of {terminal['periods']} period(s)"
+            )
+        else:
+            print(f"fail  {terminal['terminal']} {terminal.get('error')}")
+    return 0 if result["ok"] else 1
+
+
 def cmd_extract(args) -> int:
     from .timeutil import iso, now_utc
     from .vision import extract_frames, extract_pending
@@ -777,6 +800,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "marine", help="fetch the ECCC marine forecast for this route's waters"
     ).set_defaults(func=cmd_marine)
+
+    sub.add_parser(
+        "shore", help="fetch the ECCC city forecast for each terminal"
+    ).set_defaults(func=cmd_shore)
 
     extract = sub.add_parser("extract", help="run vision extraction over stored frames (R3)")
     extract.add_argument("--limit", type=int, help="maximum frames this run")

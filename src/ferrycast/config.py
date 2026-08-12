@@ -48,10 +48,20 @@ class Terminal:
     # false so an unverified camera cannot manufacture cancellations; set it true only
     # after looking at a frame.
     camera_sees_berth: bool = False
+    # Which ECCC city forecast covers this end of the crossing. Per terminal rather than per
+    # route: the two ends are a strait apart and get different weather, and the page answers
+    # for the one you are leaving from. Both keys or neither — the province is part of the
+    # feed's path, so a site code without one cannot be fetched.
+    weather_site: str = ""
+    weather_province: str = ""
 
     @property
     def configured_for_capture(self) -> bool:
         return bool(self.webcam_url)
+
+    @property
+    def configured_for_weather(self) -> bool:
+        return bool(self.weather_site and self.weather_province)
 
 
 @dataclass(frozen=True)
@@ -264,8 +274,15 @@ def _parse_route(raw: dict) -> Route:
                     f"{DECK_SPACE_ENV_PREFIX}{code.upper()}", entry.get("deck_space_url", "")
                 ),
                 camera_sees_berth=bool(entry.get("camera_sees_berth", False)),
+                weather_site=entry.get("weather_site", ""),
+                weather_province=entry.get("weather_province", ""),
             )
         )
+        if bool(entry.get("weather_site")) != bool(entry.get("weather_province")):
+            raise ConfigError(
+                f"terminal {code!r} needs both `weather_site` and `weather_province`, or "
+                "neither — the province is part of the forecast's path"
+            )
     codes = {t.code for t in terminals}
     for t in terminals:
         if t.destination not in codes:

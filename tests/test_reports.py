@@ -33,9 +33,13 @@ NOW = datetime(2026, 8, 10, 17, 0, tzinfo=UTC)
 @pytest.fixture
 def client(conn, config, monkeypatch):
     # Reports may only be filed against a sailing that has departed, so the clock has to be
-    # pinned on both sides: the app checks it, and `upcoming_sailings` reads it too.
+    # pinned everywhere it is read: the page decides whether to offer the form, the
+    # submission checks it again, and `upcoming_sailings` reads it too. Leaving the page's
+    # clock on real time makes "a sailing that has not gone" depend on the day the suite
+    # runs.
     monkeypatch.setattr("ferrycast.reports.now_utc", lambda: NOW)
     monkeypatch.setattr("ferrycast.query.now_utc", lambda: NOW)
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: NOW)
     app = create_app(str(config.source_path))
     with TestClient(app) as test_client:
         yield test_client

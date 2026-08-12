@@ -137,6 +137,12 @@
                   font-family: "Instrument Serif", Georgia, serif; font-size: 1.625rem;
                   line-height: 1; }
 
+  /* One section per source. The rule between them is the seam: above it the water, below it
+     the shore, and each carries its own issue time so neither reads as the other's. */
+  .marine-part + .marine-part { margin-top: 1.25rem; padding-top: 1.125rem;
+                                border-top: 1px solid rgba(232, 237, 236, 0.14); }
+  .marine-part > .label:first-child { display: block; margin-bottom: 0.75rem; }
+
   .marine-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
                   gap: 0.875rem 1.25rem; margin-bottom: 1.125rem; }
   .marine-stats > div { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
@@ -317,6 +323,11 @@
        parts, not three boxes. */
     .strip-cell + .strip-cell { padding-left: 1.375rem; border-left: 1px solid var(--line); }
     .strip-cell.marine { flex: 1; }
+    /* A stated basis rather than `auto`: the shore cell's longest line is its attribution,
+       and sizing it to that took three hundred pixels off the cell beside it — which is the
+       one with the forecast sentence in it. Narrow and allowed to wrap, so the marine cell
+       keeps the width at every screen the board runs on. */
+    .strip-cell.shore { flex: 0 1 12rem; }
 
     .strip-lead { font-family: "Instrument Serif", Georgia, serif; font-size: 1.5rem;
                   line-height: 1.1; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -497,7 +508,7 @@
   {# ---- The shape of the day, and the weather it will be sailed in. Ten percentages are
      not a plan; "before 07:35, after 19:05" is. Shown on every date rather than only when
      planning ahead — a marine warning must never be withheld from today's board. ---- #}
-  {% if day_shape or marine %}
+  {% if day_shape or marine or shore %}
     <div class="strip">
       {% if day_shape.easiest %}
         <div class="strip-cell">
@@ -548,6 +559,25 @@
             {%- if marine.period %} {{ marine.period }} ·{% endif %}
             {{ marine.issued_label }}{% if marine.record %} ·
             cancellation counts are FerryCast's own{% endif %}
+          </span>
+        </div>
+      {% endif %}
+
+      {# The shore forecast keeps its own cell rather than joining the marine one. Same
+         reason the phone's sheet splits them: a temperature measured in a town does not
+         belong under a heading that says Strait of Georgia. #}
+      {% if shore %}
+        <div class="strip-cell shore">
+          <span class="label">At {{ route.terminal(origin).name }} · ECCC</span>
+          <span class="strip-text">
+            {{- shore.condition or '—' }}
+            {%- if shore.temp_c is not none %} · {{ shore.temp_label | lower }}
+            {{ shore.temp_c }} °C{% endif -%}
+          </span>
+          <span class="strip-source{{ ' stale' if shore.stale }}">
+            {{ shore.station or shore.region }} ·
+            {%- if shore.period %} {{ shore.period }} ·{% endif %}
+            {{ shore.issued_label }}
           </span>
         </div>
       {% endif %}
@@ -664,12 +694,31 @@
 </svg>
 {%- endmacro %}
 
-{% if marine %}
-  {% set brief = marine.brief or marine.period or 'Marine forecast' %}
-  {% set record = marine.record %}
-  {# One line under the wind, and only one: the record if there is one to state, otherwise
-     whatever ECCC said about visibility. Both are quoted in full in the sheet. #}
-  {% set cue_sub %}
+{# Either feed alone is enough to be worth a line. Wind leads where there is a marine area
+   configured, because wind is what cancels a sailing; a route without one still gets the
+   weather it will be waited in. #}
+{% if marine or shore %}
+  {% set record = marine.record if marine else none %}
+  {% set brief = (marine.brief or marine.period or 'Marine forecast') if marine
+                 else (shore.condition or 'Forecast') %}
+
+  {# One line under the wind, and only one — the line box holds about fourteen characters
+     after the wind with the hint beside it, which is not enough for two of these. So they
+     rank: the record first, because it is the only one of the three that turns weather into
+     a decision; then what it will be doing ashore; then visibility. Whichever loses is in
+     the sheet, unabridged, along with the one that won. #}
+  {% set weather_sub %}
+    {%- if marine and shore and shore.condition -%}
+      {{ shore.condition }}
+    {%- elif marine and marine.visibility -%}
+      {{ marine.visibility }}
+    {%- elif not marine and shore and shore.temp_c is not none -%}
+      {#- The condition is already on the line above, so the shore-only cue says the
+          temperature instead of repeating itself. -#}
+      {{ shore.temp_label | lower }} {{ shore.temp_c }} °C
+    {%- endif -%}
+  {% endset %}
+  {% set record_sub %}
     {%- if record -%}
       {%- if record.cancelled -%}
         {{ record.cancelled }} of {{ record.sailings }} sailings cancelled in
@@ -677,17 +726,17 @@
       {%- else -%}
         No cancellations in {{ record.days }} days of {{ record.band_words }}
       {%- endif -%}
-    {%- elif marine.visibility -%}
-      {{ marine.visibility }}
     {%- endif -%}
   {% endset %}
-  {% set cue_sub = cue_sub | trim %}
+  {# Today the record stands down: this page is about a boat you could still catch, and
+     forty days of history is a planning fact. The weather takes the line instead. #}
+  {% set cue_sub = (record_sub if record and not is_today else weather_sub) | trim %}
 
   {# The visible line is short by design, so the control says the whole of itself. #}
   {% set cue_label %}
-    Marine forecast — {{ brief }}
-    {%- if marine.warning %}. Warning in force{% endif %}
-    {%- if cue_sub and not is_today %}. {{ cue_sub }}{% endif %}. Opens what ECCC said.
+    Forecast — {{ brief }}
+    {%- if marine and marine.warning %}. Warning in force{% endif %}
+    {%- if cue_sub %}. {{ cue_sub }}{% endif %}. Opens what ECCC said.
   {% endset %}
 
   <details class="marine-cue{{ ' now' if is_today }}">
@@ -696,67 +745,113 @@
         {{ wind_glyph('marine-glyph') }}
         <span class="marine-said">
           <span class="marine-brief">{{ brief }}</span>
-          {% if cue_sub and not is_today %}<span class="marine-sub">{{ cue_sub }}</span>{% endif %}
+          {% if cue_sub %}<span class="marine-sub">{{ cue_sub }}</span>{% endif %}
         </span>
-        {% if marine.warning %}
+        {% if marine and marine.warning %}
           <span class="marine-flag">Warning</span>
         {% elif is_today %}
-          <span class="marine-hint">tap for marine</span>
+          <span class="marine-hint">tap for {{ 'marine' if marine else 'weather' }}</span>
         {% endif %}
         <span class="marine-chev" aria-hidden="true"></span>
       </span>
     </summary>
 
+    {# Two forecasts, two sections, two issue times. They are separate ECCC products about
+       separate places — the middle of a strait and a town on the coast — and one grid of
+       stats spanning both would attribute a temperature measured ashore to a forecast for
+       the water. So each says where it is about and when it was issued, and neither
+       borrows the other's authority. #}
     <div class="marine-sheet">
       <span class="marine-grip" aria-hidden="true"></span>
-      <p class="marine-title">{{ wind_glyph('marine-glyph') }}Marine forecast</p>
+      <p class="marine-title">{{ wind_glyph('marine-glyph') }}Forecast</p>
 
-      {% if marine.warning %}
-        {# Whatever shape the feed's warning arrived in, it is on the page. Being unable to
-           word it neatly is not a reason to leave it off. #}
-        <p class="marine-flag">⚠ {{ marine.warning }}</p>
-      {% endif %}
+      {% if marine %}
+      <section class="marine-part">
+        <p class="label">On the water</p>
 
-      {# What the feed carries for this area, and only that. There is no sea state here:
-         ECCC publishes wave heights per marine area and this one's element is empty, and a
-         figure the forecast does not give is not one this page can print. #}
-      <div class="marine-stats">
-        <div>
-          <span class="label">Wind</span>
-          <span class="marine-stat">{{ marine.brief or '—' }}</span>
-        </div>
-        {% if marine.visibility %}
+        {% if marine.warning %}
+          {# Whatever shape the feed's warning arrived in, it is on the page. Being unable
+             to word it neatly is not a reason to leave it off. #}
+          <p class="marine-flag">⚠ {{ marine.warning }}</p>
+        {% endif %}
+
+        {# What the feed carries for this area, and only that. There is no sea state here:
+           ECCC publishes wave heights per marine area and this one's element is empty, and
+           a figure the forecast does not give is not one this page can print. #}
+        <div class="marine-stats">
           <div>
-            <span class="label">Visibility</span>
-            <span class="marine-stat said">{{ marine.visibility }}</span>
+            <span class="label">Wind</span>
+            <span class="marine-stat">{{ marine.brief or '—' }}</span>
+          </div>
+          {% if marine.visibility %}
+            <div>
+              <span class="label">Visibility</span>
+              <span class="marine-stat said">{{ marine.visibility }}</span>
+            </div>
+          {% endif %}
+        </div>
+
+        {% if marine.wind %}<p class="marine-prose">{{ marine.wind }}</p>{% endif %}
+
+        {% if record %}
+          <div class="marine-means">
+            <p class="label">What it means for sailings</p>
+            <p class="marine-prose">
+              {%- if record.cancelled %}
+                {{ record.cancelled }} of {{ record.sailings }} sailings on this route were
+                cancelled on the {{ record.days }} days forecast for {{ record.band_words }}
+                since {{ record.since }}.
+              {%- else %}
+                No sailing on this route was cancelled on the {{ record.days }} days forecast
+                for {{ record.band_words }} since {{ record.since }}.
+              {%- endif %}
+            </p>
           </div>
         {% endif %}
-      </div>
 
-      {% if marine.wind %}<p class="marine-prose">{{ marine.wind }}</p>{% endif %}
-
-      {% if record %}
-        <div class="marine-means">
-          <p class="label">What it means for sailings</p>
-          <p class="marine-prose">
-            {%- if record.cancelled %}
-              {{ record.cancelled }} of {{ record.sailings }} sailings on this route were
-              cancelled on the {{ record.days }} days forecast for {{ record.band_words }}
-              since {{ record.since }}.
-            {%- else %}
-              No sailing on this route was cancelled on the {{ record.days }} days forecast
-              for {{ record.band_words }} since {{ record.since }}.
-            {%- endif %}
-          </p>
-        </div>
+        <p class="marine-source{{ ' stale' if marine.stale }}">
+          {{ marine.issued_label | capitalize }} · Environment and Climate Change Canada,
+          {{ marine.location or marine.area }}{% if marine.period %} ·
+          {{ marine.period }}{% endif %}{% if record %} · cancellation history is
+          FerryCast's own{% endif %}
+        </p>
+      </section>
       {% endif %}
 
-      <p class="marine-source{{ ' stale' if marine.stale }}">
-        {{ marine.issued_label | capitalize }} · Environment and Climate Change Canada,
-        {{ marine.location or marine.area }}{% if marine.period %} ·
-        {{ marine.period }}{% endif %}{% if record %} · cancellation history is
-        FerryCast's own{% endif %}
-      </p>
+      {% if shore %}
+        <section class="marine-part">
+          <p class="label">At {{ route.terminal(origin).name }}</p>
+
+          <div class="marine-stats">
+            {% if shore.condition %}
+              <div>
+                <span class="label">Weather</span>
+                <span class="marine-stat said">{{ shore.condition }}</span>
+              </div>
+            {% endif %}
+            {% if shore.temp_c is not none %}
+              <div>
+                <span class="label">{{ shore.temp_label }}</span>
+                <span class="marine-stat">{{ shore.temp_c }} °C</span>
+              </div>
+            {% endif %}
+            {% if shore.pop %}
+              <div>
+                <span class="label">Chance of precipitation</span>
+                <span class="marine-stat">{{ shore.pop }}%</span>
+              </div>
+            {% endif %}
+          </div>
+
+          {% if shore.summary %}<p class="marine-prose">{{ shore.summary }}</p>{% endif %}
+
+          <p class="marine-source{{ ' stale' if shore.stale }}">
+            {{ shore.issued_label | capitalize }} · Environment and Climate Change Canada,
+            {{ shore.station or shore.region }}{% if shore.period %} ·
+            {{ shore.period }}{% endif %}
+          </p>
+        </section>
+      {% endif %}
     </div>
   </details>
 {% endif %}
