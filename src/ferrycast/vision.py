@@ -105,10 +105,15 @@ OBSERVATION_SCHEMA_V1 = {
 #   * Counts are not. One model returned an identical count on four consecutive frames
 #     spanning an hour; across models the spread on a single frame was 11 to 34. A count
 #     is also the wrong unit — an RV and a hatchback are not interchangeable.
-#   * Neither `lanes_occupied` nor `queue_extends_beyond_frame` survived. The marshalling
-#     lanes run off the left edge of this camera's view, so "extends beyond frame" goes
-#     true as soon as anything is in the near lane and never means "out the gate"; and
-#     lane identity is unresolvable past the foreground, where the painted numbers are.
+#   * `lanes_occupied` and `queue_extends_beyond_frame` were dropped here, but NOT because
+#     the camera cannot support them. The experiment that rejected them asked models which
+#     lane *numbers* they could read, and only 9-12 are painted in view — a question about
+#     paint, not geometry. Asked instead to count lines outward from the numbered lanes, the
+#     same model identified lanes 5-8 correctly. What it could not do was answer consistently:
+#     on some frames it collapsed back to the numbered lanes and reported an empty compound
+#     while a queue stood in the unnumbered ones, and its confidence was *highest* on exactly
+#     those frames. So this prompt does not ask for lanes — but `lanes.py` measures them from
+#     fitted geometry, which cannot fail that way, and it is the better source.
 #   * The known bias is at the top of the scale: "overflowing" was returned for a sailing
 #     that had two lanes free and cleared completely. Treat the top band as suspect until
 #     a genuinely full sailing exists to calibrate against.

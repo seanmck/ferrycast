@@ -22,7 +22,7 @@ from ferrycast.reports import (
     parse_clock,
     submit_report,
 )
-from ferrycast.timeutil import combine_local, iso, parse_hhmm
+from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm
 from ferrycast.web.app import create_app
 
 # A Friday that has been and gone, with a 12:30 sailing from Saltery Bay in the timetable.
@@ -321,8 +321,14 @@ def test_the_form_is_offered_for_a_sailing_that_has_gone(client):
 
 
 def test_the_form_is_not_offered_for_a_sailing_that_has_not(client):
-    """You cannot report on a crossing you have not made."""
-    ahead = (NOW.astimezone(client.app.state.config.tz).date() + timedelta(days=2)).isoformat()
+    """You cannot report on a crossing you have not made.
+
+    Taken from the real clock, not the frozen `NOW`: the page decides this against the
+    current time, so anchoring the test to a fixed date makes it a calendar bomb. This one
+    went off on 2026-08-12, when "two days after NOW" became "earlier today".
+    """
+    tz = client.app.state.config.tz
+    ahead = (now_utc().astimezone(tz).date() + timedelta(days=2)).isoformat()
     body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
     assert "Add what happened" not in body
     assert "hasn't gone yet" in body

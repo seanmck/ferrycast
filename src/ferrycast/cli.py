@@ -501,6 +501,25 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def cmd_lanes(args) -> int:
+    """Read frames geometrically — per-lane occupancy from a calibrated fixed camera."""
+    from .lanes import extract_frames, pending_frames
+
+    config = _config(args)
+    conn = _open(config)
+    frames = pending_frames(
+        conn, args.limit, since=args.since, terminal=args.terminal
+    )
+    stats = extract_frames(conn, config, frames, dry_run=args.dry_run)
+    print(
+        f"considered {stats.considered}, read {stats.read}, unusable {stats.unusable}, "
+        f"no calibration {stats.skipped_no_calibration}, failed {stats.failed}"
+    )
+    for err in stats.errors[:5]:
+        print(f"  {err}")
+    return 0
+
+
 def cmd_prune(args) -> int:
     from .maintenance import prune_frames
 
@@ -853,6 +872,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="score frames the usable gate rejected, to see what the gate is costing",
     )
     calibrate_p.set_defaults(func=cmd_calibrate)
+
+    lanes_p = sub.add_parser(
+        "lanes", help="per-lane occupancy from the calibrated camera geometry (no API cost)"
+    )
+    lanes_p.add_argument("--limit", type=int, default=500)
+    lanes_p.add_argument("--since", help="only frames captured at or after this ISO timestamp")
+    lanes_p.add_argument("--terminal", help="restrict to one terminal")
+    lanes_p.add_argument("--dry-run", action="store_true")
+    lanes_p.set_defaults(func=cmd_lanes)
 
     prune = sub.add_parser("prune", help="apply the frame retention policy")
     prune.add_argument("--dry-run", action="store_true")
