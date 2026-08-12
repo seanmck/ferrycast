@@ -476,6 +476,10 @@ class MarineSummary:
     area: str | None
     location: str | None
     issued_at: str
+    # The local date ECCC issued this on. The regular forecast is one sentence covering the
+    # day it was written and the next, so on the second of those two the reader is looking
+    # at yesterday's — or this morning's — words, and has to be told.
+    issued_date: str
     stale_hours: int
     kind: str
     period: str | None
@@ -495,6 +499,22 @@ class MarineSummary:
         if self.stale_hours < 48:
             return f"issued {self.stale_hours} h ago"
         return f"issued {self.stale_hours // 24} days ago"
+
+    @property
+    def carried_over(self) -> bool:
+        """Whether this date is the *second* day of a two-day forecast.
+
+        ECCC writes one sentence for "today, tonight and Thursday", and its extended
+        forecast picks up the day after that — so on Thursday's board the only thing ECCC
+        has published is Wednesday's sentence. Showing it there is right; showing it there
+        *silently* is not, because the identical text on two consecutive days reads as a
+        duplication bug, and a period that opens with "Today" is disorienting on the day it
+        is not about.
+
+        Transient by nature: the next issue writes a forecast of its own for that date, and
+        `summary` prefers it. This flag is what the page says in the meantime.
+        """
+        return self.service_date != self.issued_date
 
     @property
     def stale(self) -> bool:
@@ -548,6 +568,7 @@ def summary(
         area=row["area"],
         location=row["location"],
         issued_at=row["issued_at"],
+        issued_date=local(issued, config.tz).date().isoformat(),
         stale_hours=max(0, int(((now or now_utc()) - issued).total_seconds() // 3600)),
         kind=row["kind"],
         period=row["period"],

@@ -207,6 +207,10 @@
       color: var(--accent-ink); background: var(--accent);
       padding: 0.3rem 0.6rem; border-radius: var(--radius); align-self: flex-start;
     }
+    /* Quieter than the forecast it qualifies — it explains the text above rather than
+       adding to it, and must not compete with a warning sitting in the same cell. */
+    .strip-carried { font-size: 0.8125rem; line-height: 1.4; color: var(--label);
+                     max-width: 60ch; text-wrap: pretty; }
     .strip-source { font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem;
                     letter-spacing: 0.08em; text-transform: uppercase; color: var(--label);
                     margin-top: 0.15rem; }
@@ -408,6 +412,13 @@
                 forecast for {{ marine.record.band_words }} since {{ marine.record.since }}.
               {%- endif %}
             </span>
+          {% endif %}
+          {# ECCC writes one sentence for today and tomorrow, so on the second of the two
+             this is the previous forecast still doing its job. Said out loud, because the
+             same text on two consecutive days otherwise reads as a duplication bug. #}
+          {% if marine.carried_over %}
+            <span class="strip-carried">The same forecast covers this date — ECCC writes
+              one for the day it is issued and the next. A newer one lands each cycle.</span>
           {% endif %}
           <span class="strip-source{{ ' stale' if marine.stale }}">
             {{ marine.location or marine.area }} ·

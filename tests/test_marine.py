@@ -149,6 +149,29 @@ def test_a_compound_period_is_stored_whole_against_both_its_dates(marine_config)
     assert tonight.period == tomorrow.period == "Tonight and Wednesday."
 
 
+def test_the_second_day_is_not_dropped_because_nothing_else_covers_it(marine_config):
+    """The obvious tidy-up — keep the regular forecast for its issue date only — would
+    leave tomorrow with no forecast at all.
+
+    ECCC's extended block picks up *after* the compound period, not alongside it: a
+    document whose regular forecast says "today, tonight and Thursday" has an extended
+    block starting at Friday. So the compound sentence is the only thing published about
+    tomorrow, and restricting it to today would blank the one board most likely to be read
+    for planning.
+    """
+    forecast = parse_forecast(REAL_XML, marine_config, "m0000028", NORTH)
+    covered = {day.service_date for day in forecast.days}
+
+    # Issued 21:30 PDT on the 11th, so the 12th is the compound period's second day.
+    assert "2026-08-12" in covered
+    assert [day.period for day in forecast.days if day.service_date == "2026-08-12"] == [
+        "Tonight and Wednesday."
+    ]
+    # ...and the extended block starts the day after that, never overlapping it.
+    extended = {day.service_date for day in forecast.days if day.kind == "extended"}
+    assert min(extended) == "2026-08-13"
+
+
 def test_a_document_with_a_doctype_is_refused(marine_config):
     """ElementTree expands internal entities, and this document arrives over the network.
     No genuine MSC file declares a DOCTYPE, so refusing one closes the hole for free."""
@@ -381,6 +404,57 @@ def test_the_age_of_the_forecast_travels_with_it(marine_conn, marine_config):
 
     assert fresh.issued_label == "issued in the last hour" and not fresh.stale
     assert old.stale and "30 h ago" in old.issued_label
+
+
+def test_the_second_day_of_a_forecast_says_that_is_what_it_is(marine_conn, marine_config):
+    """Identical text on two consecutive days reads as a duplication bug, and a period that
+    opens with "Today" is disorienting on the day it is not about."""
+    at = datetime(2026, 8, 12, 5, 0, tzinfo=UTC)
+    store_forecast(
+        marine_conn, marine_config, parse_forecast(REAL_XML, marine_config, "m0000028", NORTH),
+        fetched_at=at,
+    )
+
+    issued_day = summary(marine_conn, marine_config, service_date=date(2026, 8, 11))
+    second_day = summary(marine_conn, marine_config, service_date=date(2026, 8, 12))
+
+    assert issued_day.issued_date == "2026-08-11"
+    assert not issued_day.carried_over
+    assert second_day.carried_over
+    # Same words, deliberately — it is the same forecast.
+    assert second_day.wind == issued_day.wind
+
+
+def test_a_newer_forecast_supersedes_the_carried_over_one(marine_conn, marine_config):
+    """The carry-over is transient. Once ECCC writes a forecast of its own for that date,
+    that is the one the board shows."""
+    at = datetime(2026, 8, 12, 5, 0, tzinfo=UTC)
+    store_forecast(
+        marine_conn, marine_config, parse_forecast(REAL_XML, marine_config, "m0000028", NORTH),
+        fetched_at=at,
+    )
+    fresh = Forecast(
+        site="m0000028", area="Strait of Georgia", location=NORTH,
+        issued_at=datetime(2026, 8, 12, 11, 0, tzinfo=UTC), warning=None,
+        days=[ForecastDay("2026-08-12", "regular", "Today.", "Wind light.", None, 10, "light")],
+    )
+    store_forecast(marine_conn, marine_config, fresh, fetched_at=at)
+
+    now = summary(marine_conn, marine_config, service_date=date(2026, 8, 12))
+    assert now.wind == "Wind light."
+    assert not now.carried_over
+
+
+def test_the_carry_over_is_explained_on_the_board(marine_client, marine_conn, marine_config):
+    at = datetime(2026, 8, 12, 5, 0, tzinfo=UTC)
+    forecast = parse_forecast(REAL_XML, marine_config, "m0000028", NORTH)
+    store_forecast(marine_conn, marine_config, forecast, fetched_at=at)
+
+    first = body_of(marine_client.get("/?origin=SLT&service_date=2026-08-11").text)
+    second = body_of(marine_client.get("/?origin=SLT&service_date=2026-08-12").text)
+
+    assert "The same forecast covers this date" not in first
+    assert "The same forecast covers this date" in second
 
 
 def test_no_marine_area_configured_means_no_forecast(conn, config):
