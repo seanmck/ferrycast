@@ -543,6 +543,28 @@ def cmd_lanes(args) -> int:
     return 0
 
 
+def cmd_backgrounds(args) -> int:
+    """Rebuild the per-hour empty-compound references the lane reader differences against."""
+    from .lanes import build_backgrounds, load_for
+
+    config = _config(args)
+    conn = _open(config)
+    config_dir = Path(config.source_path).parent
+    for terminal in config.route.terminals:
+        if args.terminal and terminal.code != args.terminal:
+            continue
+        if load_for(config_dir, terminal.code) is None:
+            print(f"skip  {terminal.code}: no lane calibration")
+            continue
+        stats = build_backgrounds(conn, config, terminal.code, days=args.days)
+        print(f"{terminal.code}: built {stats.built} hour(s), {stats.thin} too thin")
+        for hour in sorted(stats.per_hour):
+            n = stats.per_hour[hour]
+            mark = "" if n >= 8 else "  <- too few to trust"
+            print(f"    {hour:02d}:00  {n:4d} frame(s){mark}")
+    return 0
+
+
 def cmd_prune(args) -> int:
     from .maintenance import prune_frames
 
@@ -908,6 +930,13 @@ def build_parser() -> argparse.ArgumentParser:
     lanes_p.add_argument("--terminal", help="restrict to one terminal")
     lanes_p.add_argument("--dry-run", action="store_true")
     lanes_p.set_defaults(func=cmd_lanes)
+
+    bg = sub.add_parser(
+        "backgrounds", help="rebuild the per-hour empty-compound references (no API cost)"
+    )
+    bg.add_argument("--terminal", help="restrict to one terminal")
+    bg.add_argument("--days", type=int, default=14, help="how far back to draw samples")
+    bg.set_defaults(func=cmd_backgrounds)
 
     prune = sub.add_parser("prune", help="apply the frame retention policy")
     prune.add_argument("--dry-run", action="store_true")

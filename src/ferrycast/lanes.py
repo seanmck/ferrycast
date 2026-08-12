@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 #: A lane counts as occupied when this share of its visible pavement differs from the
@@ -142,6 +143,13 @@ def occupancy(
             f"{cal.image_size[0]}x{cal.image_size[1]}"
         )
 
+    # Match the frame's overall brightness to the reference before comparing. Gating on
+    # illumination is not enough: two frames can pass the gate and still sit far enough apart
+    # that ordinary asphalt crosses the threshold everywhere, which shows up as a haze of
+    # "changed" pixels over lanes that are visibly bare. Scaling removes the offset and
+    # leaves only differences in what is actually standing on the ground.
+    scale = _brightness_scale(fg, bg, cal, fw)
+
     out: dict[int, float] = {}
     for lane, spans in cal.lane_spans.items():
         changed = total = 0
@@ -149,10 +157,24 @@ def occupancy(
             base = y * fw
             for i in range(base + x0, base + x1):
                 total += 1
-                if abs(fg[i] - bg[i]) > threshold:
+                if abs(min(255, int(fg[i] * scale)) - bg[i]) > threshold:
                     changed += 1
         out[lane] = (changed / total) if total else 0.0
     return out
+
+
+def _brightness_scale(fg, bg, cal: LaneCalibration, width: int) -> float:
+    """Factor bringing the frame's pavement brightness onto the reference's."""
+    idx = [
+        y * width + x for spans in cal.lane_spans.values() for y, x0, x1 in spans
+        for x in range(x0, x1)
+    ]
+    f = sorted(fg[i] for i in idx)
+    b = sorted(bg[i] for i in idx)
+    if not f:
+        return 1.0
+    k = int(0.90 * (len(f) - 1))
+    return (b[k] / f[k]) if f[k] else 1.0
 
 
 def _lane_percentile(frame: str | Path | bytes, cal: LaneCalibration, q: float) -> float:
@@ -278,6 +300,7 @@ class LaneStats:
     read: int = 0
     unusable: int = 0
     skipped_no_calibration: int = 0
+    skipped_no_background: int = 0
     failed: int = 0
     errors: list[str] | None = None
 
@@ -392,18 +415,29 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
     if not frames or dry_run:
         return stats
 
+    from .timeutil import local, parse_iso
+
     config_dir = Path(config.source_path).parent
     cals: dict[str, LaneCalibration | None] = {}
-    backgrounds: dict[str, Path] = {}
+    libraries: dict[str, BackgroundLibrary] = {}
 
     for frame in frames:
         terminal = frame["terminal"]
         if terminal not in cals:
             cals[terminal] = load_for(config_dir, terminal)
-            backgrounds[terminal] = background_path(config_dir, terminal)
+            libraries[terminal] = BackgroundLibrary(config.data_dir, terminal)
         cal = cals[terminal]
-        if cal is None or not backgrounds[terminal].exists():
+        if cal is None:
             stats.skipped_no_calibration += 1
+            continue
+
+        # The reference has to match the hour, not just the camera. A single fixed frame
+        # reads a bare floodlit compound at 04:00 as every lane occupied, so an hour with no
+        # background yet is skipped rather than differenced against the wrong light.
+        hour = local(parse_iso(frame["captured_at"]), config.tz).hour
+        background = libraries[terminal].for_hour(hour)
+        if background is None:
+            stats.skipped_no_background += 1
             continue
 
         path = Path(config.data_dir) / frame["path"]
@@ -412,7 +446,7 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
             stats.errors.append(f"frame {frame['id']}: file missing at {path}")
             continue
         try:
-            parsed = read_frame(path, backgrounds[terminal], cal)
+            parsed = read_frame(path, background.path, cal)
         except Exception as exc:
             stats.failed += 1
             stats.errors.append(f"frame {frame['id']}: {exc}")
@@ -444,4 +478,182 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
         if not usable:
             stats.unusable += 1
     conn.commit()
+    return stats
+
+
+# --- rolling backgrounds ----------------------------------------------------------------
+
+#: Frames per hour bucket below which a background is not built.
+#:
+#: Was 8, which proved far too low. Hour 08 sits inside the build for the 09:25 sailing, so
+#: the compound is occupied most mornings at that time; with eight samples the vehicles
+#: present in half of them survived the median and became part of "empty", and the resulting
+#: reference read a nearly-bare compound as eight lanes occupied. The median only recovers
+#: the ground when the ground is what is usually there, and at a busy hour that needs enough
+#: days for the queue to have moved around. At a 5-minute cadence a fortnight gives ~168.
+MIN_BACKGROUND_SAMPLES = 40
+
+#: Ceiling on samples per bucket. The median converges long before this; the rest is
+#: sorting cost.
+MAX_BACKGROUND_SAMPLES = 48
+
+#: How far back to draw samples. Long enough that vehicles average out, short enough that
+#: the sun has not moved much — two weeks is about 4 degrees of solar declination, while
+#: giving well over a hundred frames per bucket at a 5-minute cadence.
+BACKGROUND_WINDOW_DAYS = 14
+
+
+@dataclass(frozen=True)
+class Background:
+    """One hour's worth of "what this camera sees when nothing is queued"."""
+
+    path: Path
+    terminal: str
+    hour: int
+    samples: int
+    window: tuple[str, str]
+    built_at: str
+
+    @property
+    def thin(self) -> bool:
+        return self.samples < MIN_BACKGROUND_SAMPLES
+
+
+def backgrounds_dir(data_dir: str | Path, terminal: str) -> Path:
+    return Path(data_dir) / "backgrounds" / terminal
+
+
+class BackgroundLibrary:
+    """Per-hour references for one camera.
+
+    A single fixed reference cannot work across a day, let alone a year: differenced against
+    a midday frame, a bare floodlit compound at 04:00 reports every lane occupied. Shadows
+    move within the day and the sun's whole arc moves across the year, so the reference has
+    to follow. Keeping one per hour, rebuilt from recent frames, tracks both without anyone
+    deciding when the seasons change.
+    """
+
+    def __init__(self, data_dir: str | Path, terminal: str) -> None:
+        self.root = backgrounds_dir(data_dir, terminal)
+        self.terminal = terminal
+
+    def for_hour(self, hour: int) -> Background | None:
+        meta = self.root / f"{hour:02d}.json"
+        image = self.root / f"{hour:02d}.png"
+        if not (meta.exists() and image.exists()):
+            return None
+        raw = json.loads(meta.read_text(encoding="utf-8"))
+        bg = Background(
+            path=image,
+            terminal=raw["terminal"],
+            hour=int(raw["hour"]),
+            samples=int(raw["samples"]),
+            window=(raw["from"], raw["to"]),
+            built_at=raw["built_at"],
+        )
+        return None if bg.thin else bg
+
+    def hours(self) -> list[int]:
+        return sorted(
+            int(p.stem) for p in self.root.glob("[0-9][0-9].json") if self.for_hour(int(p.stem))
+        )
+
+
+@dataclass
+class BackgroundStats:
+    built: int = 0
+    thin: int = 0
+    per_hour: dict[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.per_hour is None:
+            self.per_hour = {}
+
+
+def _median_image(paths: list[Path]):
+    """Per-pixel median across frames — "what is usually here", which is the pavement.
+
+    The point of the median is that it needs no idea which frames were empty. For any given
+    pixel, asphalt is what is there most of the time and a vehicle is a passing event, so the
+    middle value is the ground. That dissolves the bootstrapping problem: you would otherwise
+    need a bare reference in order to detect bare frames.
+
+    It fails where a pixel is covered more than half the time. At this terminal the compound
+    is empty for most of most days, but an hour bucket that sits inside a reliably busy
+    period is exactly where that assumption is thinnest.
+    """
+    from PIL import Image
+
+    frames = []
+    for path in paths:
+        with Image.open(path) as img:
+            grey = img.convert("L")
+            frames.append(grey.tobytes())
+            size = grey.size
+    middle = len(frames) // 2
+    data = bytes(sorted(values)[middle] for values in zip(*frames, strict=True))
+    return Image.frombytes("L", size, data)
+
+
+def build_backgrounds(
+    conn,
+    config,
+    terminal: str,
+    *,
+    days: int = BACKGROUND_WINDOW_DAYS,
+    at: object | None = None,
+) -> BackgroundStats:
+    """Rebuild this camera's per-hour references from recent frames."""
+    from .timeutil import iso, local, now_utc, parse_iso
+
+    stats = BackgroundStats()
+    since = (at or now_utc()) - timedelta(days=days)
+    rows = conn.execute(
+        """SELECT captured_at, path FROM frames
+            WHERE terminal = ? AND status = 'ok' AND path IS NOT NULL AND captured_at >= ?
+            ORDER BY captured_at""",
+        (terminal, iso(since)),
+    ).fetchall()
+
+    by_hour: dict[int, list[Path]] = {}
+    for row in rows:
+        path = Path(config.data_dir) / row["path"]
+        if not path.exists():
+            continue
+        hour = local(parse_iso(row["captured_at"]), config.tz).hour
+        by_hour.setdefault(hour, []).append(path)
+
+    out = backgrounds_dir(config.data_dir, terminal)
+    out.mkdir(parents=True, exist_ok=True)
+    for hour, paths in sorted(by_hour.items()):
+        stats.per_hour[hour] = len(paths)
+        if len(paths) < MIN_BACKGROUND_SAMPLES:
+            stats.thin += 1
+            continue
+        # Spread the sample across the whole window rather than taking the most recent run,
+        # so one busy afternoon cannot dominate a bucket.
+        if len(paths) > MAX_BACKGROUND_SAMPLES:
+            step = len(paths) / MAX_BACKGROUND_SAMPLES
+            paths = [paths[int(i * step)] for i in range(MAX_BACKGROUND_SAMPLES)]
+        try:
+            image = _median_image(paths)
+        except Exception:
+            stats.thin += 1
+            continue
+        image.save(out / f"{hour:02d}.png")
+        (out / f"{hour:02d}.json").write_text(
+            json.dumps(
+                {
+                    "terminal": terminal,
+                    "hour": hour,
+                    "samples": len(paths),
+                    "from": rows[0]["captured_at"],
+                    "to": rows[-1]["captured_at"],
+                    "built_at": iso(now_utc()),
+                },
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        stats.built += 1
     return stats
