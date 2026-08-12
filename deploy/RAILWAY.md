@@ -228,6 +228,8 @@ The web endpoints in step 5 are the other way in, and need no CLI at all.
   money is a bad idea. To enable the button, set `[web] allow_on_demand_checks = true` and
   keep `on_demand_daily_cap` sane — and consider that a Railway domain is public unless you
   put auth in front of it. The CLI path (`railway ssh ferrycast check`) needs no such
-  exposure and is the safer default.
+  exposure and is the safer default. Even when enabled, the button refuses for any terminal
+  with a lane calibration (`config/calibration/<CODE>.json`) — it already gets a free
+  geometry-based reading on every capture, so there is nothing to pay for.
 - **Cost.** The container is the only ongoing charge; FerryCast itself adds vision spend
   only when you run `check` (~$0.004 each).
