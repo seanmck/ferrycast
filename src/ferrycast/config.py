@@ -142,8 +142,8 @@ class VisionConfig:
 
 @dataclass(frozen=True)
 class WebConfig:
-    # A web request that spends money is a footgun, so on-demand checks from the browser
-    # are opt-in and separately capped even though the UI is household-only.
+    # A web request that spends money is a footgun, so on-demand checks through the web
+    # endpoint are opt-in and separately capped even on a household-only deployment.
     allow_on_demand_checks: bool = False
     # The "fill in this slot's history" button. Off by default for the same reason as the
     # line above: a public URL that spends money on a stranger's tap is a bad default. The

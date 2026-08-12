@@ -114,9 +114,9 @@ on_demand_max_age_minutes = 90
 
 [web]
 # An HTTP request that spends money deserves a guard, even on a household LAN. Turn this
-# on to enable the "check now" button and POST /api/check. Even when on, a terminal with a
-# lane calibration (config/calibration/<CODE>.json) refuses the request — it already gets a
-# free geometry-based reading on every capture, so there is nothing to buy.
+# on to enable POST /api/check. Even when on, a terminal with a lane calibration
+# (config/calibration/<CODE>.json) refuses the request — it already gets a free
+# geometry-based reading on every capture, so there is nothing to buy.
 allow_on_demand_checks = false
 on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
 
