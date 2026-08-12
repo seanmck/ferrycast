@@ -272,6 +272,22 @@ def test_the_board_and_chrome_are_absent_below_the_breakpoint(client):
     assert ".chrome, .board { display: none; }" in body
 
 
+def test_the_board_is_capped_and_the_chrome_shares_the_measure(client):
+    """A row is read across, from the departure to the share that got on, and that reading
+    fails long before a 4K monitor runs out of pixels — stretched full width, a row put its
+    own time and its own percentage a metre apart.
+
+    Both the slab and the bar above it are pinned to one custom property. Hard-coding the
+    width twice is the failure worth guarding against: the two drift, and the wordmark
+    stops sitting over the first column.
+    """
+    body = client.get("/").text
+
+    assert "--deck-max:" in body
+    assert "max-width: var(--deck-max)" in body          # the slab
+    assert "calc((100% - var(--deck-max)) / 2" in body   # the bar, on the same measure
+
+
 def test_the_health_page_has_no_board(client):
     """`/health` shares the shell but is not this design. It must not inherit a day board,
     a route switcher or a date stepper."""

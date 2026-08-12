@@ -63,11 +63,26 @@
   .chrome, .board { display: none; }
 
   @media (min-width: 72rem) {
+    /* How wide the whole thing is ever allowed to get. A board row is read across — from
+       the departure on the left to the share that got on and the hour to arrive by on the
+       right — and that reading breaks down long before a 4K monitor runs out of pixels:
+       stretched to the full width of one, a row puts its own time and its own percentage
+       a metre apart and they stop looking like the same fact.
+
+       112rem leaves the board about 1300px against a 496px rail, which is roughly the
+       proportion the theme board was drawn at. Past that the extra width is margin. */
+    :root { --deck-max: 112rem; }
+
     /* ---- Top bar. Always the hull side, as the board is: the chrome is the one surface
        that does not change with the colour scheme, so the page has a fixed horizon. ---- */
     .chrome {
       display: flex; align-items: center; gap: 1.75rem;
-      padding: 0.875rem 1.75rem;
+      /* The bar itself stays full-bleed — one that stopped short of the screen edges would
+         read as a floating toolbar rather than the top of the window — but its contents
+         sit on the same measure as the board below, so the wordmark lines up with the
+         first column and the date sits over the rail. */
+      padding-block: 0.875rem;
+      padding-inline: max(1.75rem, calc((100% - var(--deck-max)) / 2 + 1.75rem));
       background: var(--hull); color: var(--chart);
       border-bottom: 1px solid rgba(232, 237, 236, 0.12);
       position: sticky; top: 0; z-index: 5;
@@ -152,7 +167,10 @@
     .chrome-kind.live i { background: var(--o-boarded); border-color: var(--o-boarded); }
 
     /* ---- Two columns. The board is the navigation and stays put; the answer scrolls. ---- */
-    .deck { display: grid; grid-template-columns: minmax(0, 1fr) 27rem; align-items: start; }
+    .deck {
+      display: grid; grid-template-columns: minmax(0, 1fr) 27rem; align-items: start;
+      max-width: var(--deck-max); margin-inline: auto;
+    }
 
     .board {
       display: block; min-width: 0; padding: 1.5rem 0 2rem;
@@ -259,6 +277,13 @@
 
   @media (min-width: 100rem) {
     .deck { grid-template-columns: minmax(0, 1fr) 31rem; }
+  }
+
+  /* Once there is genuinely margin either side, the slab needs an edge or it reads as a
+     page that happens to be left-heavy rather than as a thing with a width. Gated a
+     little past the cap so the rule is never drawn flush against the window. */
+  @media (min-width: 114rem) {
+    .deck { border-inline: 1px solid var(--line); }
   }
 {% endblock %}
 
