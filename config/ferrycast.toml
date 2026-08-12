@@ -77,7 +77,11 @@ name = "Saltery Bay – Earls Cove"
 
 
 [capture]
-interval_minutes = 15      # keep at 15 or higher: be a polite scraper
+# Every 5 minutes. The old value of 15 was rationing paid vision calls; frames are now read
+# by geometry at ~19ms each, so cost no longer sets this and courtesy does. The camera
+# publishes a new JPEG once a minute, so this takes one frame in five of what it already
+# generates — 576 requests and ~9MB a day across both terminals.
+interval_minutes = 5
 timeout_seconds  = 20.0
 max_retries      = 2
 # Identify yourself honestly, and leave a way to be contacted.
@@ -113,7 +117,9 @@ on_demand_max_age_minutes = 90
 
 [web]
 # An HTTP request that spends money deserves a guard, even on a household LAN. Turn this
-# on to enable the "check now" button and POST /api/check.
+# on to enable the "check now" button and POST /api/check. Even when on, a terminal with a
+# lane calibration (config/calibration/<CODE>.json) refuses the request — it already gets a
+# free geometry-based reading on every capture, so there is nothing to buy.
 allow_on_demand_checks = false
 on_demand_daily_cap    = 40   # maximum frames the web path may read in a day
 allow_on_demand_backfill = false  # the "fill this slot's history" button; spends money

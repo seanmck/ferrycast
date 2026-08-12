@@ -942,6 +942,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         config: Config = Depends(get_config),
     ):
         """On-demand read of the current queue. Costs money, so it is opt-in and capped."""
+        from .. import lanes
         from ..status import check_and_compare
 
         if not config.web.allow_on_demand_checks:
@@ -951,6 +952,18 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "to enable them (each one spends a small amount on vision calls)",
             )
         _validate_origin(config, origin)
+
+        # A calibrated terminal already gets a free, no-API-call lane reading on every
+        # capture — see `ferrycast lanes` and geom-v1 observations. Paying for a vision
+        # call there buys nothing a moment's wait wouldn't give for free, so the on-demand
+        # path is offered only where geometry can't yet answer.
+        config_dir = Path(config.source_path).parent if config.source_path else None
+        if config_dir and lanes.load_for(config_dir, origin):
+            raise HTTPException(
+                403,
+                f"{origin} has a calibrated lane camera; its occupancy is read for free "
+                "on every capture, so no on-demand vision check is offered for it",
+            )
 
         today = date.today().isoformat()
         used_today = conn.execute(
