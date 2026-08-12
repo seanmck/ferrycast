@@ -1,0 +1,8 @@
+{
+  "projectId": "53611e7b-c01f-41cb-8cca-3e4695802675",
+  "shape": "css-only",
+  "readmeHeader": ".design-sync/conventions.md",
+  "styleSource": "src/ferrycast/web/templates/base.html",
+  "build": "node .design-sync/build.mjs --out ./ds-bundle",
+  "verify": "node .design-sync/verify.mjs --out ./ds-bundle"
+}

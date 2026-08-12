@@ -14,3 +14,7 @@ data/
 *.db-wal
 *.db-shm
 .env
+
+# design-sync: build output and the playwright symlink the render check resolves through.
+ds-bundle/
+.design-sync/node_modules
