@@ -11,7 +11,7 @@ a third party.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -33,6 +33,7 @@ from ..query import (
     arrival_curve,
     collection_status,
     comparable_report_bounds,
+    day_board,
     default_sailing_time,
     query_distribution,
     sailing_times,
@@ -89,6 +90,150 @@ def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | No
     # weekend the clocks go back, one of those "days" is 25 hours long.
     days = (service_date - now.date()).days
     return "tomorrow" if days == 1 else f"in {days} days"
+
+
+# How the board says a made-it share out loud, in the status column the desktop layout has
+# room for and the phone does not. Only ever applied to a row with a deep enough bucket
+# behind it: "expect to wait" off two sailings is an editorial, not a finding.
+OUTLOOK_ROOM = 0.70
+OUTLOOK_TOSSUP = 0.45
+
+
+def _outlook(row) -> str:
+    if not row.sufficient or not row.n:
+        return ""
+    if row.boarded_share >= OUTLOOK_ROOM:
+        return "room most days"
+    if row.boarded_share >= OUTLOOK_TOSSUP:
+        return "toss-up"
+    return "expect to wait"
+
+
+def _worst_of_day(rows) -> str | None:
+    """The sailing to avoid, or None when the day has no clear one.
+
+    Needs at least two answerable sailings to be a comparison at all, and a genuinely bad
+    one to be worth flagging — labelling the least-good boat of an easy Tuesday "worst of
+    day" would read as a warning about a sailing that boards nine times in ten.
+    """
+    answerable = [row for row in rows if row.sufficient and row.n]
+    if len(answerable) < 2:
+        return None
+    worst = min(answerable, key=lambda row: row.boarded_share)
+    if worst.boarded_share >= OUTLOOK_TOSSUP:
+        return None
+    # A tie is nobody's warning: two sailings equally bad means neither is "the" worst.
+    if sum(1 for row in answerable if row.boarded_share == worst.boarded_share) > 1:
+        return None
+    return worst.depart_hhmm
+
+
+def _board(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    service_date: date,
+    selected_time: str | None,
+    next_out,
+) -> list[dict]:
+    """The whole day's timetable, each sailing answered from its own history.
+
+    This is the desktop view's premise: with room for ten rows the question stops being
+    "what about the 15:25" — which the phone answers one page load at a time — and becomes
+    "which boat should I take", which no single-sailing page can answer at all.
+
+    Every row is a link to the page it already had, so the board needs no script and the
+    detail beside it is rendered by exactly the code that renders it on a phone.
+    """
+    rows = day_board(conn, config, origin=origin, target_date=service_date)
+    if not rows:
+        return []
+
+    now = local(now_utc(), config.tz)
+    is_today = service_date == now.date()
+    worst = _worst_of_day(rows)
+    last_hhmm = rows[-1].depart_hhmm
+
+    board = []
+    for row in rows:
+        departed = combine_local(service_date, parse_hhmm(row.depart_hhmm), config.tz) <= now
+        # Only today has a next departure worth counting down to. On any other date the
+        # countdown is a number of hours nobody is acting on, and the outlook — what this
+        # sailing usually does — is the column's real job.
+        is_next = bool(
+            is_today
+            and next_out
+            and next_out.service_date == service_date
+            and next_out.depart_hhmm == row.depart_hhmm
+        )
+
+        if departed:
+            status, tone = "sailed", "past"
+        elif is_next:
+            status, tone = (_countdown(config, service_date, row.depart_hhmm) or ""), "next"
+        elif row.depart_hhmm == worst:
+            status, tone = "worst of day", "worst"
+        elif row.depart_hhmm == last_hhmm:
+            status, tone = "last boat", ""
+        else:
+            status, tone = _outlook(row), ""
+
+        # The row's own sentence, for anyone who reaches it as a link rather than as a
+        # line in a grid. The column headings are decoration to a screen reader — they
+        # label cells it is never told about — so each row has to say what it is.
+        if row.n:
+            summary = (
+                f"{row.depart_hhmm}, {round(row.boarded_share * 100)}% got on across "
+                f"{row.n} comparable sailing{'' if row.n == 1 else 's'}"
+            )
+            if row.arrive_by:
+                summary += f", typically full by {row.arrive_by}"
+        else:
+            summary = f"{row.depart_hhmm}, no comparable history yet"
+        if status:
+            summary += f" — {status}"
+
+        board.append(
+            {
+                "time": row.depart_hhmm,
+                "summary": summary,
+                "n": row.n,
+                "counts": row.counts,
+                "boarded_pct": round(row.boarded_share * 100),
+                "arrive_by": row.arrive_by,
+                "relaxed": row.relaxed,
+                "status": status,
+                "tone": tone,
+                "departed": departed,
+                "selected": row.depart_hhmm == selected_time,
+                # `safe=":"` keeps the departure readable as 16:30 rather than 16%3A30.
+                # A colon is legal in a query string, and on this layout the row link is
+                # the thing somebody copies out of the address bar to send to a passenger.
+                "href": "/?"
+                + urlencode(
+                    {
+                        "origin": origin,
+                        "service_date": service_date.isoformat(),
+                        "time": row.depart_hhmm,
+                    },
+                    safe=":",
+                ),
+            }
+        )
+
+    return board
+
+
+def _now_index(board: list[dict]) -> int | None:
+    """Which row the board's "now" rule sits above.
+
+    None unless the day is genuinely part-run: before the first sailing the rule would sit
+    at the top marking nothing, and after the last one there is no row left to sit above.
+    """
+    if not board or not board[0]["departed"]:
+        return None
+    return next((i for i, row in enumerate(board) if not row["departed"]), None)
 
 
 # How long a browser may reuse the camera image. The page is server-rendered, so the URL
@@ -291,6 +436,19 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # crossing three days out, and everything to do with being mistaken for it.
         webcam = _live_webcam(config, chosen_origin, chosen_date, chosen_time)
 
+        # The desktop board. Built for every render because it is the desktop layout's
+        # navigation and its first paint has to carry the answer, same as the phone's —
+        # a day's worth of rows costs three queries, not one per sailing.
+        board = _board(
+            conn,
+            config,
+            origin=chosen_origin,
+            service_date=chosen_date,
+            selected_time=chosen_time,
+            next_out=default,
+        )
+        today = local_date(now_utc(), config.tz)
+
         return TEMPLATES.TemplateResponse(
             request,
             "index.html",
@@ -305,6 +463,24 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "labels": OUTCOME_LABELS,
                 "short_labels": OUTCOME_LABELS_SHORT,
                 "strapline": f"{kind} · {bucket}",
+                # ---- The desktop board and its chrome. Everything below is read only by
+                # the wide layout; the phone's markup does not reference any of it.
+                "board": board,
+                "now_index": _now_index(board),
+                "board_totals": {
+                    "sailings": len(board),
+                    "records": sum(row["n"] for row in board),
+                    # Whether any row had to widen its search. The board has no room to say
+                    # which rung a row used, so it marks the count and the footer explains
+                    # the mark — the panel beside it spells out the widening in full.
+                    "relaxed": sum(1 for row in board if row["relaxed"]),
+                },
+                "is_today": chosen_date == today,
+                "now_hhmm": local(now_utc(), config.tz).strftime("%H:%M"),
+                # Plain prev/next links rather than a control: the board is a whole day, so
+                # moving between days is the navigation, and it has to work without script.
+                "prev_date": (chosen_date - timedelta(days=1)).isoformat(),
+                "next_date": (chosen_date + timedelta(days=1)).isoformat(),
                 "countdown": (
                     _countdown(config, chosen_date, chosen_time) if chosen_time else None
                 ),
