@@ -197,6 +197,88 @@ def _fetch_candidates(
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
+def _candidate_reader(conn: sqlite3.Connection, route: str, origin: str, exclude_date: str | None):
+    """A `_fetch_candidates` that answers each distinct bucket once.
+
+    The ladder asks for the same (day types, season) pair at several of its rungs — three
+    of the five differ only in time tolerance — and the day board then walks that ladder
+    once per sailing. Memoising turns what would be five queries per sailing into three
+    for a whole day's timetable. The query is deterministic, so a cached answer is the
+    same answer.
+    """
+    cache: dict[tuple[tuple[str, ...], str | None], list[sqlite3.Row]] = {}
+
+    def read(day_types: tuple[str, ...], season_bucket: str | None) -> list[sqlite3.Row]:
+        key = (day_types, season_bucket)
+        if key not in cache:
+            cache[key] = _fetch_candidates(
+                conn, route, origin, day_types, season_bucket, exclude_date
+            )
+        return cache[key]
+
+    return read
+
+
+def _walk_levels(
+    read,
+    levels: list[_Level],
+    *,
+    target_season: str,
+    target_minutes: int,
+    target_long_weekend: bool,
+    min_sample: int,
+    cap: int,
+) -> tuple[list[sqlite3.Row], _Level, list[str]]:
+    """Widen the search a rung at a time until the bucket is deep enough.
+
+    Shared by the single-sailing answer and by every row of the day board, so a row can
+    never disagree with the panel it opens — the board saying 46% beside a headline of 54%
+    would be read as two different facts about the same sailing rather than one bug.
+    """
+    matches: list[sqlite3.Row] = []
+    used = levels[0]
+    relaxations: list[str] = []
+
+    for level in levels:
+        rows = read(level.day_types, target_season if level.same_season else None)
+        matches = [
+            row
+            for row in rows
+            if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= level.tolerance
+            and (
+                not level.same_long_weekend
+                or is_long_weekend(date.fromisoformat(row["service_date"])) == target_long_weekend
+            )
+        ]
+        # Newest first from the query, so truncating here keeps the most recent sailings.
+        # The cap applies to the counts as well as the listed dates: a distribution that
+        # says "5 sailings" must be computed from those five and no others.
+        matches = matches[:cap]
+        used = level
+        # Record the widening *before* deciding to stop, so the level that finally
+        # succeeded is reported rather than silently omitted.
+        if level.name != "exact":
+            relaxations.append(level.description)
+        if len(matches) >= min_sample:
+            break
+
+    return matches, used, relaxations
+
+
+def _typical_fill(
+    config: Config, matches: list[sqlite3.Row], target_date: date, depart_hhmm: str
+) -> tuple[int | None, str | None]:
+    """Median minutes before departure at which these sailings ran out of room, as a clock."""
+    gaps = [gap for gap in (_fill_gap_minutes(row) for row in matches) if gap is not None]
+    typical = _median_int(gaps)
+    if typical is None:
+        return None, None
+    moment = combine_local(target_date, parse_hhmm(depart_hhmm), config.tz) - timedelta(
+        minutes=typical
+    )
+    return typical, moment.strftime("%H:%M")
+
+
 def _count_unknown(
     conn: sqlite3.Connection, route: str, origin: str, day_types: tuple[str, ...]
 ) -> int:
@@ -237,61 +319,23 @@ def query_distribution(
     target_long_weekend = is_long_weekend(target_date)
     cap = max_samples if max_samples is not None else config.query.max_samples
 
-    matches: list[sqlite3.Row] = []
-    used = _levels(config, target_type)[0]
-    relaxations: list[str] = []
+    matches, used, relaxations = _walk_levels(
+        _candidate_reader(conn, route.id, origin, target_date.isoformat()),
+        _levels(config, target_type),
+        target_season=target_season,
+        target_minutes=target_minutes,
+        target_long_weekend=target_long_weekend,
+        min_sample=config.query.min_sample,
+        cap=cap,
+    )
 
-    for level in _levels(config, target_type):
-        rows = _fetch_candidates(
-            conn,
-            route.id,
-            origin,
-            level.day_types,
-            target_season if level.same_season else None,
-            target_date.isoformat(),
-        )
-        matches = [
-            row
-            for row in rows
-            if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= level.tolerance
-            and (
-                not level.same_long_weekend
-                or is_long_weekend(date.fromisoformat(row["service_date"])) == target_long_weekend
-            )
-        ]
-        # Newest first from the query, so truncating here keeps the most recent sailings.
-        # The cap applies to the counts as well as the listed dates: a distribution that
-        # says "5 sailings" must be computed from those five and no others.
-        matches = matches[:cap]
-        used = level
-        # Record the widening *before* deciding to stop, so the level that finally
-        # succeeded is reported rather than silently omitted.
-        if level.name != "exact":
-            relaxations.append(level.description)
-        if len(matches) >= config.query.min_sample:
-            break
-
-    counts = dict.fromkeys(REPORTED_OUTCOMES, 0)
-    for row in matches:
-        if row["outcome"] in counts:
-            counts[row["outcome"]] += 1
+    counts = _counts_of(matches)
     n = sum(counts.values())
     shares = {k: (round(v / n, 4) if n else 0.0) for k, v in counts.items()}
 
     samples = [_sample(conn, config, row) for row in matches]
 
-    fill_gaps = [
-        gap
-        for gap in (_fill_gap_minutes(row) for row in matches)
-        if gap is not None
-    ]
-    typical_gap = _median_int(fill_gaps)
-    typical_local = None
-    if typical_gap is not None:
-        moment = combine_local(target_date, parse_hhmm(depart_hhmm), config.tz) - timedelta(
-            minutes=typical_gap
-        )
-        typical_local = moment.strftime("%H:%M")
+    typical_gap, typical_local = _typical_fill(config, matches, target_date, depart_hhmm)
 
     evidence = _evidence_of({row["method"] for row in matches})
 
@@ -321,6 +365,14 @@ def query_distribution(
         if n
         else 0.0,
     )
+
+
+def _counts_of(matches: list[sqlite3.Row]) -> dict[str, int]:
+    counts = dict.fromkeys(REPORTED_OUTCOMES, 0)
+    for row in matches:
+        if row["outcome"] in counts:
+            counts[row["outcome"]] += 1
+    return counts
 
 
 def _evidence_of(methods: set[str | None]) -> str:
@@ -442,6 +494,101 @@ def default_sailing_time(
     if target_date != reference.date():
         return times[0]
     return next((t for t in times if t >= reference.strftime("%H:%M")), times[-1])
+
+
+@dataclass
+class BoardSailing:
+    """One row of the day board: a whole timetable answered at a glance.
+
+    Deliberately thinner than `Distribution`. The board carries ten of these, and the two
+    expensive parts of the full answer — the per-sample tag lookup and the unknown count —
+    are worth a query each for the sailing somebody actually opened and worth none for the
+    nine they did not.
+    """
+
+    depart_hhmm: str
+    n: int
+    counts: dict[str, int]
+    shares: dict[str, float]
+    # The board's own two figures: the share that got on, and the share that did not.
+    boarded_share: float
+    filled_share: float
+    sufficient: bool
+    match_level: str
+    relaxed: bool
+    arrive_by: str | None
+    fill_minutes_before: int | None
+
+
+def day_board(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    route_id: str | None = None,
+) -> list[BoardSailing]:
+    """Every sailing on one date, each answered from its own comparable history.
+
+    The desktop board's premise is that a whole day fits on one screen, so the question
+    stops being "what about the 15:25" and becomes "which boat should I take" — which the
+    single-sailing page could only answer by being loaded ten times.
+
+    Ten answers cost three queries, not thirty: the ladder's buckets are shared across
+    sailings and read once each, and every rung after the fetch is filtering in memory.
+    Rows walk the same ladder as `query_distribution`, so opening one cannot show a
+    different number from the row that was clicked.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    target_type = day_type(target_date)
+    target_season = season(target_date)
+    target_long_weekend = is_long_weekend(target_date)
+    levels = _levels(config, target_type)
+    cap = config.query.max_samples
+    read = _candidate_reader(conn, route.id, origin, target_date.isoformat())
+
+    board = []
+    for depart_hhmm in sailing_times(config, origin, target_date):
+        # The descriptions of each widening are the panel's to print, not the board's — a
+        # row has one column of width for its sample size and no room to justify it.
+        matches, used, _ = _walk_levels(
+            read,
+            levels,
+            target_season=target_season,
+            target_minutes=_hhmm_to_minutes(depart_hhmm),
+            target_long_weekend=target_long_weekend,
+            min_sample=config.query.min_sample,
+            cap=cap,
+        )
+        counts = _counts_of(matches)
+        n = sum(counts.values())
+        gap, arrive_by = _typical_fill(config, matches, target_date, depart_hhmm)
+        board.append(
+            BoardSailing(
+                depart_hhmm=depart_hhmm,
+                n=n,
+                counts=counts,
+                shares={k: (round(v / n, 4) if n else 0.0) for k, v in counts.items()},
+                boarded_share=round(counts["boarded"] / n, 4) if n else 0.0,
+                filled_share=(
+                    round(
+                        sum(counts[o] for o in ("filled", "waited_1", "waited_2plus")) / n, 4
+                    )
+                    if n
+                    else 0.0
+                ),
+                sufficient=n >= config.query.min_sample,
+                match_level=used.name,
+                # Only a count can be qualified. A sailing with no history anywhere walks
+                # the whole ladder and ends on its last rung, but nothing was widened to
+                # reach that — there was nothing to reach — so marking its em dash with a
+                # "we had to search wider" asterisk points at an absence.
+                relaxed=bool(n) and used.name != "exact",
+                arrive_by=arrive_by,
+                fill_minutes_before=gap,
+            )
+        )
+    return board
 
 
 def arrival_curve(

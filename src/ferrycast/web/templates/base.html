@@ -373,6 +373,16 @@
 </style>
 </head>
 <body>
+{#
+  Two shells, one document. The phone gets `main` and nothing else — `chrome` and `deck`
+  are empty on every page that does not fill them, and a wrapper with no styles of its own
+  leaves `main` laid out exactly as it was. The wide layout fills both, and its stylesheet
+  lives with the page that does (see index.html): a day board is that page's furniture,
+  not the design system's.
+#}
+{% block chrome %}{% endblock %}
+<div class="deck">
+{% block board %}{% endblock %}
 <main>
   <div class="masthead">
     {# The mark is decorative: the name it stands for is the h1 right beside it. #}
@@ -384,6 +394,7 @@
   </div>
 {% block content %}{% endblock %}
 </main>
+</div>
 {% block script %}{% endblock %}
 </body>
 </html>

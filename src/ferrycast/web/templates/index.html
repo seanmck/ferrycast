@@ -49,12 +49,329 @@
   .report-form .hint { font-size: 0.75rem; color: var(--label); margin: 0.3rem 0 0; }
   .got-on { color: var(--o-boarded); }
   .left-behind { color: var(--o-waited_2plus); }
+
+  /* ==== The day board ==================================================================
+     A phone answers one sailing per page load, which makes "which boat should I take" a
+     question you can only ask by asking it ten times. A wide screen has room for the whole
+     timetable at once, so it gets one: every departure, what it usually does, and the hour
+     you would have had to arrive — with the sailing you picked opened beside it.
+
+     Nothing below applies until the viewport is wide enough for two columns. The phone
+     layout is this file's default and is left exactly as it was; `.chrome` and `.board`
+     are simply absent from it. */
+
+  .chrome, .board { display: none; }
+
+  @media (min-width: 72rem) {
+    /* ---- Top bar. Always the hull side, as the board is: the chrome is the one surface
+       that does not change with the colour scheme, so the page has a fixed horizon. ---- */
+    .chrome {
+      display: flex; align-items: center; gap: 1.75rem;
+      padding: 0.875rem 1.75rem;
+      background: var(--hull); color: var(--chart);
+      border-bottom: 1px solid rgba(232, 237, 236, 0.12);
+      position: sticky; top: 0; z-index: 5;
+    }
+    .chrome .label { color: var(--hero-label); }
+
+    .chrome-brand { display: flex; align-items: center; gap: 0.625rem; flex: none;
+                    color: var(--chart); }
+    .chrome-brand:hover { color: var(--chart); }
+    .chrome-brand img { width: 1.75rem; height: 1.75rem; display: block; }
+    .chrome-brand span { font-family: "Instrument Serif", Georgia, serif; font-size: 1.5rem;
+                         line-height: 1; }
+
+    /* The bar never wraps — a chrome that reflowed to two lines would shift the whole board
+       under it on every resize — so it has to yield along one axis instead, and the order it
+       yields in is set here rather than left to the viewport.
+
+       Two things here are already said elsewhere on screen: the route name is spelled out
+       by the direction pair beside it, and the day type sits in the board's own footer. So
+       those two appear only once there is width to spare, and the route name — the only
+       item whose length comes from somebody's config rather than from this file — is the
+       one element allowed to stretch and truncate. Everything else is `flex: none`, which
+       is what stops a long route name from squeezing the direction pair: a width
+       breakpoint on its own could only ever be tuned for one route's name. */
+    .chrome-route, .chrome-kind { display: none; }
+
+    .chrome-route {
+      align-items: center; gap: 0.625rem; white-space: nowrap;
+      padding-left: 1.5rem; border-left: 1px solid rgba(232, 237, 236, 0.14);
+      font-size: 0.9375rem;
+      min-width: 0; flex: 0 1 auto;
+    }
+    .chrome-route .label { flex: none; }
+    .chrome-route span:last-child { overflow: hidden; text-overflow: ellipsis; }
+
+    /* The direction pair, as links rather than radios: on this layout it is navigation to
+       another day board, not a field in a form waiting to be submitted. Never shrinks — it
+       is the one control up here that is not repeated anywhere else on the page. */
+    .chrome-dir { display: flex; background: var(--strait); border-radius: var(--radius);
+                  padding: 3px; gap: 3px; flex: none; }
+    .chrome-dir a { padding: 0.5rem 1rem; border-radius: var(--radius);
+                    font-size: 0.8125rem; color: var(--hero-muted); white-space: nowrap; }
+    .chrome-dir a:hover { color: var(--chart); }
+    .chrome-dir a[aria-current] { background: var(--chart); color: var(--hull); font-weight: 500; }
+    .chrome-dir a[aria-current]:hover { color: var(--hull); }
+
+    /* Arrows step a day; the field itself still jumps anywhere, because a board that can
+       only be walked one day at a time is worse at planning than the phone it replaces. */
+    .chrome-day { display: flex; align-items: center; gap: 0.75rem; margin-left: auto;
+                  flex: none; }
+    .chrome-step {
+      display: flex; align-items: center; justify-content: center;
+      width: 1.875rem; height: 1.875rem; flex: none;
+      font-family: "IBM Plex Mono", monospace; color: var(--hero-label);
+      border: 1px solid rgba(232, 237, 236, 0.14); border-radius: var(--radius);
+    }
+    .chrome-step:hover { color: var(--chart); border-color: var(--line-strong); }
+    /* The bar is always the hull side, so its focus ring is drawn against that rather than
+       against whichever scheme the rest of the page is in. */
+    .chrome a:focus-visible, .chrome input:focus-visible {
+      outline: 2px solid var(--buoy); outline-offset: 2px;
+    }
+    .chrome-day input[type="date"] {
+      width: auto; height: 1.875rem; line-height: 1.75rem; font-size: 0.8125rem;
+      letter-spacing: 0.08em; padding: 0 0.5rem;
+      background: transparent; color: var(--chart);
+      border-color: rgba(232, 237, 236, 0.14);
+    }
+    .chrome-day input[type="date"]::-webkit-calendar-picker-indicator {
+      filter: invert(1); opacity: 0.55; margin: 0;
+    }
+
+    .chrome-kind {
+      align-items: center; gap: 0.5rem; white-space: nowrap; flex: none;
+      padding-left: 1.25rem; border-left: 1px solid rgba(232, 237, 236, 0.14);
+      font-size: 0.6875rem; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--hero-label);
+    }
+    /* Filled for the day you could still act on, hollow for one you are only planning. */
+    .chrome-kind i { width: 7px; height: 7px; border-radius: 50%; flex: none;
+                     border: 1px solid var(--hero-label); }
+    .chrome-kind.live i { background: var(--o-boarded); border-color: var(--o-boarded); }
+
+    /* ---- Two columns. The board is the navigation and stays put; the answer scrolls. ---- */
+    .deck { display: grid; grid-template-columns: minmax(0, 1fr) 27rem; align-items: start; }
+
+    .board {
+      display: block; min-width: 0; padding: 1.5rem 0 2rem;
+      position: sticky; top: 3.5rem;
+      max-height: calc(100vh - 3.5rem); overflow: auto;
+    }
+
+    .board-head { display: flex; align-items: baseline; gap: 1rem; padding: 0 1.75rem 1rem;
+                  flex-wrap: wrap; }
+    .board-head h2 { font-family: "Instrument Serif", Georgia, serif; font-weight: 400;
+                     font-size: 1.875rem; line-height: 1; margin: 0; }
+    .board-head p { margin: 0; font-size: 0.875rem; color: var(--muted); }
+
+    .board-cols, .board-row {
+      display: grid; gap: 1rem; align-items: center;
+      grid-template-columns: 5rem 7.5rem minmax(0, 1fr) 4.5rem 5.5rem 3rem;
+      padding: 0.75rem 1.75rem;
+    }
+    .board-cols { padding-top: 0; padding-bottom: 0.625rem;
+                  border-bottom: 1px solid var(--line); }
+    .board-cols .label { font-size: 0.625rem; letter-spacing: 0.18em; }
+    .board .r { text-align: right; }
+
+    .board-row {
+      color: var(--ink); border-bottom: 1px solid var(--line);
+      border-left: 3px solid transparent;   /* the selected marker's gutter, always held */
+      padding-left: calc(1.75rem - 3px);
+    }
+    .board-row:hover { background: var(--surface); color: var(--ink); }
+    /* The board is this layout's navigation, so it is walked by keyboard as well as
+       clicked. Inset rather than the default outset ring: the row runs the full width of
+       its column, and an outset one would be clipped on both edges. */
+    .board-row:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface);
+    }
+    /* A sailing that has gone is still worth reading — it is how the history is read — but
+       it is not a choice, so it recedes rather than disappears. */
+    .board-row.past { opacity: 0.55; }
+    .board-row.on {
+      background: var(--surface); border-left-color: var(--buoy); opacity: 1;
+    }
+
+    .board-time { font-family: "Instrument Serif", Georgia, serif; font-size: 1.625rem;
+                  line-height: 1; font-variant-numeric: tabular-nums; }
+    .board-status { font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem;
+                    letter-spacing: 0.06em; text-transform: uppercase; color: var(--label); }
+    .board-row.next .board-status  { color: var(--buoy); }
+    .board-row.worst .board-status { color: var(--late); }
+
+    .board-mix { display: flex; height: 10px; border-radius: 1px; overflow: hidden; }
+    .board-mix span { display: block; min-width: 2px; }
+    /* No history is a hairline, not an empty box: the row still has to read as a row. */
+    .board-mix.empty { height: 1px; background: var(--line); align-self: center; }
+
+    .board-pct    { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+                    font-size: 0.9375rem; }
+    .board-arrive { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+                    font-size: 0.875rem; color: var(--muted); }
+    .board-n      { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums;
+                    font-size: 0.8125rem; color: var(--label); }
+    /* A number the search had to widen for is still the answer, but it is not the answer to
+       the question as asked, and the board has no room to say which rung it used. */
+    .board-n.relaxed::after { content: "*"; }
+
+    /* Where the day has got to. Cedar, and only ever between two rows. */
+    .board-now { display: flex; align-items: center; gap: 0.875rem; padding: 0.5rem 1.75rem; }
+    .board-now span { height: 1px; flex: 1; background: var(--accent); opacity: 0.5; }
+    .board-now b { font-family: "IBM Plex Mono", monospace; font-weight: 400;
+                   font-size: 0.625rem; letter-spacing: 0.2em; text-transform: uppercase;
+                   color: var(--accent); }
+
+    .board-foot {
+      display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
+      margin: 0 1.75rem; padding-top: 0.875rem; border-top: 1px solid var(--line);
+      font-size: 0.8125rem; color: var(--muted);
+    }
+    .board-foot .key { display: flex; align-items: center; gap: 0.5rem; }
+    .board-foot .key i { width: 11px; height: 11px; flex: none; }
+    .board-foot .note-mark { font-size: 0.75rem; color: var(--label); }
+    .board-foot .note-mark b { font-family: "IBM Plex Mono", monospace; font-weight: 400; }
+    .board-foot .corpus { margin-left: auto; font-family: "IBM Plex Mono", monospace;
+                          font-size: 0.6875rem; letter-spacing: 0.12em; color: var(--label); }
+
+    /* ---- The right-hand column is the page the phone already renders, unchanged. ---- */
+    main {
+      max-width: none; margin: 0; padding: 1.5rem 1.75rem 4rem;
+      border-left: 1px solid var(--line); min-height: calc(100vh - 3.5rem);
+    }
+    /* The chrome above says the name, the route, the direction and the date. Leaving these
+       would print every one of them twice. */
+    .masthead, .picker { display: none; }
+    main > .hero:first-child, main > section:first-child { margin-top: 0; }
+  }
+
+  /* Wide enough for the bar to name the route as well as the crossing. */
+  @media (min-width: 84rem) {
+    .chrome-route { display: flex; }
+  }
+
+  /* ...and wide enough to say what kind of day the whole comparison is drawn from. */
+  @media (min-width: 88rem) {
+    .chrome-kind { display: flex; }
+  }
+
+  @media (min-width: 100rem) {
+    .deck { grid-template-columns: minmax(0, 1fr) 31rem; }
+  }
+{% endblock %}
+
+{% block chrome %}
+<header class="chrome">
+  <a class="chrome-brand" href="/">
+    <img src="/static/brand/mark.png" width="128" height="128" alt="" decoding="async">
+    <span>FerryCast</span>
+  </a>
+
+  <div class="chrome-route">
+    <span class="label">Route</span>
+    <span>{{ route.name }}</span>
+  </div>
+
+  <nav class="chrome-dir" aria-label="Direction">
+    {% for t in terminals %}
+      <a href="/?origin={{ t.code }}&amp;service_date={{ service_date }}"
+         {% if t.code == origin %}aria-current="page"{% endif %}>{{ t.name }} →
+        {{ route.terminal(t.destination).name }}</a>
+    {% endfor %}
+  </nav>
+
+  {# Arrows for the next day over, the field for a day in another month. Both work with
+     scripting off — the arrows are links, and the field keeps a submit button for it. #}
+  <form class="chrome-day" method="get" action="/">
+    <input type="hidden" name="origin" value="{{ origin }}">
+    <a class="chrome-step" href="/?origin={{ origin }}&amp;service_date={{ prev_date }}"
+       aria-label="The day before">←</a>
+    <input type="date" name="service_date" value="{{ service_date }}"
+           aria-label="Date" onchange="this.form.submit()">
+    <a class="chrome-step" href="/?origin={{ origin }}&amp;service_date={{ next_date }}"
+       aria-label="The day after">→</a>
+    <noscript><button type="submit">Show</button></noscript>
+  </form>
+
+  {# What kind of day this is, which is the whole basis of the comparison. Filled dot for a
+     day you could still act on, hollow for one you are only planning. #}
+  <span class="chrome-kind{% if is_today %} live{% endif %}">
+    <i></i>{% if is_today %}Today · {{ now_hhmm }} · {% endif %}{{ strapline }}
+  </span>
+</header>
+{% endblock %}
+
+{% block board %}
+{% if board %}
+<section class="board" aria-labelledby="board-heading">
+  <div class="board-head">
+    <h2 id="board-heading">{{ board_totals.sailings }}
+      sailing{{ '' if board_totals.sailings == 1 else 's' }}{% if is_today %} today{% endif %}</h2>
+    <p>Every departure, what it usually does, and the hour you would have had to arrive.</p>
+  </div>
+
+  {# The headings label columns a screen reader is never told about, so they are decoration
+     and each row carries its own sentence instead. #}
+  <div class="board-cols" aria-hidden="true">
+    <span class="label">Sailing</span>
+    <span class="label">Usually</span>
+    <span class="label">Outcome mix · comparable days</span>
+    <span class="label r">Made it</span>
+    <span class="label r">Arrive by</span>
+    <span class="label r">N</span>
+  </div>
+
+  {% for row in board %}
+    {% if loop.index0 == now_index %}
+      <div class="board-now"><span></span><b>Now · {{ now_hhmm }}</b><span></span></div>
+    {% endif %}
+    {%- set row_class = 'board-row'
+        ~ ((' ' ~ row.tone) if row.tone else '')
+        ~ (' on' if row.selected else '') %}
+    <a class="{{ row_class }}" href="{{ row.href }}" aria-label="{{ row.summary }}">
+      <span class="board-time">{{ row.time }}</span>
+      <span class="board-status">{{ row.status }}</span>
+      {% if row.n %}
+        <span class="board-mix">
+          {% for key, count in row.counts.items() if count %}
+            <span class="seg-{{ key }}" style="flex: {{ count }}"></span>
+          {% endfor %}
+        </span>
+      {% else %}
+        <span class="board-mix empty"></span>
+      {% endif %}
+      <span class="board-pct r">{{ row.boarded_pct ~ '%' if row.n else '—' }}</span>
+      <span class="board-arrive r">{{ row.arrive_by or '—' }}</span>
+      <span class="board-n r{{ ' relaxed' if row.relaxed }}">{{ row.n or '—' }}</span>
+    </a>
+  {% endfor %}
+
+  <div class="board-foot">
+    <span class="key"><i class="seg-boarded"></i>made it</span>
+    <span class="key"><i class="seg-waited_1"></i>waited one</span>
+    <span class="key"><i class="seg-waited_2plus"></i>waited two+</span>
+    {% if board_totals.relaxed %}
+      <span class="key note-mark"><b>*</b>no exact match, so the search was widened —
+        open a sailing to see how</span>
+    {% endif %}
+    <span class="corpus">
+      {% if board_totals.records %}
+        {{ strapline }} · {{ board_totals.records }} comparable sailings
+      {% else %}
+        No comparable history yet
+      {% endif %}
+    </span>
+  </div>
+</section>
+{% endif %}
 {% endblock %}
 
 {% block content %}
 
 {# ---- Pick the sailing. Two terminals become a segmented control, as on the board. ---- #}
-<form method="get" action="/" class="card">
+<form method="get" action="/" class="card picker">
   <div class="row">
     <div class="wide">
       <span class="label">Leaving from</span>
