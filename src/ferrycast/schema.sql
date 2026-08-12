@@ -166,6 +166,38 @@ CREATE INDEX IF NOT EXISTS idx_marine_lookup
     ON marine_forecast (route, service_date, issued_at);
 CREATE INDEX IF NOT EXISTS idx_marine_band ON marine_forecast (route, band, service_date);
 
+-- The weather ashore, at the terminal rather than on the water. Kept apart from the marine
+-- forecast because it is a different ECCC product about a different place: one covers the
+-- Strait of Georgia, the other a town on the coast, and each carries its own issue time.
+--
+-- Keyed by terminal as well as by route: the two ends of a crossing are an hour and a
+-- strait apart and get their own city forecast, and the page answers for the one you are
+-- leaving from.
+CREATE TABLE IF NOT EXISTS shore_forecast (
+    id           INTEGER PRIMARY KEY,
+    route        TEXT    NOT NULL,
+    terminal     TEXT    NOT NULL,
+    site         TEXT    NOT NULL,       -- ECCC city page code, e.g. s0000634
+    service_date TEXT    NOT NULL,       -- local YYYY-MM-DD this forecast covers
+    issued_at    TEXT    NOT NULL,       -- UTC ISO8601, ECCC's own forecast issue stamp
+    fetched_at   TEXT    NOT NULL,       -- UTC ISO8601
+    station      TEXT,                   -- "Powell River"
+    region       TEXT,                   -- "Sunshine Coast - Gibsons to Earls Cove"
+    kind         TEXT    NOT NULL,       -- day | night
+    period       TEXT,                   -- ECCC's own label: "Today", "Thursday night"
+    condition    TEXT,                   -- the abbreviated forecast, verbatim
+    pop          INTEGER,                -- probability of precipitation, %
+    temp_high    INTEGER,
+    temp_low     INTEGER,
+    summary      TEXT,                   -- the full forecast sentence, verbatim
+    fetch_status TEXT    NOT NULL,       -- ok | error
+    error        TEXT,
+    raw          TEXT,
+    UNIQUE (route, terminal, site, service_date, issued_at, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_shore_lookup
+    ON shore_forecast (route, terminal, service_date, issued_at);
+
 CREATE TABLE IF NOT EXISTS event_tags (
     id           INTEGER PRIMARY KEY,
     service_date TEXT NOT NULL,
