@@ -1,12 +1,15 @@
 import io
 import json
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
 from ferrycast.timeutil import iso, now_utc
 from ferrycast.vision import (
+    FULLNESS_LEVELS,
     OBSERVATION_SCHEMA,
+    OBSERVATION_SCHEMA_V2,
     estimate_cost,
     extract_pending,
     month_to_date_cost,
@@ -250,9 +253,14 @@ def test_monthly_budget_stops_the_run(conn, config):
 
 
 def test_cost_estimate_uses_configured_rates(config):
-    # 1M input tokens at $1/MTok plus 1M output at $5/MTok.
-    assert estimate_cost(config, 1_000_000, 0) == pytest.approx(1.0)
-    assert estimate_cost(config, 0, 1_000_000) == pytest.approx(5.0)
+    # Pinned here rather than taken from the default config, so switching models does not
+    # look like a broken cost calculation.
+    priced = replace(
+        config,
+        vision=replace(config.vision, input_usd_per_mtok=1.0, output_usd_per_mtok=5.0),
+    )
+    assert estimate_cost(priced, 1_000_000, 0) == pytest.approx(1.0)
+    assert estimate_cost(priced, 0, 1_000_000) == pytest.approx(5.0)
 
 
 def test_month_to_date_cost_accumulates(conn, config):
@@ -278,3 +286,119 @@ def test_dry_run_sends_nothing(conn, config):
     assert stats.considered == 1
     assert stats.extracted == 0
     assert client.messages.calls == []
+
+
+# --- v2: the band replaces the count -------------------------------------------------
+
+V2_PAYLOAD = {
+    "compound_visible": True,
+    "fullness": "heavy",
+    "vehicle_count": None,
+    "confidence": 0.8,
+    "notes": "",
+}
+
+
+def _v2(config):
+    return replace(config, vision=replace(config.vision, prompt_version="v2"))
+
+
+def test_v2_sends_its_own_prompt_and_schema(conn, config):
+    _add_frame(conn, config, _bright_png())
+    client = FakeClient(V2_PAYLOAD)
+
+    extract_pending(conn, _v2(config), client=client)
+
+    sent = client.messages.calls[0]
+    assert "how full" in sent["system"].lower()
+    schema = sent["output_config"]["format"]["schema"]
+    assert set(schema["properties"]) == set(OBSERVATION_SCHEMA_V2["properties"])
+    # The band is what we asked for, so it must be a required part of the answer.
+    assert "fullness" in schema["required"]
+
+
+def test_v2_stores_the_band_and_stays_usable_without_a_count(conn, config):
+    frame_id = _add_frame(conn, config, _bright_png())
+
+    extract_pending(conn, _v2(config), client=FakeClient(V2_PAYLOAD))
+
+    row = conn.execute("SELECT * FROM observations WHERE frame_id = ?", (frame_id,)).fetchone()
+    assert row["fullness"] == "heavy"
+    assert row["vehicle_count"] is None
+    # v1 required a count before it would trust a frame. Under v2 the count is optional,
+    # so insisting on one here would throw away every good reading.
+    assert row["usable"] == 1
+    assert row["prompt_version"] == "v2"
+
+
+def test_v2_discards_a_frame_whose_compound_cannot_be_seen(conn, config):
+    frame_id = _add_frame(conn, config, _bright_png())
+    payload = {**V2_PAYLOAD, "compound_visible": False, "fullness": None, "confidence": 0.1}
+
+    stats = extract_pending(conn, _v2(config), client=FakeClient(payload))
+
+    row = conn.execute("SELECT * FROM observations WHERE frame_id = ?", (frame_id,)).fetchone()
+    assert row["usable"] == 0
+    assert row["visibility"] == "obscured"
+    assert stats.flagged_unusable == 1
+
+
+def test_v2_keeps_a_dim_but_legible_frame(conn, config):
+    """These cameras are floodlit all night, so "dim" is not a reason to drop a frame.
+
+    v1 gated on a `visibility` of clear/dim/obscured/dark and would discard readings that
+    were perfectly legible. v2 asks only whether the compound can be judged.
+    """
+    frame_id = _add_frame(conn, config, _bright_png())
+    payload = {**V2_PAYLOAD, "fullness": "empty", "confidence": 0.7}
+
+    extract_pending(conn, _v2(config), client=FakeClient(payload))
+
+    row = conn.execute("SELECT * FROM observations WHERE frame_id = ?", (frame_id,)).fetchone()
+    assert row["fullness"] == "empty"
+    assert row["usable"] == 1
+
+
+def test_v2_still_drops_a_low_confidence_reading(conn, config):
+    frame_id = _add_frame(conn, config, _bright_png())
+    payload = {**V2_PAYLOAD, "confidence": 0.05}
+
+    extract_pending(conn, _v2(config), client=FakeClient(payload))
+
+    row = conn.execute("SELECT * FROM observations WHERE frame_id = ?", (frame_id,)).fetchone()
+    assert row["usable"] == 0
+
+
+def test_v1_observations_survive_the_new_version(conn, config):
+    """Bumping the prompt must add a generation, not rewrite the archive."""
+    frame_id = _add_frame(conn, config, _bright_png())
+    extract_pending(conn, config, client=FakeClient(GOOD_PAYLOAD))
+    extract_pending(conn, _v2(config), client=FakeClient(V2_PAYLOAD))
+
+    rows = conn.execute(
+        "SELECT prompt_version, vehicle_count, fullness FROM observations "
+        "WHERE frame_id = ? ORDER BY prompt_version",
+        (frame_id,),
+    ).fetchall()
+    assert [r["prompt_version"] for r in rows] == ["v1", "v2"]
+    assert rows[0]["vehicle_count"] == 42 and rows[0]["fullness"] is None
+    assert rows[1]["vehicle_count"] is None and rows[1]["fullness"] == "heavy"
+
+
+def test_an_unknown_prompt_version_is_refused(conn, config):
+    _add_frame(conn, config, _bright_png())
+    bogus = replace(config, vision=replace(config.vision, prompt_version="v99"))
+
+    stats = extract_pending(conn, bogus, client=FakeClient(V2_PAYLOAD))
+
+    assert stats.extracted == 0
+    assert any("v99" in e for e in stats.errors)
+
+
+def test_fullness_levels_are_ordered_weakest_first():
+    assert FULLNESS_LEVELS[0] == "empty"
+    assert FULLNESS_LEVELS[-1] == "overflowing"
+    assert set(OBSERVATION_SCHEMA_V2["properties"]["fullness"]["enum"]) == {
+        *FULLNESS_LEVELS,
+        None,
+    }

@@ -136,8 +136,17 @@ From deck space, a sailing whose available space reaches zero before departure `
 and the first zero reading is when it stopped being possible to get on.
 
 From camera frames, the PRD's rule applies: given frames before and after a departure, if
-the queue doesn't drop near zero afterwards the sailing was overloaded, and what remains is
-the carryover.
+the compound doesn't empty afterwards the sailing was overloaded.
+
+What "the queue" means there changed with prompt v2. v1 asked the model to count vehicles;
+measured against four sailings read by hand, counts proved both unstable at 320×240 and the
+wrong unit — an RV and a hatchback are not interchangeable. v2 asks how *full* the compound
+is, on a five-level band, which the same test tracked to within one band on every frame.
+
+So a camera-derived overload is now `filled` rather than `waited_1`/`waited_2plus`. A band
+can say somebody was left behind; it cannot say for how many sailings, and deck space has
+always been reported the same way for the same reason. Frames extracted under v1 keep their
+counts and their original outcomes — the old generation is never rewritten.
 
 From a report, whoever filed it says outright whether they got on, which no camera or feed
 can. See [Reporting a sailing](#reporting-a-sailing-you-were-on).

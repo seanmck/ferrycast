@@ -2,8 +2,8 @@
 
 from datetime import date, datetime, timedelta
 
-from ferrycast.aggregate import aggregate_day, classify
-from ferrycast.timeutil import combine_local, parse_hhmm
+from ferrycast.aggregate import aggregate_day, classify, classify_from_bands
+from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm
 
 from .conftest import add_observation, build_sailing_frames
 
@@ -389,3 +389,182 @@ def test_the_board_departure_beats_the_scheduled_time_for_a_late_sailing(conn, c
     # The +15 frame shows 90 vehicles still waiting — but it had not left yet.
     assert row["residual_queue"] == 3
     assert row["outcome"] == "boarded"
+
+
+# --- bands: what the cameras can actually support -------------------------------------
+
+def _band_frames(conn, config, departure, bands, *, terminal="SLT", dock_before=True):
+    """Lay down a band trace around a departure: (minutes relative to departure, band)."""
+    for offset, band in bands:
+        at = departure + timedelta(minutes=offset)
+        cur = conn.execute(
+            """INSERT INTO frames (route, terminal, captured_at, service_date, path, status)
+               VALUES (?, ?, ?, ?, ?, 'ok')""",
+            (
+                config.route.id,
+                terminal,
+                iso(at),
+                departure.date().isoformat(),
+                f"{terminal}-{offset}.jpg",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, fullness, ferry_at_dock,
+                    visibility, confidence, usable, created_at)
+               VALUES (?, ?, 'claude-sonnet-5', NULL, ?, ?, 'clear', 0.8, 1, ?)""",
+            (
+                cur.lastrowid,
+                config.vision.prompt_version,
+                band,
+                1 if (dock_before and offset < 0) else 0,
+                iso(now_utc()),
+            ),
+        )
+    conn.commit()
+
+
+def _record_for(conn, hhmm="12:30"):
+    return conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = ?""",
+        (hhmm,),
+    ).fetchone()
+
+
+def test_a_compound_that_empties_means_everyone_boarded(conn, config):
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-45, "light"), (-30, "moderate"), (-15, "heavy"), (20, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["peak_fullness"] == "heavy"
+    assert row["fullness_at_departure"] == "heavy"
+    assert row["residual_fullness"] == "empty"
+
+
+def test_a_compound_still_occupied_after_departure_is_filled_not_waited(conn, config):
+    """A band says somebody was left behind. It cannot say for how many sailings.
+
+    `waited_1` asserts a carryover that fits one vessel, which needs a count. Claiming it
+    from "moderate" would be inventing precision the measurement does not have.
+    """
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-45, "moderate"), (-15, "overflowing"), (20, "moderate")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "filled"
+    assert row["overload"] == 1
+    assert row["carryover"] is None
+    assert row["residual_fullness"] == "moderate"
+
+
+def test_peak_is_the_fullest_band_not_the_alphabetical_one(conn, config):
+    # "light" > "heavy" as strings; ordering has to come from the scale.
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure, [(-45, "light"), (-30, "heavy"), (-15, "light"), (20, "empty")]
+    )
+
+    aggregate_day(conn, config, day)
+
+    assert _record_for(conn)["peak_fullness"] == "heavy"
+
+
+def test_the_clear_and_the_build_are_both_recorded(conn, config):
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-60, "empty"), (-45, "light"), (-15, "heavy"), (20, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    # The queue started when something first appeared, not at the first frame.
+    assert row["queue_started_at"] == iso(departure + timedelta(minutes=-45))
+    assert row["cleared_at"] == iso(departure + timedelta(minutes=20))
+
+
+def test_an_empty_sailing_never_started_a_queue(conn, config):
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(conn, config, departure, [(-45, "empty"), (-15, "empty"), (20, "empty")])
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["queue_started_at"] is None
+    assert row["peak_fullness"] == "empty"
+
+
+def test_counts_still_work_for_frames_read_under_the_old_prompt(conn, config):
+    """v1 observations carry no band. They must keep classifying exactly as before."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    build_sailing_frames(conn, config, departure, before=[20, 55, 90], after=[40, 45])
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "waited_1"
+    assert row["peak_queue"] == 90
+    assert row["carryover"] == 40
+    assert row["peak_fullness"] is None
+
+
+def test_bands_are_preferred_when_a_frame_carries_both():
+    outcome, overload, _, carryover = classify_from_bands(
+        residual_fullness="empty",
+        fullness_at_departure="overflowing",
+        departure_seen=True,
+    )
+    assert (outcome, overload, carryover) == ("boarded", False, 0)
+
+
+def test_a_vessel_still_berthed_is_unknown_not_an_overload():
+    outcome, *_ = classify_from_bands(
+        residual_fullness="heavy",
+        fullness_at_departure="heavy",
+        departure_seen=False,
+        still_at_dock=True,
+    )
+    assert outcome == "unknown"
+
+
+def test_a_queue_with_no_departure_is_only_a_cancellation_where_the_berth_is_visible():
+    blind, *_ = classify_from_bands(
+        residual_fullness="heavy",
+        fullness_at_departure="heavy",
+        departure_seen=False,
+        berth_visible=False,
+    )
+    seeing, _, cancelled, _ = classify_from_bands(
+        residual_fullness="heavy",
+        fullness_at_departure="heavy",
+        departure_seen=False,
+        berth_visible=True,
+    )
+    assert blind == "unknown"
+    assert (seeing, cancelled) == ("cancelled", True)

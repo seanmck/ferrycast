@@ -108,13 +108,13 @@ class CaptureConfig:
 
 @dataclass(frozen=True)
 class VisionConfig:
-    model: str = "claude-haiku-4-5"
-    prompt_version: str = "v1"
+    model: str = "claude-sonnet-5"
+    prompt_version: str = "v2"
     max_frames_per_run: int = 200
     max_image_width: int = 896
     monthly_budget_usd: float = 5.0
-    input_usd_per_mtok: float = 1.0
-    output_usd_per_mtok: float = 5.0
+    input_usd_per_mtok: float = 3.0
+    output_usd_per_mtok: float = 15.0
     min_confidence: float = 0.35
     skip_dark_frames: bool = True
     dark_luma_threshold: float = 24.0
