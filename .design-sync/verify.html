@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FerryCast DS — render check</title>
+<!--
+  Exercises the uploaded bundle exactly the way a rendered design would: it loads ONLY
+  styles.css (the transitive @import closure), never the app's own inline <style>. If a
+  token, font, or class is missing from the closure, it shows up here as unstyled output.
+  Copied to ds-bundle/.verify.html at check time; dot-prefixed, so it never uploads.
+-->
+<link rel="stylesheet" href="./styles.css">
+<style>
+  /* Harness only — not part of the design system. Lets one screenshot show both grounds. */
+  .harness-note { font-family: "IBM Plex Mono", monospace; font-size: 11px; opacity: .6; padding: 1rem 1.25rem 0; }
+</style>
+</head>
+<body>
+<p class="harness-note">render check — every style below comes from styles.css alone</p>
+<main>
+  <div class="masthead">
+    <a class="wordmark" href="/">
+      <!-- The mark as designs must consume it: the data-URI custom property, not a file path. -->
+      <span style="width:2.25rem;height:2.25rem;flex:none;background:var(--brand-mark) center/contain no-repeat"></span>
+      <h1>FerryCast</h1>
+    </a>
+    <p class="label label-tight">Saltery Bay</p>
+  </div>
+
+  <div class="hero">
+    <p class="label">Typical wait</p>
+    <h1 class="serif" style="margin:.35rem 0 0">One sailing</h1>
+    <p class="note">Based on 34 reports for the 15:30 departure over the last 8 weeks.</p>
+    <div class="bar">
+      <span class="seg-boarded" style="flex:6"></span>
+      <span class="seg-filled" style="flex:3"></span>
+      <span class="seg-waited_1" style="flex:2"></span>
+      <span class="seg-waited_2plus" style="flex:1"></span>
+      <span class="seg-cancelled" style="flex:.5"></span>
+    </div>
+    <div class="tally">
+      <div><b class="num">21</b>boarded</div>
+      <div><b class="num">7</b>filled</div>
+      <div><b class="num">4</b>waited 1</div>
+      <div><b class="num">2</b>waited 2+</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="label">Sailing</p>
+    <div class="segmented" style="margin-top:.5rem">
+      <input type="radio" name="dir" id="d1" checked><label for="d1">Saltery Bay</label>
+      <input type="radio" name="dir" id="d2"><label for="d2">Earls Cove</label>
+    </div>
+    <div class="row" style="margin-top:.75rem">
+      <label class="field"><span class="label">Date</span><input type="date" value="2026-08-11"></label>
+      <label class="field"><span class="label">Departure</span>
+        <select><option>15:30</option><option>17:20</option></select></label>
+    </div>
+    <hr class="rule">
+    <div class="stack">
+      <button>Check this sailing</button>
+      <a class="btn btn-quiet" href="#">Report what happened</a>
+    </div>
+  </div>
+
+  <div class="card flag">
+    <p class="label">Note</p>
+    <p class="note">The 15:30 ran <strong>22 minutes</strong> behind schedule on 6 of the last 10 sailings.</p>
+  </div>
+
+  <div class="card">
+    <ul class="legend">
+      <li><span class="dot seg-boarded"></span> Boarded <span class="count num">21</span></li>
+      <li><span class="dot seg-filled"></span> Filled <span class="count num">7</span></li>
+      <li><span class="dot seg-unknown"></span> Unknown <span class="count num">1</span></li>
+    </ul>
+    <table>
+      <thead><tr><th>Date</th><th>Depart</th><th class="n">Wait</th></tr></thead>
+      <tbody>
+        <tr><td>Aug 9</td><td class="n">15:30</td><td class="n">0 min</td></tr>
+        <tr><td>Aug 8</td><td class="n">15:30</td><td class="n">45 min</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- The lockup, on the cream ground it is restricted to. -->
+  <div class="card" style="background:var(--chart);text-align:center">
+    <p class="label">Lockup — cream grounds only</p>
+    <span style="display:block;height:3rem;margin-top:.6rem;background:var(--brand-logo) center/contain no-repeat"></span>
+  </div>
+</main>
+</body>
+</html>
