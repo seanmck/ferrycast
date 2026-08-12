@@ -61,6 +61,18 @@ def _scrape(conn, config: Config) -> str:
     return detail
 
 
+def _marine(conn, config: Config) -> str:
+    from .marine import refresh
+
+    result = refresh(conn, config)
+    if not result["ok"]:
+        return f"no forecast: {result.get('error', 'skipped')}"
+    detail = f"{result['rows']} day(s) from {result['issued_at']}"
+    if result.get("warning"):
+        detail += f" — WARNING: {result['warning']}"
+    return detail
+
+
 def _aggregate(conn, config: Config) -> str:
     """Re-aggregate the last few days so today's sailings appear as the feed fills in."""
     from .aggregate import aggregate_range
@@ -95,6 +107,16 @@ JOBS: tuple[Job, ...] = (
         timedelta(minutes=15),
         _scrape,
         enabled=lambda c: any(t.deck_space_url for t in c.route.terminals),
+    ),
+    # ECCC issues marine forecasts roughly every six hours and amends between. Three hours
+    # catches an amendment well before anyone plans around it, and costs a handful of small
+    # directory listings — there is no "latest" path to ask for, so each run walks back
+    # through hours until it finds one.
+    Job(
+        "marine",
+        timedelta(hours=3),
+        _marine,
+        enabled=lambda c: c.route.marine is not None,
     ),
     Job("aggregate", timedelta(hours=1), _aggregate),
     Job("prune", timedelta(days=7), _prune),
