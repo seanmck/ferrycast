@@ -88,7 +88,7 @@ explain *why* each choice was made — read them before styling anything unusual
   <div class="card">
     <div class="between"><span class="label">Depart</span><span class="num">15:30</span></div>
     <hr class="rule">
-    <button>Check this sailing</button>
+    <button>Add this report</button>
   </div>
 </main>
 ```
