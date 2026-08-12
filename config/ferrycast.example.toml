@@ -45,6 +45,23 @@ name = "Saltery Bay – Earls Cove"
   webcam_url     = ""   # ⚠️ REQUIRED — see the note above
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
 
+  # Optional. The ECCC marine forecast for the water this route crosses — wind is the one
+  # condition that cancels a sailing outright, and the only one FerryCast does not observe
+  # for itself. Drop the section and the forecast is simply not collected or shown.
+  #
+  # `site` is the marine area code. To find yours, list a recent hour of your domain:
+  #   curl -s https://dd.weather.gc.ca/today/marine_weather/pacific/04/ \
+  #     | grep -o 'MarineWeather_[a-z0-9]*_en.xml'
+  # then fetch a file and read its <area> element.
+  #
+  # `location` is not decoration. A marine area is often forecast in halves — the Strait of
+  # Georgia is split at Nanaimo — and leaving it unset takes whichever comes first, which
+  # for this route would answer about the wrong end of a 200 km waterway.
+  [route.marine]
+  site     = "m0000028"
+  domain   = "pacific"   # arctic|atlantic|great_lakes|hudson|mackenzie|pacific|prairies|st_lawrence
+  location = "Strait of Georgia - north of Nanaimo"
+
 [capture]
 interval_minutes = 15      # keep at 15 or higher: be a polite scraper
 timeout_seconds  = 20.0

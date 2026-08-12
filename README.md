@@ -62,6 +62,31 @@ Then edit both files:
    The shipped times are plausible placeholders, **not** a published timetable. A wrong
    departure time silently mis-windows every observation around it, so check each one.
 
+3. **Optional: `[route.marine]` → the ECCC marine area you cross.**
+   Wind is the one thing that cancels a sailing outright, and the only condition FerryCast
+   does not observe for itself. Leave the section out and the forecast is simply not
+   collected or shown.
+
+   ```toml
+   [route.marine]
+   site     = "m0000028"                              # ECCC marine area code
+   domain   = "pacific"                               # arctic | atlantic | great_lakes |
+                                                      # hudson | mackenzie | pacific |
+                                                      # prairies | st_lawrence
+   location = "Strait of Georgia - north of Nanaimo"  # which half of it you cross
+   ```
+
+   To find your `site`, list a recent hour of your domain and read the `<area>` out of each
+   file — the code is in the filename:
+
+   ```bash
+   curl -s https://dd.weather.gc.ca/today/marine_weather/pacific/04/ | grep -o 'MarineWeather_[a-z0-9]*_en.xml'
+   ```
+
+   `location` matters more than it looks. A marine area is often forecast in halves — the
+   Strait of Georgia is split at Nanaimo — and leaving it unset takes the first one, which
+   for this route would answer about the wrong end of a 200 km waterway.
+
 Then:
 
 ```bash
@@ -314,6 +339,7 @@ underlying dates always travel with the answer.
 | `ferrycast doctor` | Check config, schedule, webcam/deck-space URLs, API key |
 | `ferrycast capture` | Archive one frame per terminal (R1) |
 | `ferrycast scrape` | Scrape current deck space (R2) |
+| `ferrycast marine` | Fetch the ECCC marine forecast for this route's waters |
 | `ferrycast extract` | Vision-extract frames (R3); `--essential` reads only what matters |
 | `ferrycast check` | On-demand: the queue right now, plus days like this one |
 | `ferrycast aggregate` | Roll evidence up into sailing records (R4) |

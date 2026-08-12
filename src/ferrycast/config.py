@@ -55,10 +55,28 @@ class Terminal:
 
 
 @dataclass(frozen=True)
+class MarineArea:
+    """Which ECCC marine forecast covers the water this route crosses.
+
+    `location` names the sub-area, because a marine area is often split and taking the first
+    would answer about the wrong half: the Strait of Georgia is forecast north and south of
+    Nanaimo separately, and this route is entirely in the north half. Left unset the first
+    location is used, which is a guess and is recorded as such on the row.
+    """
+
+    site: str
+    domain: str = "pacific"
+    location: str = ""
+
+
+@dataclass(frozen=True)
 class Route:
     id: str
     name: str
     terminals: tuple[Terminal, ...]
+    # Optional: without it the marine forecast is simply not collected or shown. A route
+    # whose operator never cancels for weather has no use for it.
+    marine: MarineArea | None = None
 
     def terminal(self, code: str) -> Terminal:
         for t in self.terminals:
@@ -257,10 +275,18 @@ def _parse_route(raw: dict) -> Route:
             )
         if t.destination == t.code:
             raise ConfigError(f"terminal {t.code!r} cannot sail to itself")
+    marine_raw = raw.get("marine")
+    marine = None
+    if marine_raw:
+        if not marine_raw.get("site"):
+            raise ConfigError("[route.marine] needs a `site` (the ECCC marine area code)")
+        marine = _dataclass_from(MarineArea, marine_raw, "route.marine")
+
     return Route(
         id=raw.get("id", "route"),
         name=raw.get("name", raw.get("id", "route")),
         terminals=tuple(terminals),
+        marine=marine,
     )
 
 

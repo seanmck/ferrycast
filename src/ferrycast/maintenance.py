@@ -13,7 +13,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .config import Config
-from .db import JobRun
+from .db import JobRun, scalar
+from .marine import _table_exists as marine_table_exists
 from .schedule import load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
 from .vision import month_to_date_cost
@@ -201,6 +202,9 @@ class HealthReport:
     month_to_date_cost: float
     budget: float
     last_capture_at: str | None
+    # When ECCC last issued a forecast this install has on file, or None when the marine
+    # feed is switched off or has never been read.
+    marine_issued_at: str | None = None
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -355,6 +359,22 @@ def health_report(
     if expected_sailings and coverage < 0.90:
         problems.append(f"only {coverage:.0%} of recent sailings have a record (target 90%)")
 
+    # The marine forecast keeps being served while the fetcher is broken — the last thing
+    # ECCC said is still the last thing ECCC said, and withholding it would help nobody. So
+    # a stale forecast is invisible on the page beyond its stated age, and this is the only
+    # place that treats it as a fault. ECCC issues roughly every six hours.
+    marine_issued = None
+    if config.route.marine is not None and marine_table_exists(conn):
+        marine_issued = scalar(
+            conn,
+            "SELECT MAX(issued_at) FROM marine_forecast WHERE route = ? AND fetch_status = 'ok'",
+            (config.route.id,),
+        )
+        if not marine_issued:
+            problems.append("no marine forecast has been read yet")
+        elif now - parse_iso(marine_issued) > timedelta(hours=12):
+            problems.append(f"the marine forecast is stale — last issued {marine_issued}")
+
     return HealthReport(
         window_days=window_days,
         expected_captures=expected,
@@ -370,6 +390,7 @@ def health_report(
         month_to_date_cost=round(spend, 4),
         budget=config.vision.monthly_budget_usd,
         last_capture_at=last_capture,
+        marine_issued_at=marine_issued,
         problems=problems,
     )
 
@@ -473,6 +494,8 @@ def format_health(report: HealthReport) -> str:
     ]
     if report.deckspace_success_rate is not None:
         lines.append(f"  deck space       {report.deckspace_success_rate:.0%} parsed")
+    if report.marine_issued_at:
+        lines.append(f"  marine forecast  issued {report.marine_issued_at}")
     lines += [
         f"  extraction queue {report.frames_awaiting_extraction} frames",
         f"  sailing coverage {report.sailings_with_record}/{report.sailings_total} "

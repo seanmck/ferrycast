@@ -195,6 +195,31 @@ def cmd_scrape(args) -> int:
     return 0 if any(r["ok"] for r in attempted) or not attempted else 1
 
 
+def cmd_marine(args) -> int:
+    from .db import init_db
+    from .marine import refresh
+
+    config = _config(args)
+    if config.route.marine is None:
+        print("skip  no [route.marine] configured; the marine forecast is off")
+        return 0
+    # `init_db` rather than `_open`: this command introduced a table, and an install that
+    # predates it would otherwise have to be told to run `init` first. `ferrycast run` does
+    # the same before it serves, so the two paths agree.
+    conn = init_db(config.db_path)
+    result = refresh(conn, config)
+    if not result["ok"]:
+        print(f"fail  {result.get('error')}")
+        return 1
+    print(
+        f"ok    {result['area']} ({result['location']}) issued {result['issued_at']}: "
+        f"{result['rows']} new day(s) of {result['days']}"
+    )
+    if result.get("warning"):
+        print(f"WARN  {result['warning']}")
+    return 0
+
+
 def cmd_extract(args) -> int:
     from .timeutil import iso, now_utc
     from .vision import extract_frames, extract_pending
@@ -712,6 +737,10 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_capture
     )
     sub.add_parser("scrape", help="scrape current deck space (R2)").set_defaults(func=cmd_scrape)
+
+    sub.add_parser(
+        "marine", help="fetch the ECCC marine forecast for this route's waters"
+    ).set_defaults(func=cmd_marine)
 
     extract = sub.add_parser("extract", help="run vision extraction over stored frames (R3)")
     extract.add_argument("--limit", type=int, help="maximum frames this run")

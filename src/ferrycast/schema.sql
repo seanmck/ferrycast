@@ -133,6 +133,39 @@ CREATE TABLE IF NOT EXISTS sailing_reports (
 CREATE INDEX IF NOT EXISTS idx_reports_sailing
     ON sailing_reports (route, origin, service_date, depart_hhmm);
 
+-- What ECCC forecast for the water this route crosses, expanded to one row per local date
+-- the forecast covers. Wind is the one condition that cancels a sailing outright and the
+-- only thing on the page FerryCast does not observe for itself, so the text is stored as
+-- issued and quoted rather than paraphrased.
+--
+-- Keyed by issue as well as by date: a forecast is amended through the day, and the claim
+-- the page makes about past cancellations has to be checkable against what was actually
+-- being said at the time rather than against the last word on it.
+CREATE TABLE IF NOT EXISTS marine_forecast (
+    id           INTEGER PRIMARY KEY,
+    route        TEXT    NOT NULL,
+    site         TEXT    NOT NULL,       -- ECCC marine area code, e.g. m0000028
+    service_date TEXT    NOT NULL,       -- local YYYY-MM-DD this forecast covers
+    issued_at    TEXT    NOT NULL,       -- UTC ISO8601, ECCC's own stamp
+    fetched_at   TEXT    NOT NULL,       -- UTC ISO8601
+    area         TEXT,                   -- "Strait of Georgia"
+    location     TEXT,                   -- "Strait of Georgia - north of Nanaimo"
+    kind         TEXT    NOT NULL,       -- regular | extended
+    period       TEXT,                   -- ECCC's own period label
+    wind         TEXT,                   -- the forecast sentence, verbatim
+    visibility   TEXT,
+    warning      TEXT,                   -- NULL only when the feed warned about nothing
+    wind_max_kt  INTEGER,                -- strongest wind named in `wind`
+    band         TEXT,                   -- light | strong | gale | storm | unknown
+    fetch_status TEXT    NOT NULL,       -- ok | error
+    error        TEXT,
+    raw          TEXT,
+    UNIQUE (route, site, service_date, issued_at, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_marine_lookup
+    ON marine_forecast (route, service_date, issued_at);
+CREATE INDEX IF NOT EXISTS idx_marine_band ON marine_forecast (route, band, service_date);
+
 CREATE TABLE IF NOT EXISTS event_tags (
     id           INTEGER PRIMARY KEY,
     service_date TEXT NOT NULL,

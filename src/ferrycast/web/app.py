@@ -27,6 +27,7 @@ from ..config import Config, load_config
 from ..db import connect
 from ..export import export
 from ..maintenance import capture_strip, health_report, latest_observation
+from ..marine import summary as marine_summary
 from ..query import (
     OUTCOME_LABELS,
     OUTCOME_LABELS_SHORT,
@@ -128,6 +129,76 @@ def _worst_of_day(rows) -> str | None:
     return worst.depart_hhmm
 
 
+def _runs(flags: list[bool]) -> list[tuple[int, int]]:
+    """Index spans where `flags` is true, as (start, end) inclusive."""
+    spans, start = [], None
+    for i, flag in enumerate(flags):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            spans.append((start, i - 1))
+            start = None
+    if start is not None:
+        spans.append((start, len(flags) - 1))
+    return spans
+
+
+def _day_shape(rows) -> dict:
+    """Where the easy and hard sailings of a day actually sit.
+
+    The board already shows this one row at a time; the value of saying it again in a
+    sentence is that "before 07:35, after 19:05" is a plan and ten percentages are not.
+
+    Only rows with a deep enough bucket count, and a day where too few sailings are
+    answerable gets no shape at all — a "hardest stretch" drawn from two known sailings out
+    of ten is a claim about the eight nobody has data for.
+
+    The bar is a proportion rather than a count, because a count is really a guess at how
+    long a timetable is: a route with three crossings a day would never clear an absolute
+    of four, and its three would be the whole day. Three answerable sailings and half the
+    timetable, whichever is the harder to meet.
+    """
+    answerable = [row for row in rows if row.sufficient and row.n]
+    if len(answerable) < 3 or len(answerable) * 2 < len(rows):
+        return {}
+
+    known = [row.sufficient and row.n for row in rows]
+    easy = [bool(k) and row.boarded_share >= OUTLOOK_ROOM for k, row in zip(known, rows, strict=True)]
+    hard = [bool(k) and row.boarded_share < OUTLOOK_TOSSUP for k, row in zip(known, rows, strict=True)]
+
+    shape: dict = {}
+
+    # The easy sailings of a ferry day are usually its ends, so they are described as ends
+    # when they are — "before 07:35" is how somebody actually plans — and simply listed when
+    # they turn up in the middle instead.
+    ends = []
+    if easy and easy[0]:
+        first_hard = next((i for i, e in enumerate(easy) if not e), None)
+        if first_hard:
+            ends.append(f"before {rows[first_hard].depart_hhmm}")
+    if easy and easy[-1]:
+        last_hard = next((i for i in range(len(easy) - 1, -1, -1) if not easy[i]), None)
+        if last_hard is not None and last_hard < len(easy) - 1:
+            ends.append(f"after {rows[last_hard].depart_hhmm}")
+    if ends:
+        shape["easiest"] = ", ".join(ends)
+    elif any(easy):
+        shape["easiest"] = ", ".join(
+            rows[i].depart_hhmm for i, e in enumerate(easy) if e
+        )
+
+    # The longest unbroken run of sailings people usually wait for. A single bad sailing is
+    # a row on the board, not a stretch of the day.
+    spans = _runs(hard)
+    if spans:
+        start, end = max(spans, key=lambda s: s[1] - s[0])
+        if end > start:
+            shape["hardest"] = f"{rows[start].depart_hhmm}–{rows[end].depart_hhmm}"
+        elif len(spans) == 1:
+            shape["hardest"] = rows[start].depart_hhmm
+    return shape
+
+
 def _board(
     conn: sqlite3.Connection,
     config: Config,
@@ -136,7 +207,7 @@ def _board(
     service_date: date,
     selected_time: str | None,
     next_out,
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     """The whole day's timetable, each sailing answered from its own history.
 
     This is the desktop view's premise: with room for ten rows the question stops being
@@ -145,10 +216,14 @@ def _board(
 
     Every row is a link to the page it already had, so the board needs no script and the
     detail beside it is rendered by exactly the code that renders it on a phone.
+
+    Returns the rows and the shape of the day they make, which the strip above the board
+    states in a sentence. Both come off the one `day_board` call — the shape is a reading of
+    the same rows, not a second query.
     """
     rows = day_board(conn, config, origin=origin, target_date=service_date)
     if not rows:
-        return []
+        return [], {}
 
     now = local(now_utc(), config.tz)
     is_today = service_date == now.date()
@@ -222,7 +297,7 @@ def _board(
             }
         )
 
-    return board
+    return board, _day_shape(rows)
 
 
 def _now_index(board: list[dict]) -> int | None:
@@ -439,7 +514,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # The desktop board. Built for every render because it is the desktop layout's
         # navigation and its first paint has to carry the answer, same as the phone's —
         # a day's worth of rows costs three queries, not one per sailing.
-        board = _board(
+        board, day_shape = _board(
             conn,
             config,
             origin=chosen_origin,
@@ -448,6 +523,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
             next_out=default,
         )
         today = local_date(now_utc(), config.tz)
+
+        # What ECCC says about the water on this date. Wind is the one thing that cancels a
+        # sailing outright and the only condition on this page FerryCast does not observe
+        # for itself, so it is quoted rather than summarised, and a warning is shown on any
+        # date — including today's board, where withholding one would be indefensible.
+        marine = marine_summary(conn, config, service_date=chosen_date)
 
         return TEMPLATES.TemplateResponse(
             request,
@@ -466,6 +547,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 # ---- The desktop board and its chrome. Everything below is read only by
                 # the wide layout; the phone's markup does not reference any of it.
                 "board": board,
+                "day_shape": day_shape,
+                "marine": marine,
                 "now_index": _now_index(board),
                 "board_totals": {
                     "sailings": len(board),
