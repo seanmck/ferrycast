@@ -151,7 +151,7 @@ a minute — it creates the database on first tick — then check the deploy log
 | `FERRYCAST_BASE_URL` | recommended | Public origin, e.g. `https://ferrycast.up.railway.app`. Makes shared links preview with an image. |
 | `FERRYCAST_ALLOW_BACKFILL` | optional | `true` enables the page's "read these frames" button. Off unless set. |
 | `FERRYCAST_BACKFILL_DAILY_FRAME_CAP` | optional | Frames the page may read per day (default 120). |
-| `FERRYCAST_ALLOW_CHECKS` | optional | `true` enables the live "check now" button. Off unless set. |
+| `FERRYCAST_ALLOW_CHECKS` | optional | `true` enables the live `POST /api/check` endpoint. Off unless set. |
 | `PORT` | injected | Railway sets it; `ferrycast run` binds it automatically. |
 
 The `FERRYCAST_WEBCAM_*` overrides exist so you can keep camera URLs out of git entirely if
@@ -225,11 +225,12 @@ The web endpoints in step 5 are the other way in, and need no CLI at all.
   and a deploy. Only `true`/`1`/`yes`/`on` count as on: a deploy script setting the variable
   to `false` or to nothing must not read as enabled.
 - **On-demand checks from the browser are disabled by default.** A public URL that spends
-  money is a bad idea. To enable the button, set `[web] allow_on_demand_checks = true` and
-  keep `on_demand_daily_cap` sane — and consider that a Railway domain is public unless you
-  put auth in front of it. The CLI path (`railway ssh ferrycast check`) needs no such
-  exposure and is the safer default. Even when enabled, the button refuses for any terminal
-  with a lane calibration (`config/calibration/<CODE>.json`) — it already gets a free
-  geometry-based reading on every capture, so there is nothing to pay for.
+  money is a bad idea. To enable `POST /api/check`, set
+  `[web] allow_on_demand_checks = true` and keep `on_demand_daily_cap` sane — and consider
+  that a Railway domain is public unless you put auth in front of it. The CLI path
+  (`railway ssh ferrycast check`) needs no such exposure and is the safer default. Even
+  when enabled, the endpoint refuses for any terminal with a lane calibration
+  (`config/calibration/<CODE>.json`) — it already gets a free geometry-based reading on
+  every capture, so there is nothing to pay for.
 - **Cost.** The container is the only ongoing charge; FerryCast itself adds vision spend
   only when you run `check` (~$0.004 each).
