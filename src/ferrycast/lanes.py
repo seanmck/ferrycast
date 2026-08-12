@@ -1,0 +1,391 @@
+"""Per-lane occupancy from a calibrated fixed camera.
+
+A terminal camera never moves, so the lane geometry is a constant of the installation
+rather than something to re-derive from every frame. Fit it once, and reading a frame stops
+being a perception problem: each lane is a known set of pixels, and the question is whether
+those pixels differ from the same lane when the compound was empty.
+
+Why this exists alongside `vision`:
+
+* **It cannot hallucinate a lane.** Asking a model "which lane is that vehicle in" failed in
+  a specific and dangerous way — on some frames it reported only the lanes whose numbers are
+  painted in view and declared the compound empty while a queue was plainly standing in the
+  unnumbered ones. A false "empty" is the worst answer this project can give, because it
+  tells someone they would have got on. Geometry removes the failure mode rather than
+  reducing its frequency.
+* **It is free.** No API call, so it can run over every frame rather than the four per
+  sailing the budget allows.
+* **It measures capacity, not crowding.** Empty lanes are direct evidence of room left, which
+  is the question a traveller is actually asking.
+
+What it does not do is judge. Fog, glare, snow and roadworks are all cases where a model
+reading the scene is worth paying for. This handles the ordinary case cheaply and leaves the
+awkward ones to `vision`.
+
+Calibration lives in `config/calibration/<TERMINAL>.json` and is per camera, per pan/tilt. If
+the camera is nudged the geometry is silently wrong, so `drift_px` re-measures the painted
+lines against the fitted ones and callers are expected to check it.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+#: A lane counts as occupied when this share of its visible pavement differs from the
+#: empty reference. Well clear of both the noise floor (~0.06 on a bare compound) and the
+#: level a single vehicle produces in the smallest lanes (~0.13).
+OCCUPIED_SHARE = 0.15
+
+#: Per-pixel luma difference that counts as "not the same as the empty compound".
+DIFF_THRESHOLD = 22
+
+#: Fitted lane lines this far from the painted ones mean the camera has moved and the
+#: calibration can no longer be trusted.
+MAX_DRIFT_PX = 3.0
+
+
+class CalibrationError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class LaneCalibration:
+    """Where each numbered lane is, in pixels, for one camera at one pan and tilt."""
+
+    terminal: str
+    image_size: tuple[int, int]
+    #: lane number -> [(row, x_start, x_end), ...], already clipped to visible pavement.
+    lane_spans: dict[int, list[tuple[int, int, int]]]
+    vanishing_point: tuple[float, float]
+    y_ref: float
+    mobius: tuple[float, float, float]
+    fitted_from: str = ""
+
+    @property
+    def lanes(self) -> list[int]:
+        return sorted(self.lane_spans)
+
+    def area(self, lane: int) -> int:
+        return sum(x1 - x0 for _, x0, x1 in self.lane_spans.get(lane, ()))
+
+    def boundary_x(self, k: float, y: float) -> float:
+        """x of the line between lane k-1 and lane k, at row y."""
+        a, b, c = self.mobius
+        xv, yv = self.vanishing_point
+        x_at_ref = (a * k + b) / (c * k + 1.0)
+        return xv + (x_at_ref - xv) * ((y - yv) / (self.y_ref - yv))
+
+    @classmethod
+    def load(cls, path: str | Path) -> LaneCalibration:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        if raw.get("kind") != "lanes":
+            raise CalibrationError(
+                f"{path} is a {raw.get('kind')!r} calibration; this reader wants 'lanes'. "
+                "Terminals differ — Earls Cove's camera faces the approach road and has no "
+                "lane grid to fit."
+            )
+        spans = {
+            int(k): [(int(r[0]), int(r[1]), int(r[2])) for r in v]
+            for k, v in raw["lane_spans"].items()
+        }
+        return cls(
+            terminal=raw["terminal"],
+            image_size=tuple(raw["image_size"]),
+            lane_spans=spans,
+            vanishing_point=tuple(raw["vanishing_point"]),
+            y_ref=float(raw["y_ref"]),
+            mobius=tuple(raw["mobius"]),
+            fitted_from=raw.get("fitted_from", ""),
+        )
+
+
+def _luma(path_or_bytes) -> tuple[list[int], int, int]:
+    from io import BytesIO
+
+    from PIL import Image
+
+    src = BytesIO(path_or_bytes) if isinstance(path_or_bytes, bytes) else path_or_bytes
+    with Image.open(src) as img:
+        grey = img.convert("L")
+        return list(grey.tobytes()), grey.width, grey.height
+
+
+def occupancy(
+    frame: str | Path | bytes,
+    background: str | Path | bytes,
+    cal: LaneCalibration,
+    *,
+    threshold: int = DIFF_THRESHOLD,
+) -> dict[int, float]:
+    """Share of each lane's visible pavement that differs from the empty reference.
+
+    `background` must be a frame of the *same* camera with the compound empty and in
+    comparable light. Differencing across very different illumination — a night frame against
+    a midday reference — is not something this has been shown to survive.
+    """
+    fg, fw, fh = _luma(frame)
+    bg, bw, bh = _luma(background)
+    if (fw, fh) != (bw, bh):
+        raise CalibrationError(f"frame is {fw}x{fh} but background is {bw}x{bh}")
+    if (fw, fh) != tuple(cal.image_size):
+        raise CalibrationError(
+            f"frame is {fw}x{fh} but {cal.terminal} was calibrated at "
+            f"{cal.image_size[0]}x{cal.image_size[1]}"
+        )
+
+    out: dict[int, float] = {}
+    for lane, spans in cal.lane_spans.items():
+        changed = total = 0
+        for y, x0, x1 in spans:
+            base = y * fw
+            for i in range(base + x0, base + x1):
+                total += 1
+                if abs(fg[i] - bg[i]) > threshold:
+                    changed += 1
+        out[lane] = (changed / total) if total else 0.0
+    return out
+
+
+def occupied_lanes(shares: dict[int, float], *, cutoff: float = OCCUPIED_SHARE) -> list[int]:
+    return sorted(lane for lane, share in shares.items() if share > cutoff)
+
+
+def fullness_from_lanes(shares: dict[int, float], cal: LaneCalibration) -> str:
+    """Map per-lane occupancy onto the band vocabulary the archive already speaks.
+
+    Deliberately weighted by lane count rather than by area. A compound with two of ten lanes
+    in use has eight lanes of room whether or not those two happen to be the ones nearest the
+    camera, and it is the room that decides whether the next arrival gets on.
+    """
+    lanes = cal.lanes
+    if not lanes:
+        return "empty"
+    used = len(occupied_lanes(shares))
+    if used == 0:
+        return "empty"
+    share = used / len(lanes)
+    if share <= 0.25:
+        return "light"
+    if share <= 0.55:
+        return "moderate"
+    if share < 1.0:
+        return "heavy"
+    return "overflowing"
+
+
+def queue_reaches_last_visible_lane(shares: dict[int, float], cal: LaneCalibration) -> bool:
+    """Whether the lowest-numbered lane in view holds vehicles.
+
+    At Saltery Bay the compound continues past the left edge of frame, so this is the honest
+    form of "the queue may run further than we can see" — unlike a flag that fires whenever
+    anything stands in the nearest lane.
+    """
+    lanes = cal.lanes
+    return bool(lanes) and shares.get(lanes[0], 0.0) > OCCUPIED_SHARE
+
+
+def drift_px(frame: str | Path | bytes, cal: LaneCalibration, *, search: int = 6) -> float:
+    """How far the painted lane lines sit from where the calibration expects them.
+
+    A fixed camera is an assumption, not a guarantee: a knock or a maintenance visit re-aims
+    it and every lane number silently shifts. This re-finds the brightest pixel near each
+    predicted boundary and reports the largest offset, so a caller can refuse to trust a
+    calibration that has come adrift instead of quietly mislabelling lanes.
+    """
+    px, w, h = _luma(frame)
+    offsets: list[float] = []
+    # Above the painted lane numbers. The digits are far brighter and wider than the lines,
+    # so a search window that includes them locks onto a numeral and reports drift that is
+    # not there — measured 5-6px on a calibration whose true residual is under 1px.
+    rows = [y for y in range(int(cal.y_ref) - 70, int(cal.y_ref) - 34) if 0 <= y < h]
+    for k in cal.lanes:
+        for y in rows:
+            expected = cal.boundary_x(k, y)
+            lo, hi = int(expected) - search, int(expected) + search + 1
+            if lo < 1 or hi >= w:
+                continue
+            best_x, best_v = None, -1
+            for x in range(lo, hi):
+                v = px[y * w + x]
+                if v > best_v:
+                    best_v, best_x = v, x
+            neighbourhood = [px[y * w + x] for x in range(lo, hi)]
+            typical = sorted(neighbourhood)[len(neighbourhood) // 2]
+            if best_v - typical < 8:  # no paint found here; nothing to measure against
+                continue
+            offsets.append(abs(best_x - expected))
+    if len(offsets) < 8:
+        # Too little paint found to say anything. Report unusable rather than "no drift",
+        # so a fogged or snow-covered frame cannot pass a check it was never able to run.
+        return float("inf")
+    offsets.sort()
+    return offsets[len(offsets) // 2]
+
+
+def calibration_path(config_dir: str | Path, terminal: str) -> Path:
+    return Path(config_dir) / "calibration" / f"{terminal}.json"
+
+
+def background_path(config_dir: str | Path, terminal: str) -> Path:
+    return Path(config_dir) / "calibration" / f"{terminal}_background.jpg"
+
+
+def load_for(config_dir: str | Path, terminal: str) -> LaneCalibration | None:
+    path = calibration_path(config_dir, terminal)
+    return LaneCalibration.load(path) if path.exists() else None
+
+
+PROMPT_VERSION = "geom-v1"
+MODEL = "lane-geometry"
+
+
+@dataclass
+class LaneStats:
+    considered: int = 0
+    read: int = 0
+    unusable: int = 0
+    skipped_no_calibration: int = 0
+    failed: int = 0
+    errors: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.errors is None:
+            self.errors = []
+
+
+def read_frame(
+    frame: str | Path,
+    background: str | Path,
+    cal: LaneCalibration,
+) -> dict:
+    """One frame, read geometrically. Same shape of answer as a `vision` observation.
+
+    `usable` is false when the calibration cannot be trusted for this frame — the camera has
+    moved, or there is too little paint visible to tell. Refusing to answer is the point: an
+    unusable frame is excluded from aggregation, where a confidently wrong lane assignment
+    would not be.
+    """
+    drift = drift_px(frame, cal)
+    if drift > MAX_DRIFT_PX:
+        reason = (
+            "no lane paint found (obscured?)"
+            if drift == float("inf")
+            else f"lane paint {drift:.1f}px from calibration — camera may have moved"
+        )
+        return {
+            "compound_visible": False,
+            "fullness": None,
+            "vehicle_count": None,
+            "lanes_occupied": None,
+            "queue_extends_beyond_frame": False,
+            "confidence": 0.0,
+            "notes": reason,
+            "drift_px": None if drift == float("inf") else round(drift, 2),
+            "lane_shares": {},
+        }
+
+    shares = occupancy(frame, background, cal)
+    occupied = occupied_lanes(shares)
+    return {
+        "compound_visible": True,
+        "fullness": fullness_from_lanes(shares, cal),
+        "vehicle_count": None,  # geometry measures space, not vehicles; see `fullness`.
+        "lanes_occupied": len(occupied),
+        "queue_extends_beyond_frame": queue_reaches_last_visible_lane(shares, cal),
+        # Deterministic given the calibration, so the only real uncertainty is whether the
+        # calibration still holds. Scale confidence by how well the paint lines up.
+        "confidence": round(max(0.5, 1.0 - drift / MAX_DRIFT_PX * 0.5), 3),
+        "notes": f"lanes {occupied} of {cal.lanes} occupied" if occupied else "compound clear",
+        "drift_px": round(drift, 2),
+        "lane_shares": {str(k): round(v, 3) for k, v in sorted(shares.items())},
+    }
+
+
+def pending_frames(conn, limit: int, *, since: str | None = None, terminal: str | None = None):
+    """Frames with no geometric reading yet. Mirrors `vision.pending_frames`."""
+    sql = """
+        SELECT f.id, f.terminal, f.captured_at, f.path
+          FROM frames f
+          LEFT JOIN observations o ON o.frame_id = f.id AND o.prompt_version = ?
+         WHERE f.status = 'ok' AND f.path IS NOT NULL AND o.id IS NULL
+    """
+    params: list = [PROMPT_VERSION]
+    if since:
+        sql += " AND f.captured_at >= ?"
+        params.append(since)
+    if terminal:
+        sql += " AND f.terminal = ?"
+        params.append(terminal)
+    sql += " ORDER BY f.captured_at LIMIT ?"
+    params.append(limit)
+    return list(conn.execute(sql, tuple(params)).fetchall())
+
+
+def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
+    """Read frames geometrically and store them as observations.
+
+    These land in the same table as `vision`'s, under their own prompt version, so the two
+    are directly comparable on identical frames and neither overwrites the other. Nothing
+    here costs money, so unlike the vision path there is no budget to stop against.
+    """
+    from .timeutil import iso, now_utc
+
+    stats = LaneStats(considered=len(frames))
+    if not frames or dry_run:
+        return stats
+
+    config_dir = Path(config.source_path).parent
+    cals: dict[str, LaneCalibration | None] = {}
+    backgrounds: dict[str, Path] = {}
+
+    for frame in frames:
+        terminal = frame["terminal"]
+        if terminal not in cals:
+            cals[terminal] = load_for(config_dir, terminal)
+            backgrounds[terminal] = background_path(config_dir, terminal)
+        cal = cals[terminal]
+        if cal is None or not backgrounds[terminal].exists():
+            stats.skipped_no_calibration += 1
+            continue
+
+        path = Path(config.data_dir) / frame["path"]
+        if not path.exists():
+            stats.failed += 1
+            stats.errors.append(f"frame {frame['id']}: file missing at {path}")
+            continue
+        try:
+            parsed = read_frame(path, backgrounds[terminal], cal)
+        except Exception as exc:
+            stats.failed += 1
+            stats.errors.append(f"frame {frame['id']}: {exc}")
+            continue
+
+        usable = bool(parsed["compound_visible"]) and parsed["fullness"] is not None
+        conn.execute(
+            """INSERT OR REPLACE INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
+                    queue_beyond_frame, ferry_at_dock, visibility, fullness, confidence,
+                    usable, notes, input_tokens, output_tokens, cost_usd, created_at, raw)
+               VALUES (?, ?, ?, NULL, ?, ?, 0, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)""",
+            (
+                frame["id"],
+                PROMPT_VERSION,
+                MODEL,
+                parsed["lanes_occupied"],
+                int(bool(parsed["queue_extends_beyond_frame"])),
+                "clear" if parsed["compound_visible"] else "obscured",
+                parsed["fullness"],
+                parsed["confidence"],
+                int(usable),
+                parsed["notes"] or None,
+                iso(now_utc()),
+                json.dumps(parsed, separators=(",", ":")),
+            ),
+        )
+        stats.read += 1
+        if not usable:
+            stats.unusable += 1
+    conn.commit()
+    return stats

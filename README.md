@@ -143,6 +143,14 @@ measured against four sailings read by hand, counts proved both unstable at 320�
 wrong unit — an RV and a hatchback are not interchangeable. v2 asks how *full* the compound
 is, on a five-level band, which the same test tracked to within one band on every frame.
 
+There is now a third, cheaper source. The terminal cameras never move, so lane geometry is a
+constant of the installation: fit it once and each lane becomes a known set of pixels, read
+by differencing against the compound when it was empty. `ferrycast lanes` does that — no API
+call, and structurally unable to report a lane it cannot see. See `src/ferrycast/lanes.py`.
+Calibration is per camera and per terminal, and terminals are not alike: Saltery Bay looks
+down a lane grid, while Earls Cove faces the approach road and needs a different model
+entirely.
+
 So a camera-derived overload is now `filled` rather than `waited_1`/`waited_2plus`. A band
 can say somebody was left behind; it cannot say for how many sailings, and deck space has
 always been reported the same way for the same reason. Frames extracted under v1 keep their
