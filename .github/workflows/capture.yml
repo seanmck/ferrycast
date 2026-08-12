@@ -18,9 +18,11 @@
 
 name: Capture
 
+# SCHEDULE DISABLED. This path has never worked: it checks out the orphan `data` branch,
+# which holds captured data and no code, and then runs `pip install -e .` against a tree
+# with no pyproject.toml. Every scheduled run failed, roughly a hundred a day, while the
+# real capture ran in the container. Left here, runnable by hand, for whoever fixes it.
 on:
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:

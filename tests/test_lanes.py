@@ -16,11 +16,13 @@ import pytest
 from PIL import Image, ImageChops, ImageDraw
 
 from ferrycast.lanes import (
+    ILLUMINATION_BAND,
     MAX_DRIFT_PX,
     CalibrationError,
     LaneCalibration,
     drift_px,
     fullness_from_lanes,
+    illumination_ratio,
     occupancy,
     occupied_lanes,
     queue_reaches_last_visible_lane,
@@ -37,12 +39,21 @@ def cal():
     return LaneCalibration.load(SLT_CAL)
 
 
-def _paint(cal, occupied=(), size=(320, 240)):
-    """Synthesise a frame: bare pavement, with a dark block filling each occupied lane."""
+def _paint(cal, occupied=(), size=(320, 240), fill=0.7):
+    """Synthesise a frame: bare pavement, with vehicles standing in each occupied lane.
+
+    Only part of each lane is darkened, because that is what a real queue looks like — there
+    is asphalt between and around the vehicles. A lane blacked out end to end would also
+    flatten the brightness statistic that distinguishes a full compound from a dark one, so
+    a fully-filled fixture would test something the camera never sees.
+    """
     img = Image.new("RGB", size, (180, 178, 176))
     d = ImageDraw.Draw(img)
     for lane in occupied:
-        for y, x0, x1 in cal.lane_spans[lane]:
+        rows = cal.lane_spans[lane]
+        for i, (y, x0, x1) in enumerate(rows):
+            if i % 10 >= fill * 10:
+                continue
             d.line([(x0, y), (x1 - 1, y)], fill=(40, 40, 45))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -152,3 +163,47 @@ def test_a_blank_frame_yields_no_reading_rather_than_an_empty_compound(cal):
     out = read_frame(buf.getvalue(), buf.getvalue(), cal)
     assert out["compound_visible"] is False
     assert out["fullness"] is None
+
+
+# --- illumination: the failure that looks most like an answer ---------------------------
+
+
+def _lit(cal, scale, occupied=()):
+    """The same scene at a different brightness, as dusk or floodlight would give."""
+    img = Image.new("RGB", (320, 240), tuple(int(180 * scale) for _ in range(3)))
+    d = ImageDraw.Draw(img)
+    for lane in occupied:
+        rows = cal.lane_spans[lane]
+        for i, (y, x0, x1) in enumerate(rows):
+            if i % 10 >= 7:
+                continue
+            d.line([(x0, y), (x1 - 1, y)], fill=(40, 40, 45))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_a_darker_frame_is_refused_rather_than_read_as_full(cal):
+    """A *bare* floodlit compound at 04:08, differenced against a midday reference, reports
+    every lane occupied. Confidently claiming "overflowing" for an empty lot would have
+    filled the archive with phantom night overloads."""
+    out = read_frame(_lit(cal, 0.65), _lit(cal, 1.0), cal)
+    assert out["compound_visible"] is False
+    assert out["fullness"] is None
+    assert "illumination" in out["notes"]
+
+
+def test_illumination_is_judged_independently_of_how_full_the_compound_is(cal):
+    """The whole difficulty: a packed midday compound and a bare dusk one have similar
+    average brightness. Only one of them should be refused."""
+    reference = _lit(cal, 1.0)
+    packed = illumination_ratio(_lit(cal, 1.0, occupied=cal.lanes), reference, cal)
+    dusk_but_empty = illumination_ratio(_lit(cal, 0.65), reference, cal)
+    assert packed > ILLUMINATION_BAND[0]
+    assert dusk_but_empty < ILLUMINATION_BAND[0]
+
+
+def test_a_packed_daylight_compound_still_reads(cal):
+    out = read_frame(_lit(cal, 1.0, occupied=cal.lanes), _lit(cal, 1.0), cal)
+    assert out["compound_visible"] is True
+    assert out["fullness"] == "overflowing"

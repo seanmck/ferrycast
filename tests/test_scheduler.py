@@ -168,3 +168,33 @@ def test_describe_reports_the_plan(conn, config):
     assert rows["aggregate"]["last_run"]
     assert rows["aggregate"]["due"] is False
     assert rows["deckspace"]["next_due"] == "now"
+
+
+def test_capture_reads_the_frames_it_just_took(conn, config, monkeypatch, tmp_path):
+    """Geometry costs ~19ms a frame, so there is no reason to defer it the way a paid vision
+    call has to be. A frame that is read at capture time is also a frame that can be pruned
+    later without losing the measurement."""
+    from ferrycast import scheduler
+
+    read_calls = {"frames": 0}
+
+    def fake_capture_once(conn, config):
+        return []
+
+    class FakeStats:
+        considered = read = 2
+        unusable = skipped_no_calibration = failed = 0
+        errors: list[str] = []
+
+    def fake_extract(conn, config, frames, **kw):
+        read_calls["frames"] = len(frames)
+        return FakeStats()
+
+    monkeypatch.setattr("ferrycast.capture.capture_once", fake_capture_once)
+    monkeypatch.setattr("ferrycast.lanes.extract_frames", fake_extract)
+    monkeypatch.setattr("ferrycast.lanes.pending_frames", lambda c, limit: [object(), object()])
+
+    detail = scheduler._capture(conn, config)
+
+    assert read_calls["frames"] == 2
+    assert "read 2" in detail
