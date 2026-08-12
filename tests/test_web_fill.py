@@ -52,19 +52,14 @@ def test_the_button_does_not_appear_when_the_feature_is_off(client, conn, config
     assert "/fill" not in client.get(SLOT).text
 
 
-def test_the_button_appears_when_frames_are_waiting(enabled, conn, config):
+def test_the_button_never_appears_even_when_frames_are_waiting(enabled, conn, config):
+    """The card was removed from the page: it must not render regardless of whether
+    on-demand backfill is enabled or there are eligible frames to read."""
     _fridays_with_frames(conn, config)
     body = enabled.get(SLOT).text
-    assert 'action="/fill"' in body
-    assert "Deepen this answer" in body
-
-
-def test_the_button_states_the_work_before_it_is_tapped(enabled, conn, config):
-    """How much it will read, so the tap is not blind."""
-    _fridays_with_frames(conn, config, count=2)
-    body = enabled.get(SLOT).text
-    # 2 sailings x 4 essential offsets = 8 frames.
-    assert "Read 8 frames" in body
+    assert 'action="/fill"' not in body
+    assert "Deepen this answer" not in body
+    assert "Read 8 frames" not in body
 
 
 def test_the_page_never_talks_about_money(enabled, conn, config, monkeypatch):
@@ -112,9 +107,10 @@ def test_no_button_once_every_comparable_sailing_has_a_record(enabled, conn, con
     assert 'action="/fill"' not in enabled.get(SLOT).text
 
 
-def test_a_sufficient_answer_is_still_offered_newer_sailings(enabled, conn, config):
-    """Without this the distribution freezes at whatever the first fill produced and ages
-    silently — still five sailings, still "sufficient", quietly describing a past season."""
+def test_a_sufficient_answer_never_offers_newer_sailings(enabled, conn, config):
+    """Even when the distribution could go stale — still five sailings, still
+    "sufficient", quietly describing a past season — the page must not offer a
+    card to fill it in."""
     for day in fridays(5):
         seed_record(conn, config, day, "12:30", "boarded")
     newer = max(fridays(5)) + timedelta(days=7)
@@ -124,7 +120,8 @@ def test_a_sufficient_answer_is_still_offered_newer_sailings(enabled, conn, conf
     body = enabled.get(
         f"/?origin=SLT&service_date={(newer + timedelta(days=7)).isoformat()}&time=12:30"
     ).text
-    assert "Newer sailings available" in body
+    assert "Newer sailings available" not in body
+    assert 'action="/fill"' not in body
 
 
 def test_posting_when_disabled_is_refused(client, conn, config):
