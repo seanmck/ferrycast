@@ -87,6 +87,28 @@ Then edit both files:
    Strait of Georgia is split at Nanaimo — and leaving it unset takes the first one, which
    for this route would answer about the wrong end of a 200 km waterway.
 
+4. **Optional: `weather_site` on each terminal → the ECCC city forecast for that shore.**
+   The marine forecast is about the water; this is about the compound you wait in, and the
+   two are separate ECCC products with separate issue times. Set both keys or neither — the
+   province is part of the feed's path.
+
+   ```toml
+   [[route.terminals]]
+   code             = "SLT"
+   weather_site     = "s0000634"   # ECCC city page code
+   weather_province = "BC"
+   ```
+
+   To find a `site`, list a recent hour of your province and read the `<region>` out of the
+   candidates — the code is in the filename, and the region names the stretch of coast:
+
+   ```bash
+   curl -s https://dd.weather.gc.ca/today/citypage_weather/BC/04/ | grep -o 'CitypageWeather_[a-z0-9]*_en.xml'
+   ```
+
+   Pick by region rather than by distance: "Sunshine Coast - Saltery Bay to Powell River"
+   is the forecast that names this terminal, whichever town the station is called after.
+
 Then:
 
 ```bash
@@ -340,6 +362,7 @@ underlying dates always travel with the answer.
 | `ferrycast capture` | Archive one frame per terminal (R1) |
 | `ferrycast scrape` | Scrape current deck space (R2) |
 | `ferrycast marine` | Fetch the ECCC marine forecast for this route's waters |
+| `ferrycast shore` | Fetch the ECCC city forecast for each terminal |
 | `ferrycast extract` | Vision-extract frames (R3); `--essential` reads only what matters |
 | `ferrycast check` | On-demand: the queue right now, plus days like this one |
 | `ferrycast aggregate` | Roll evidence up into sailing records (R4) |

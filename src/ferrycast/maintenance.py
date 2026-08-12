@@ -16,6 +16,7 @@ from .config import Config
 from .db import JobRun, scalar
 from .marine import _table_exists as marine_table_exists
 from .schedule import load_schedule_cached, sailings_for_day
+from .shore import _table_exists as shore_table_exists
 from .timeutil import iso, local, now_utc, parse_iso
 from .vision import month_to_date_cost
 
@@ -205,6 +206,8 @@ class HealthReport:
     # When ECCC last issued a forecast this install has on file, or None when the marine
     # feed is switched off or has never been read.
     marine_issued_at: str | None = None
+    # The same for the weather ashore, which is a separate feed and fails separately.
+    shore_issued_at: str | None = None
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -375,6 +378,20 @@ def health_report(
         elif now - parse_iso(marine_issued) > timedelta(hours=12):
             problems.append(f"the marine forecast is stale — last issued {marine_issued}")
 
+    # The same again for the weather ashore, which is a separate feed and fails separately:
+    # the marine forecast can be current while the city one has been dead for a day.
+    shore_issued = None
+    if any(t.configured_for_weather for t in config.route.terminals) and shore_table_exists(conn):
+        shore_issued = scalar(
+            conn,
+            "SELECT MAX(issued_at) FROM shore_forecast WHERE route = ? AND fetch_status = 'ok'",
+            (config.route.id,),
+        )
+        if not shore_issued:
+            problems.append("no shore forecast has been read yet")
+        elif now - parse_iso(shore_issued) > timedelta(hours=12):
+            problems.append(f"the shore forecast is stale — last issued {shore_issued}")
+
     return HealthReport(
         window_days=window_days,
         expected_captures=expected,
@@ -391,6 +408,7 @@ def health_report(
         budget=config.vision.monthly_budget_usd,
         last_capture_at=last_capture,
         marine_issued_at=marine_issued,
+        shore_issued_at=shore_issued,
         problems=problems,
     )
 
@@ -496,6 +514,8 @@ def format_health(report: HealthReport) -> str:
         lines.append(f"  deck space       {report.deckspace_success_rate:.0%} parsed")
     if report.marine_issued_at:
         lines.append(f"  marine forecast  issued {report.marine_issued_at}")
+    if report.shore_issued_at:
+        lines.append(f"  shore forecast   issued {report.shore_issued_at}")
     lines += [
         f"  extraction queue {report.frames_awaiting_extraction} frames",
         f"  sailing coverage {report.sailings_with_record}/{report.sailings_total} "

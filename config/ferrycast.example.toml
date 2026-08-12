@@ -37,6 +37,15 @@ name = "Saltery Bay – Earls Cove"
   destination    = "ERL"
   webcam_url     = ""   # ⚠️ REQUIRED — see the note above
   deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
+  # Optional, and per terminal: the ECCC city forecast for this shore — what it will be
+  # doing at the compound, as opposed to on the water. Both keys or neither; the province
+  # is part of the feed's path. To find a site code, list a recent hour of your province:
+  #   curl -s https://dd.weather.gc.ca/today/citypage_weather/BC/04/ \
+  #     | grep -o 'CitypageWeather_[a-z0-9]*_en.xml'
+  # then fetch a file and read its <region> — pick the region that names your terminal
+  # rather than the station nearest as the crow flies.
+  weather_site     = "s0000634"   # "Sunshine Coast - Saltery Bay to Powell River"
+  weather_province = "BC"
 
   [[route.terminals]]
   code           = "ERL"
@@ -44,6 +53,8 @@ name = "Saltery Bay – Earls Cove"
   destination    = "SLT"
   webcam_url     = ""   # ⚠️ REQUIRED — see the note above
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"
+  weather_site     = "s0000316"   # "Sunshine Coast - Gibsons to Earls Cove"
+  weather_province = "BC"
 
   # Optional. The ECCC marine forecast for the water this route crosses — wind is the one
   # condition that cancels a sailing outright, and the only one FerryCast does not observe

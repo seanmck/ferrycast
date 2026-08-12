@@ -50,6 +50,10 @@ name = "Saltery Bay – Earls Cove"
   # Set true ONLY if this camera actually shows the berth — look at a frame first. When
   # false, frames still count the queue; they just cannot say whether a sailing ran.
   camera_sees_berth = false
+  # The weather ashore, at the compound. ECCC forecasts this stretch of coast as
+  # "Sunshine Coast - Saltery Bay to Powell River", which names the terminal outright.
+  weather_site     = "s0000634"
+  weather_province = "BC"
 
 
   [[route.terminals]]
@@ -62,6 +66,10 @@ name = "Saltery Bay – Earls Cove"
   # This camera looks up the approach road, not at the berth — it never shows a vessel, so
   # frames from it can neither time a departure nor evidence a cancellation. Leave false.
   camera_sees_berth = false
+  # The far end gets its own forecast: Gibsons' covers "Sunshine Coast - Gibsons to Earls
+  # Cove". Sechelt (s0000317) is the same region and would do as well.
+  weather_site     = "s0000316"
+  weather_province = "BC"
 
 
   # The ECCC marine forecast for the water this crossing makes. Wind is the one condition

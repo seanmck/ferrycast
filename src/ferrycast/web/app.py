@@ -49,6 +49,7 @@ from ..reports import (
     submit_report,
 )
 from ..schedule import day_type, season
+from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
 from .preview import health_preview, index_preview
 
@@ -530,6 +531,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # date — including today's board, where withholding one would be indefensible.
         marine = marine_summary(conn, config, service_date=chosen_date)
 
+        # And what it will be doing ashore, at the terminal you are leaving from. A
+        # separate ECCC product about a separate place, so it is carried separately and
+        # attributed to its own station rather than folded in beside the wind.
+        shore = shore_summary(
+            conn, config, terminal=chosen_origin, service_date=chosen_date
+        )
+
         return TEMPLATES.TemplateResponse(
             request,
             "index.html",
@@ -549,6 +557,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "board": board,
                 "day_shape": day_shape,
                 "marine": marine,
+                "shore": shore,
                 "now_index": _now_index(board),
                 "board_totals": {
                     "sailings": len(board),
