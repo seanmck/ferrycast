@@ -16,7 +16,7 @@ FRAME_EXPORT_SQL = """
            f.route, f.terminal, f.captured_at, f.service_date,
            f.status, f.error, f.width, f.height, f.bytes, f.path,
            o.prompt_version, o.model, o.vehicle_count, o.lanes_occupied,
-           o.queue_beyond_frame, o.ferry_at_dock, o.visibility, o.confidence,
+           o.queue_beyond_frame, o.ferry_at_dock, o.visibility, o.fullness, o.confidence,
            o.usable, o.notes, o.cost_usd
       FROM frames f
       LEFT JOIN observations o ON o.frame_id = f.id
@@ -27,7 +27,9 @@ SAILING_EXPORT_SQL = """
            s.scheduled_departure, s.depart_hhmm, s.day_type, s.season,
            r.outcome, r.peak_queue, r.queue_at_departure, r.residual_queue,
            r.carryover, r.overload, r.cancelled, r.n_frames, r.confidence,
-           r.queue_truncated, r.deck_space_min, r.method, r.computed_at
+           r.queue_truncated, r.deck_space_min, r.method,
+           r.peak_fullness, r.fullness_at_departure, r.residual_fullness,
+           r.queue_started_at, r.cleared_at, r.computed_at
       FROM sailings s
       LEFT JOIN sailing_records r ON r.sailing_id = s.id
 """

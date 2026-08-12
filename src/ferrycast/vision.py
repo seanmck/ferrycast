@@ -23,9 +23,12 @@ from .config import Config
 from .db import JobRun
 from .timeutil import iso, now_utc
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
-SYSTEM_PROMPT = """\
+#: How full the compound is, weakest to fullest. Ordered, so aggregation can compare.
+FULLNESS_LEVELS = ("empty", "light", "moderate", "heavy", "overflowing")
+
+SYSTEM_PROMPT_V1 = """\
 You are reading a fixed webcam frame of a BC Ferries terminal holding compound, where
 vehicles queue for a first-come-first-served sailing.
 
@@ -50,7 +53,7 @@ If the compound is not visible, return vehicle_count 0, visibility "dark" or "ob
 and a confidence at or below 0.2.\
 """
 
-OBSERVATION_SCHEMA = {
+OBSERVATION_SCHEMA_V1 = {
     "type": "object",
     "properties": {
         "vehicle_count": {
@@ -90,6 +93,122 @@ OBSERVATION_SCHEMA = {
     ],
     "additionalProperties": False,
 }
+
+# v2 asks how full the compound is, not how many vehicles are in it.
+#
+# Measured over four sailings (38 frames, Saltery Bay, 2026-08-11/12), against fullness
+# read off the frames by hand:
+#
+#   * The band is reliable. Sonnet landed within one band on 39/39 frames and called all
+#     15 genuinely empty frames empty, with rank correlation 0.86-0.98 per sailing. It
+#     tracks both the fill and the collapse after departure.
+#   * Counts are not. One model returned an identical count on four consecutive frames
+#     spanning an hour; across models the spread on a single frame was 11 to 34. A count
+#     is also the wrong unit — an RV and a hatchback are not interchangeable.
+#   * Neither `lanes_occupied` nor `queue_extends_beyond_frame` survived. The marshalling
+#     lanes run off the left edge of this camera's view, so "extends beyond frame" goes
+#     true as soon as anything is in the near lane and never means "out the gate"; and
+#     lane identity is unresolvable past the foreground, where the painted numbers are.
+#   * The known bias is at the top of the scale: "overflowing" was returned for a sailing
+#     that had two lanes free and cleared completely. Treat the top band as suspect until
+#     a genuinely full sailing exists to calibrate against.
+SYSTEM_PROMPT_V2 = """\
+You are reading a fixed webcam frame of a BC Ferries terminal marshalling compound, where
+vehicles queue for a first-come-first-served sailing.
+
+Report only what is visible in this frame. Do not infer from what a terminal usually looks
+like at this hour, and do not smooth toward a "typical" level.
+
+Judge how full the compound is, on this scale:
+
+- empty        no vehicles queued at all
+- light        a few vehicles; the great majority of the compound is bare
+- moderate     roughly a third to a half of the compound holds vehicles
+- heavy        most of it holds vehicles, but there is clear unused space remaining
+- overflowing  essentially full; little or no usable space left
+
+Judge the compound as a whole, including any part of it that runs past the edge of the
+frame. Count only vehicles queued to board: ignore those on the access road, parked by the
+buildings, moving through, or already aboard the vessel.
+
+Reserve "overflowing" for a compound with no room left. If whole lanes are still bare, it
+is "heavy" however many vehicles are present.
+
+Other fields:
+- compound_visible: false if fog, glare, rain on the lens or darkness stops you judging
+  the paved queuing area. This is the gate — when it is false the frame is not used.
+- vehicle_count: a count only if you can make one honestly; null otherwise. It is
+  secondary to the band and never worth guessing at.
+- confidence: your confidence in the band specifically, 0 to 1. A low score is far more
+  useful than a confident guess.
+
+If the compound is not visible, set compound_visible false, fullness null, and a
+confidence at or below 0.2.\
+"""
+
+OBSERVATION_SCHEMA_V2 = {
+    "type": "object",
+    "properties": {
+        "compound_visible": {
+            "type": "boolean",
+            "description": "True if the paved queuing area can be judged in this frame.",
+        },
+        "fullness": {
+            "type": ["string", "null"],
+            "enum": [*FULLNESS_LEVELS, None],
+            "description": "How full the marshalling compound is; null if not visible.",
+        },
+        "vehicle_count": {
+            "type": ["integer", "null"],
+            "description": "Secondary and optional. Null unless an honest count is possible.",
+        },
+        "confidence": {"type": "number", "description": "Confidence in the band, 0 to 1."},
+        "notes": {
+            "type": "string",
+            "description": "Short note on anything unusual. Empty string if nothing to add.",
+        },
+    },
+    "required": ["compound_visible", "fullness", "vehicle_count", "confidence", "notes"],
+    "additionalProperties": False,
+}
+
+
+@dataclass(frozen=True)
+class Prompt:
+    """One generation of the extraction contract: what we ask, and what shape comes back."""
+
+    system: str
+    schema: dict
+    instruction: str
+
+
+PROMPTS: dict[str, Prompt] = {
+    "v1": Prompt(
+        system=SYSTEM_PROMPT_V1,
+        schema=OBSERVATION_SCHEMA_V1,
+        instruction="This is the {terminal} terminal. Report the queue visible in this frame.",
+    ),
+    "v2": Prompt(
+        system=SYSTEM_PROMPT_V2,
+        schema=OBSERVATION_SCHEMA_V2,
+        instruction=(
+            "This is the {terminal} terminal. How full is the marshalling compound in this "
+            "frame?"
+        ),
+    ),
+}
+
+# The current generation, for callers that just want "the prompt".
+SYSTEM_PROMPT = PROMPTS[PROMPT_VERSION].system
+OBSERVATION_SCHEMA = PROMPTS[PROMPT_VERSION].schema
+
+
+def prompt_for(version: str) -> Prompt:
+    try:
+        return PROMPTS[version]
+    except KeyError:
+        known = ", ".join(sorted(PROMPTS))
+        raise VisionError(f"unknown prompt_version {version!r} (known: {known})") from None
 
 
 @dataclass
@@ -162,11 +281,12 @@ def extract_frame(client, config: Config, image: bytes, media_type: str, termina
     """One vision call. Returns (parsed dict, input_tokens, output_tokens)."""
     import base64
 
+    prompt = prompt_for(config.vision.prompt_version)
     response = client.messages.create(
         model=config.vision.model,
         max_tokens=512,
-        system=SYSTEM_PROMPT,
-        output_config={"format": {"type": "json_schema", "schema": OBSERVATION_SCHEMA}},
+        system=prompt.system,
+        output_config={"format": {"type": "json_schema", "schema": prompt.schema}},
         messages=[
             {
                 "role": "user",
@@ -179,13 +299,7 @@ def extract_frame(client, config: Config, image: bytes, media_type: str, termina
                             "data": base64.standard_b64encode(image).decode("ascii"),
                         },
                     },
-                    {
-                        "type": "text",
-                        "text": (
-                            f"This is the {terminal_name} terminal. Report the queue visible "
-                            "in this frame."
-                        ),
-                    },
+                    {"type": "text", "text": prompt.instruction.format(terminal=terminal_name)},
                 ],
             }
         ],
@@ -233,6 +347,37 @@ def pending_frames(
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
+def _visibility_of(parsed: dict) -> str | None:
+    """v1 reported `visibility` directly; v2 reduces it to the one bit that gates a frame.
+
+    Both land in the same column so `status` and the collection pages keep working across
+    the version boundary.
+    """
+    if "visibility" in parsed:
+        return parsed.get("visibility")
+    if "compound_visible" in parsed:
+        return "clear" if parsed.get("compound_visible") else "obscured"
+    return None
+
+
+def is_usable(config: Config, parsed: dict) -> bool:
+    """Whether an observation is trustworthy enough for aggregation to use.
+
+    v1 gated on `visibility` plus a count being present. v2 gates on `compound_visible`,
+    because that is the question the model can actually answer about a frame — a dusk frame
+    is "dim" but perfectly legible, and a count being absent says nothing about the band.
+    """
+    confidence = float(parsed.get("confidence") or 0.0)
+    if confidence < config.vision.min_confidence:
+        return False
+    if "compound_visible" in parsed:
+        return bool(parsed.get("compound_visible")) and parsed.get("fullness") is not None
+    return (
+        parsed.get("visibility") not in ("dark", "obscured")
+        and parsed.get("vehicle_count") is not None
+    )
+
+
 def _insert_observation(
     conn: sqlite3.Connection,
     config: Config,
@@ -247,9 +392,9 @@ def _insert_observation(
     conn.execute(
         """INSERT OR REPLACE INTO observations
                (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
-                queue_beyond_frame, ferry_at_dock, visibility, confidence, usable,
+                queue_beyond_frame, ferry_at_dock, visibility, fullness, confidence, usable,
                 notes, input_tokens, output_tokens, cost_usd, created_at, raw)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             frame_id,
             config.vision.prompt_version,
@@ -258,7 +403,8 @@ def _insert_observation(
             parsed.get("lanes_occupied"),
             int(bool(parsed.get("queue_extends_beyond_frame"))),
             int(bool(parsed.get("ferry_at_dock"))),
-            parsed.get("visibility"),
+            _visibility_of(parsed),
+            parsed.get("fullness"),
             parsed.get("confidence"),
             int(usable),
             (parsed.get("notes") or None),
@@ -357,6 +503,8 @@ def extract_frames(
                         "lanes_occupied": None,
                         "queue_extends_beyond_frame": False,
                         "ferry_at_dock": False,
+                        "compound_visible": False,
+                        "fullness": None,
                         "visibility": "dark",
                         "confidence": 0.0,
                         "notes": f"skipped without a model call: mean luma {luma:.1f}",
@@ -382,12 +530,7 @@ def extract_frames(
                 continue
 
             cost = estimate_cost(config, in_tok, out_tok)
-            confidence = float(parsed.get("confidence") or 0.0)
-            usable = (
-                confidence >= config.vision.min_confidence
-                and parsed.get("visibility") not in ("dark", "obscured")
-                and parsed.get("vehicle_count") is not None
-            )
+            usable = is_usable(config, parsed)
             _insert_observation(
                 conn,
                 config,

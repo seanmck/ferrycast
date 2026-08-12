@@ -80,6 +80,11 @@ class ComparableSailing:
     carryover: int | None
     confidence: float | None
     queue_truncated: bool
+    # How full it got, for sailings read under prompt v2 onward. `peak_queue` is the same
+    # question asked in a unit the cameras cannot actually support; prefer this when set.
+    peak_fullness: str | None = None
+    queue_started_local: str | None = None
+    cleared_local: str | None = None
     filled_at_local: str | None = None
     fill_minutes_before: int | None = None
     evidence: str = "unknown"
@@ -178,7 +183,8 @@ def _fetch_candidates(
     sql = f"""
         SELECT s.service_date, s.depart_hhmm, s.day_type, s.season, s.scheduled_departure,
                r.outcome, r.peak_queue, r.queue_at_departure, r.carryover,
-               r.confidence, r.queue_truncated, r.filled_at, r.method
+               r.confidence, r.queue_truncated, r.filled_at, r.method,
+               r.peak_fullness, r.queue_started_at, r.cleared_at
           FROM sailings s
           JOIN sailing_records r ON r.sailing_id = s.id
          WHERE s.route = ?
@@ -352,6 +358,13 @@ def _fill_gap_minutes(row: sqlite3.Row) -> int | None:
     return int(gap) if gap >= 0 else 0
 
 
+def _local_hhmm(stamp: str | None, config: Config) -> str | None:
+    """A stored UTC transition as a local clock time, which is how a traveller reads it."""
+    if not stamp:
+        return None
+    return local(parse_iso(stamp), config.tz).strftime("%H:%M")
+
+
 def _median_int(values: list[int]) -> int | None:
     if not values:
         return None
@@ -375,6 +388,9 @@ def _sample(conn: sqlite3.Connection, config: Config, row: sqlite3.Row) -> Compa
         carryover=row["carryover"],
         confidence=row["confidence"],
         queue_truncated=bool(row["queue_truncated"]),
+        peak_fullness=row["peak_fullness"],
+        queue_started_local=_local_hhmm(row["queue_started_at"], config),
+        cleared_local=_local_hhmm(row["cleared_at"], config),
         filled_at_local=filled_local,
         fill_minutes_before=gap,
         evidence=_evidence_of({row["method"]}),

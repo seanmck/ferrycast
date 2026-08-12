@@ -459,6 +459,23 @@ def cmd_health(args) -> int:
     return 1 if (args.strict and not report.healthy) else 0
 
 
+def cmd_calibrate(args) -> int:
+    """Score the vision layer against the sailing cycle, with no hand-labelled frames."""
+    from .calibrate import calibrate, format_report
+
+    config = _config(args)
+    conn = _open(config)
+    report = calibrate(
+        conn,
+        config,
+        prompt_version=args.prompt_version,
+        origin=args.origin,
+        usable_only=not args.include_unusable,
+    )
+    print(format_report(report))
+    return 0
+
+
 def cmd_prune(args) -> int:
     from .maintenance import prune_frames
 
@@ -792,6 +809,21 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--window", type=int, default=7, help="days to look back")
     health.add_argument("--strict", action="store_true", help="exit non-zero if unhealthy")
     health.set_defaults(func=cmd_health)
+
+    calibrate_p = sub.add_parser(
+        "calibrate",
+        help="score the vision layer against the sailing cycle (no labelling needed)",
+    )
+    calibrate_p.add_argument(
+        "--prompt-version", help="which extraction to score (default: the configured one)"
+    )
+    calibrate_p.add_argument("--origin", help="restrict to one terminal")
+    calibrate_p.add_argument(
+        "--include-unusable",
+        action="store_true",
+        help="score frames the usable gate rejected, to see what the gate is costing",
+    )
+    calibrate_p.set_defaults(func=cmd_calibrate)
 
     prune = sub.add_parser("prune", help="apply the frame retention policy")
     prune.add_argument("--dry-run", action="store_true")

@@ -259,7 +259,7 @@
     <summary class="btn">See the {{ d.samples | length }} dates</summary>
     <table>
       <thead>
-        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled</th><th>Peak</th></tr>
+        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled</th><th>Peak</th><th>Cleared</th></tr>
       </thead>
       <tbody>
         {% for s in d.samples %}
@@ -270,13 +270,22 @@
               <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
             </td>
             <td class="n">{{ s.filled_at_local or '—' }}</td>
-            <td class="n">{{ s.peak_queue if s.peak_queue is not none else '—' }}{% if s.queue_truncated %}+{% endif %}</td>
+            <td class="n">
+              {%- if s.peak_fullness -%}
+                {{ s.peak_fullness }}
+              {%- elif s.peak_queue is not none -%}
+                {{ s.peak_queue }}{% if s.queue_truncated %}+{% endif %}
+              {%- else -%}—{%- endif -%}
+            </td>
+            <td class="n">{{ s.cleared_local or '—' }}</td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
-    <p class="note">“Filled” is when the vessel ran out of room. A “+” on a queue count means the
-      queue ran past the edge of the camera frame, so the real number was higher.</p>
+    <p class="note">“Filled” is when the vessel ran out of room, and “cleared” is when the
+      compound emptied after the vessel had gone — the point everyone waiting had got on.
+      Peak is how full the compound got; older sailings show a vehicle count instead, and a
+      “+” there means the queue ran past the edge of the camera frame.</p>
   </details>
 
   <details id="curve-box">

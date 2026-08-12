@@ -25,6 +25,7 @@ from .db import JobRun
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
+from .vision import FULLNESS_LEVELS
 
 OUTCOMES = ("boarded", "waited_1", "waited_2plus", "filled", "cancelled", "unknown")
 
@@ -48,6 +49,12 @@ class SailingRecord:
     deck_space_min: int | None
     method: str
     filled_at: str | None = None
+    # Band fields, populated from prompt v2 onward. See `_classify_from_bands`.
+    peak_fullness: str | None = None
+    fullness_at_departure: str | None = None
+    residual_fullness: str | None = None
+    queue_started_at: str | None = None
+    cleared_at: str | None = None
 
 
 @dataclass
@@ -57,6 +64,16 @@ class _Obs:
     ferry_at_dock: bool
     beyond_frame: bool
     confidence: float
+    fullness: str | None = None
+
+    @property
+    def occupied(self) -> bool | None:
+        """Whether anything was queued. None when this frame cannot say."""
+        if self.fullness is not None:
+            return self.fullness != "empty"
+        if self.vehicle_count is not None:
+            return self.vehicle_count > 0
+        return None
 
 
 def upsert_sailings(conn: sqlite3.Connection, sailings: list[Sailing]) -> int:
@@ -97,7 +114,7 @@ def _load_observations(
 ) -> list[_Obs]:
     sql = """
         SELECT f.captured_at, o.vehicle_count, o.ferry_at_dock, o.queue_beyond_frame,
-               o.confidence, o.usable
+               o.fullness, o.confidence, o.usable
           FROM observations o
           JOIN frames f ON f.id = o.frame_id
          WHERE o.prompt_version = ?
@@ -116,6 +133,7 @@ def _load_observations(
             ferry_at_dock=bool(row["ferry_at_dock"]),
             beyond_frame=bool(row["queue_beyond_frame"]),
             confidence=float(row["confidence"] or 0.0),
+            fullness=row["fullness"],
         )
         for row in conn.execute(sql, tuple(params)).fetchall()
     ]
@@ -283,6 +301,83 @@ def classify(
     return "waited_1", True, False, residual
 
 
+def _peak_band(observations: list[_Obs]) -> str | None:
+    """The fullest band reached. Ordered comparison, not string comparison."""
+    ranked = [
+        FULLNESS_LEVELS.index(o.fullness)
+        for o in observations
+        if o.fullness in FULLNESS_LEVELS
+    ]
+    return FULLNESS_LEVELS[max(ranked)] if ranked else None
+
+
+def _first_occupied_at(observations: list[_Obs]) -> str | None:
+    """When a queue first appeared.
+
+    Approximate by construction, and worth stating as such: the first two or three vehicles
+    are the hardest thing in the frame to see, so this lands within a frame or so rather than
+    on the minute. It is the weakest of the stored transitions — `cleared_at` is the sharp one.
+    """
+    for o in observations:
+        if o.occupied:
+            return iso(o.at)
+    return None
+
+
+def _first_clear_at(observations: list[_Obs], settle_from: datetime) -> str | None:
+    """When the compound emptied once the vessel had gone.
+
+    The sharp transition, and the one that carries the outcome: a full compound goes to bare
+    asphalt between one frame and the next.
+    """
+    for o in observations:
+        if o.at >= settle_from and o.occupied is False:
+            return iso(o.at)
+    return None
+
+
+def classify_from_bands(
+    *,
+    residual_fullness: str | None,
+    fullness_at_departure: str | None,
+    departure_seen: bool,
+    still_at_dock: bool = False,
+    berth_visible: bool = False,
+) -> tuple[str, bool, bool, int | None]:
+    """Return (outcome, overload, cancelled, carryover) from fullness bands alone.
+
+    Same shape as `classify`, one deliberate difference: this never returns `waited_1` or
+    `waited_2plus`.
+
+    Those two outcomes claim to know *how many* sailings someone waited, which a count could
+    support and a band cannot — "heavy" left on the tarmac is one vessel's worth or three
+    depending on what those vehicles are. So an overload becomes `filled`, exactly as it does
+    for deck space, which has the same limitation and for the same reason. Saying "you would
+    not have got on" is honest; saying "you would have waited exactly one sailing" is not.
+
+    What the band does support is the clear, and it supports it well: across four sailings a
+    packed compound went to bare asphalt in a single frame every time. That transition is the
+    whole outcome, and it is the one thing measured here that was never ambiguous.
+    """
+    if residual_fullness is None or fullness_at_departure is None:
+        return "unknown", False, False, None
+
+    if still_at_dock:
+        return "unknown", False, False, None
+
+    if residual_fullness == "empty":
+        return "boarded", False, False, 0
+
+    if not departure_seen:
+        # Same asymmetry as the count path: only a camera that can see the berth is entitled
+        # to read "queue remains, no vessel ever seen" as a cancellation.
+        if not berth_visible:
+            return "unknown", False, False, None
+        return "cancelled", False, True, None
+
+    return "filled", True, False, None
+
+
 def compute_record(
     conn: sqlite3.Connection,
     config: Config,
@@ -307,6 +402,7 @@ def compute_record(
 
     before = [o for o in observations if o.at <= departure]
     counted_before = [o for o in before if o.vehicle_count is not None]
+    banded_before = [o for o in before if o.fullness is not None]
 
     grace_from = departure - timedelta(minutes=cfg.departure_grace_minutes)
     left_at, still_at_dock = _departure_from_frames(observations, grace_from)
@@ -322,13 +418,18 @@ def compute_record(
     after = [
         o for o in observations if o.at >= settle_from and o.vehicle_count is not None
     ]
+    banded_after = [o for o in observations if o.at >= settle_from and o.fullness is not None]
 
     peak = max((o.vehicle_count for o in counted_before), default=None)
+    peak_fullness = _peak_band(banded_before)
 
     at_departure_candidates = [o for o in counted_before if o.at >= grace_from]
     queue_at_departure = at_departure_candidates[-1].vehicle_count if at_departure_candidates else None
+    banded_at_departure = [o for o in banded_before if o.at >= grace_from]
+    fullness_at_departure = banded_at_departure[-1].fullness if banded_at_departure else None
 
     residual = after[0].vehicle_count if after else None
+    residual_fullness = banded_after[0].fullness if banded_after else None
 
     deck_min = _deck_space_min(
         conn,
@@ -355,20 +456,37 @@ def compute_record(
             o for o in observations if o.at >= settle_from and o.vehicle_count is not None
         ]
         residual = after[0].vehicle_count if after else None
+        banded_after = [
+            o for o in observations if o.at >= settle_from and o.fullness is not None
+        ]
+        residual_fullness = banded_after[0].fullness if banded_after else None
 
     departure_seen = left_at is not None or deck_min is not None
+    berth_visible = config.route.terminal(sailing_row["origin"]).camera_sees_berth
 
-    outcome, overload, cancelled, carryover = classify(
-        residual=residual,
-        queue_at_departure=queue_at_departure,
-        departure_seen=departure_seen,
-        still_at_dock=still_at_dock,
-        berth_visible=config.route.terminal(sailing_row["origin"]).camera_sees_berth,
-        capacity=cfg.vessel_capacity,
-        residual_threshold=cfg.residual_threshold,
-    )
+    # Bands are preferred where they exist. A count is the older contract and the weaker
+    # measurement — it survives only so that frames read under prompt v1 keep their meaning.
+    if banded_before or banded_after:
+        outcome, overload, cancelled, carryover = classify_from_bands(
+            residual_fullness=residual_fullness,
+            fullness_at_departure=fullness_at_departure,
+            departure_seen=departure_seen,
+            still_at_dock=still_at_dock,
+            berth_visible=berth_visible,
+        )
+        used = banded_before + banded_after
+    else:
+        outcome, overload, cancelled, carryover = classify(
+            residual=residual,
+            queue_at_departure=queue_at_departure,
+            departure_seen=departure_seen,
+            still_at_dock=still_at_dock,
+            berth_visible=berth_visible,
+            capacity=cfg.vessel_capacity,
+            residual_threshold=cfg.residual_threshold,
+        )
+        used = counted_before + after
 
-    used = counted_before + after
     confidence = round(sum(o.confidence for o in used) / len(used), 3) if used else None
     method = f"frames:{config.vision.prompt_version}"
     filled_at = None
@@ -441,6 +559,11 @@ def compute_record(
         deck_space_min=deck_min,
         method=method,
         filled_at=filled_at,
+        peak_fullness=peak_fullness,
+        fullness_at_departure=fullness_at_departure,
+        residual_fullness=residual_fullness,
+        queue_started_at=_first_occupied_at(before),
+        cleared_at=_first_clear_at(observations, settle_from),
     )
 
 
@@ -449,8 +572,9 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
         """INSERT OR REPLACE INTO sailing_records
                (sailing_id, peak_queue, queue_at_departure, residual_queue, carryover,
                 overload, cancelled, outcome, n_frames, confidence, queue_truncated,
-                deck_space_min, filled_at, method, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                deck_space_min, filled_at, method, peak_fullness, fullness_at_departure,
+                residual_fullness, queue_started_at, cleared_at, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.sailing_id,
             record.peak_queue,
@@ -466,6 +590,11 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
             record.deck_space_min,
             record.filled_at,
             record.method,
+            record.peak_fullness,
+            record.fullness_at_departure,
+            record.residual_fullness,
+            record.queue_started_at,
+            record.cleared_at,
             iso(now_utc()),
         ),
     )

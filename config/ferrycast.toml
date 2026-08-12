@@ -72,13 +72,16 @@ max_retries      = 2
 user_agent = "ferrycast/0.1 (personal ferry-wait archive; contact: you@example.com)"
 
 [vision]
-model               = "claude-haiku-4-5"
-prompt_version      = "v1"    # bump to re-extract the backlog with an improved prompt
+# Haiku cannot read these cameras. Over 38 frames of a bare, floodlit compound it never
+# once returned "empty", and reported a flat "light" across an entire empty night. Sonnet
+# called all 15 genuinely empty frames empty and landed within one band on all 39.
+model               = "claude-sonnet-5"
+prompt_version      = "v2"    # bump to re-extract the backlog with an improved prompt
 max_frames_per_run  = 200
 max_image_width     = 896     # image tokens scale with area — this is the main cost lever
 monthly_budget_usd  = 5.0     # extraction stops when the month's spend reaches this
-input_usd_per_mtok  = 1.0     # Claude Haiku 4.5 list price, for cost accounting
-output_usd_per_mtok = 5.0
+input_usd_per_mtok  = 3.0     # Claude Sonnet 5 list price, for cost accounting
+output_usd_per_mtok = 15.0
 min_confidence      = 0.35    # below this, the frame is flagged rather than trusted
 skip_dark_frames    = true    # night frames are marked unusable without spending a call
 dark_luma_threshold = 24.0

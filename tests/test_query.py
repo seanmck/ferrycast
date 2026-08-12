@@ -348,3 +348,32 @@ def test_the_cap_applies_to_the_counts_not_just_the_listed_dates(conn, config):
         seed_record(conn, config, day, "12:30", "boarded")
     d = query_distribution(conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30")
     assert d.n == len(d.samples) == config.query.max_samples
+
+
+def test_bands_and_transitions_reach_the_query_layer(conn, config):
+    """The archive stores fullness; the page has to be able to show it.
+
+    Guards the seam between aggregation and display: a band that lands in `sailing_records`
+    but never reaches a `ComparableSailing` is stored history nobody can read.
+    """
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_aggregate import _band_frames
+
+    for day in fridays(4):
+        departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+        _band_frames(conn, config, departure, [(-45, "light"), (-15, "heavy"), (20, "empty")])
+        aggregate_day(conn, config, day)
+
+    dist = query_distribution(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    sample = dist.samples[0]
+    assert sample.outcome == "boarded"
+    assert sample.peak_fullness == "heavy"
+    # No count is claimed, because v2 does not ask for one.
+    assert sample.peak_queue is None
+    # Transitions are surfaced as local clock times, which is how a traveller reads them.
+    assert sample.queue_started_local == "11:45"
+    assert sample.cleared_local == "12:50"

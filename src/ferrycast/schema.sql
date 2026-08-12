@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS observations (
     queue_beyond_frame INTEGER,              -- 0/1
     ferry_at_dock      INTEGER,              -- 0/1
     visibility         TEXT,                 -- clear | dim | obscured | dark
+    fullness           TEXT,                 -- empty | light | moderate | heavy | overflowing
     confidence         REAL,
     usable             INTEGER NOT NULL DEFAULT 1,
     notes              TEXT,
@@ -107,6 +108,15 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     -- When the deck-space feed first reported no space left for this sailing (UTC).
     -- This is the "how late could I have arrived" signal, and it costs nothing to collect.
     filled_at          TEXT,
+    -- How full the compound got, from prompt v2 onward. Bands rather than counts because
+    -- that is what the cameras can actually support: a count of vehicles is both unstable
+    -- at this resolution and the wrong unit, since an RV and a hatchback are not
+    -- interchangeable. The transitions either side matter more than the level itself.
+    peak_fullness         TEXT,   -- empty | light | moderate | heavy | overflowing
+    fullness_at_departure TEXT,
+    residual_fullness     TEXT,   -- the band once the vessel had actually gone
+    queue_started_at      TEXT,   -- first frame with anything queued at all (UTC)
+    cleared_at            TEXT,   -- first empty frame after departure (UTC)
     method             TEXT,                 -- frames:<prompt_version> | deck_space | import:<source>
     computed_at        TEXT NOT NULL
 );
