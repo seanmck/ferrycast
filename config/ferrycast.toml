@@ -64,6 +64,18 @@ name = "Saltery Bay – Earls Cove"
   camera_sees_berth = false
 
 
+  # The ECCC marine forecast for the water this crossing makes. Wind is the one condition
+  # that cancels a sailing outright, and the only one FerryCast does not observe for itself.
+  #
+  # m0000028 is "Strait of Georgia", which ECCC forecasts in two halves split at Nanaimo.
+  # Saltery Bay – Earls Cove is entirely in the north half, and without `location` the
+  # parser would take whichever came first and answer about the wrong end of the strait.
+  [route.marine]
+  site     = "m0000028"
+  domain   = "pacific"
+  location = "Strait of Georgia - north of Nanaimo"
+
+
 [capture]
 interval_minutes = 15      # keep at 15 or higher: be a polite scraper
 timeout_seconds  = 20.0
