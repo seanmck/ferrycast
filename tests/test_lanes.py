@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -207,3 +208,89 @@ def test_a_packed_daylight_compound_still_reads(cal):
     out = read_frame(_lit(cal, 1.0, occupied=cal.lanes), _lit(cal, 1.0), cal)
     assert out["compound_visible"] is True
     assert out["fullness"] == "overflowing"
+
+
+# --- rolling backgrounds ----------------------------------------------------------------
+
+
+def _bg_from(cal, frames):
+    """What build_backgrounds does to a bucket: the per-pixel median."""
+    from ferrycast.lanes import _median_image
+
+    paths = []
+    for i, data in enumerate(frames):
+        p = Path(tempfile.mkdtemp()) / f"{i}.png"
+        p.write_bytes(data)
+        paths.append(p)
+    out = io.BytesIO()
+    _median_image(paths).save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_the_median_recovers_pavement_without_being_told_which_frames_were_empty(cal):
+    """The property that makes this practical. You would otherwise need a bare reference in
+    order to find bare frames, and there is no way in."""
+    frames = [_paint(cal, occupied=[]) for _ in range(6)]
+    frames += [_paint(cal, occupied=[5]), _paint(cal, occupied=[9]), _paint(cal, occupied=[11])]
+    background = _bg_from(cal, frames)
+
+    # A lane occupied in only one of nine frames must not survive into "empty".
+    assert occupied_lanes(occupancy(_paint(cal), background, cal)) == []
+    assert occupied_lanes(occupancy(_paint(cal, occupied=[9]), background, cal)) == [9]
+
+
+def test_a_lane_occupied_most_of_the_time_poisons_its_own_background(cal):
+    """The documented failure, pinned so it is not discovered again by surprise. Hour 08 sits
+    inside the build for the 09:25 sailing, so the compound is busy most mornings — and a
+    background built from too few such frames keeps the vehicles and calls them ground."""
+    frames = [_paint(cal, occupied=[6]) for _ in range(7)] + [_paint(cal) for _ in range(2)]
+    background = _bg_from(cal, frames)
+
+    # Lane 6 is occupied in the frame AND in the background, so it cancels: the reading says
+    # clear when it is not. This is why the sample floor matters.
+    assert 6 not in occupied_lanes(occupancy(_paint(cal, occupied=[6]), background, cal))
+
+
+def test_brightness_is_matched_before_differencing(cal):
+    """Gating on illumination is not enough. Two frames can pass the gate and still sit far
+    enough apart that ordinary asphalt crosses the threshold everywhere — a haze of "changed"
+    over lanes that are visibly bare. Measured on a real 08:04 frame, lanes 11 and 12 read
+    0.36 and 0.44 on empty pavement before this, and 0.03 and 0.02 after."""
+    reference = _paint(cal)
+    slightly_dimmer = _lit(cal, 0.88)  # inside the gate, but not identical
+    shares = occupancy(slightly_dimmer, reference, cal)
+    assert occupied_lanes(shares) == []
+
+
+def test_a_thin_bucket_is_refused_rather_than_used(tmp_path, cal):
+    from ferrycast.lanes import MIN_BACKGROUND_SAMPLES, Background, BackgroundLibrary
+
+    root = tmp_path / "backgrounds" / "SLT"
+    root.mkdir(parents=True)
+    (root / "08.png").write_bytes(_paint(cal))
+    (root / "08.json").write_text(
+        json.dumps(
+            {
+                "terminal": "SLT",
+                "hour": 8,
+                "samples": MIN_BACKGROUND_SAMPLES - 1,
+                "from": "x",
+                "to": "y",
+                "built_at": "z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    library = BackgroundLibrary(tmp_path, "SLT")
+    assert library.for_hour(8) is None
+    assert library.hours() == []
+    assert Background(root / "08.png", "SLT", 8, 4, ("x", "y"), "z").thin
+
+
+def test_an_hour_with_no_background_is_not_read_against_the_wrong_one(tmp_path, cal):
+    """A single fixed reference reads a bare floodlit compound at 04:00 as every lane
+    occupied. Having no reference for an hour has to mean no reading, not the nearest one."""
+    from ferrycast.lanes import BackgroundLibrary
+
+    (tmp_path / "backgrounds" / "SLT").mkdir(parents=True)
+    assert BackgroundLibrary(tmp_path, "SLT").for_hour(4) is None

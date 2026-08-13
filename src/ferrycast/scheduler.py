@@ -19,6 +19,7 @@ import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from .config import Config
 from .db import connect, init_db
@@ -68,6 +69,33 @@ def _capture(conn, config: Config) -> str:
         if read.unusable:
             detail += f" ({read.unusable} unusable)"
     return detail
+
+
+def _backgrounds(conn, config: Config) -> str:
+    """Rebuild the per-hour references the geometric reader differences against.
+
+    Daily, because it only has to keep pace with the sun. A two-week trailing window moves
+    about four degrees of solar declination in a day, so a reference built this morning is
+    still describing this month's light and this month's shadows.
+    """
+    from .db import JobRun
+    from .lanes import build_backgrounds, load_for
+
+    config_dir = Path(config.source_path).parent
+    parts = []
+    # Recorded like every other job. A job that runs without writing a job_run looks
+    # perpetually overdue and re-fires on every tick — which is what `prune` used to do.
+    with JobRun(conn, "backgrounds") as run:
+        for terminal in config.route.terminals:
+            if load_for(config_dir, terminal.code) is None:
+                continue
+            run.attempted += 1
+            stats = build_backgrounds(conn, config, terminal.code)
+            parts.append(f"{terminal.code} {stats.built} hour(s)")
+            if stats.thin:
+                parts[-1] += f", {stats.thin} too thin"
+            run.succeeded += 1
+    return ", ".join(parts) or "no calibrated terminals"
 
 
 def _scrape(conn, config: Config) -> str:
@@ -161,6 +189,7 @@ JOBS: tuple[Job, ...] = (
         _shore,
         enabled=lambda c: any(t.configured_for_weather for t in c.route.terminals),
     ),
+    Job("backgrounds", timedelta(hours=12), _backgrounds),
     Job("aggregate", timedelta(hours=1), _aggregate),
     Job("prune", timedelta(days=7), _prune),
 )

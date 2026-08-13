@@ -168,7 +168,16 @@ is, on a five-level band, which the same test tracked to within one band on ever
 There is now a third, cheaper source. The terminal cameras never move, so lane geometry is a
 constant of the installation: fit it once and each lane becomes a known set of pixels, read
 by differencing against the compound when it was empty. `ferrycast lanes` does that — no API
-call, and structurally unable to report a lane it cannot see. See `src/ferrycast/lanes.py`.
+call, and structurally unable to report a lane it cannot see.
+
+"When it was empty" is per hour, not once. A single reference cannot work across a day, let
+alone a year: differenced against a midday frame, a bare floodlit compound at 04:00 reports
+every lane occupied. So `ferrycast backgrounds` keeps one reference per hour, each the
+per-pixel median of that hour's frames over the last fortnight. The median needs no idea
+which frames were empty — for any pixel, asphalt is what is usually there and a vehicle is a
+passing event — and because it only ever looks back two weeks it follows the sun through the
+year on its own. It fails where a pixel is covered more than half the time, which is why a
+bucket with too few samples is refused rather than trusted. See `src/ferrycast/lanes.py`.
 Calibration is per camera and per terminal, and terminals are not alike: Saltery Bay looks
 down a lane grid, while Earls Cove faces the approach road and needs a different model
 entirely.
