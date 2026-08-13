@@ -377,3 +377,32 @@ def test_bands_and_transitions_reach_the_query_layer(conn, config):
     # Transitions are surfaced as local clock times, which is how a traveller reads them.
     assert sample.queue_started_local == "11:45"
     assert sample.cleared_local == "12:50"
+
+
+def test_the_arrival_curve_is_drawn_from_lanes_in_use(conn, config):
+    """The one feature built to answer "when do I need to arrive" returned nothing on this
+    route: its frame source wanted vehicle counts, which the extractors stopped producing on
+    purpose, and its fallback wanted a deck-space percentage this route has never published
+    once. Lanes are ordinal, comparable across days, and free."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_aggregate import _geom_frames
+
+    for day in fridays(4):
+        departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+        _geom_frames(
+            conn, config, departure,
+            [(-60, 1, "light"), (-30, 5, "moderate"), (-15, 9, "heavy"), (20, 0, "empty")],
+        )
+        aggregate_day(conn, config, day)
+
+    curve = arrival_curve(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    assert curve["source"] == "lanes"
+    assert curve["unit"] == "lanes in use"
+    by_minute = {p["minutes_before"]: p["median"] for p in curve["points"]}
+    # The build is the point: a reader should see how late the compound was still open.
+    assert by_minute[60] < by_minute[30] < by_minute[15]
+    assert all(p["n"] == 4 for p in curve["points"])

@@ -605,6 +605,70 @@ def test_the_board_saying_full_is_recorded_but_never_becomes_the_outcome(conn, c
     assert row["outcome"] == "boarded"
 
 
+def _geom_frames(conn, config, departure, readings, *, terminal="SLT"):
+    """Lay down geometric readings: (minutes relative to departure, lanes, band)."""
+    for offset, lanes, band in readings:
+        at = departure + timedelta(minutes=offset)
+        cur = conn.execute(
+            """INSERT INTO frames (route, terminal, captured_at, service_date, path, status)
+               VALUES (?, ?, ?, ?, ?, 'ok')""",
+            (config.route.id, terminal, iso(at), departure.date().isoformat(),
+             f"g{terminal}-{offset}.jpg"),
+        )
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
+                    fullness, ferry_at_dock, visibility, confidence, usable, created_at)
+               VALUES (?, 'geom-v1', 'lane-geometry', NULL, ?, ?, 0, 'clear', 0.8, 1, ?)""",
+            (cur.lastrowid, lanes, band, iso(now_utc())),
+        )
+    conn.commit()
+
+
+def test_geometric_readings_reach_aggregation(conn, config):
+    """They did not, and nothing said so. `_load_observations` filtered on the configured
+    *vision* prompt version, so every geometrically-read frame was invisible here and every
+    record stayed `unknown` — a whole extraction path feeding nothing."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(
+        conn, config, departure,
+        [(-45, 3, "light"), (-15, 8, "heavy"), (20, 0, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["peak_fullness"] == "heavy"
+    assert row["method"] == "frames:geom-v1"
+
+
+def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
+    """Both extractors can read one frame. Geometry wins: it is measured against known lane
+    positions rather than judged, and the model path's failure was calling a compound clear
+    while a queue stood in the lanes whose numbers are not painted in view."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(conn, config, departure, [(-15, 8, "heavy"), (20, 0, "empty")])
+    # the model, reading the same frames, saw an empty compound before departure
+    for frame_id, in conn.execute("SELECT id FROM frames").fetchall():
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, fullness,
+                    ferry_at_dock, visibility, confidence, usable, created_at)
+               VALUES (?, ?, 'claude-sonnet-5', NULL, 'empty', 0, 'clear', 0.9, 1, ?)""",
+            (frame_id, config.vision.prompt_version, iso(now_utc())),
+        )
+    conn.commit()
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["peak_fullness"] == "heavy"  # not the model's "empty"
+    assert row["method"] == "frames:geom-v1"
+
+
 def test_a_sailing_with_no_board_note_records_left_full_false_not_null(conn, config):
     day = date(2026, 8, 14)
     departure = _departure(config, day, "12:30")

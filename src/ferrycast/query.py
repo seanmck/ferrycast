@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 
 from .config import Config
 from .holidays import is_long_weekend
+from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from .schedule import Sailing, day_tags, day_type, load_schedule_cached, sailings_for_day, season
 from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
@@ -647,6 +648,7 @@ def arrival_curve(
         relevant = same_season
 
     buckets: dict[int, list[int]] = {}
+    lane_buckets: dict[int, list[int]] = {}
     deck_buckets: dict[int, list[int]] = {}
     for row in relevant:
         departure = datetime.fromisoformat(row["scheduled_departure"])
@@ -666,22 +668,40 @@ def arrival_curve(
                 bucket = (minutes_before // bucket_minutes) * bucket_minutes
                 deck_buckets.setdefault(bucket, []).append(deck["percent_available"])
 
-        observations = conn.execute(
-            """SELECT f.captured_at, o.vehicle_count
+        # Lanes in use, read from camera geometry. This is the curve's best source and the
+        # only one that works on this route: counts were dropped as a unit (an RV is not a
+        # hatchback, and the readings were unstable besides), and the deck-space percentage
+        # this function was written to fall back on has never once been published here — 2368
+        # rows, zero percentages. Lanes are ordinal, comparable across days, and free.
+        for obs in conn.execute(
+            """SELECT f.captured_at, o.lanes_occupied
                  FROM observations o
                  JOIN frames f ON f.id = o.frame_id
                 WHERE o.prompt_version = ? AND o.usable = 1
-                  AND o.vehicle_count IS NOT NULL
+                  AND o.lanes_occupied IS NOT NULL
                   AND f.terminal = ?
                   AND f.captured_at >= ? AND f.captured_at <= ?""",
-            (
-                config.vision.prompt_version,
-                origin,
-                iso(window_start),
-                iso(departure),
-            ),
-        ).fetchall()
-        for obs in observations:
+            (LANE_PROMPT_VERSION, origin, iso(window_start), iso(departure)),
+        ).fetchall():
+            minutes_before = int(
+                (departure - parse_iso(obs["captured_at"])).total_seconds() // 60
+            )
+            if minutes_before < 0:
+                continue
+            bucket = (minutes_before // bucket_minutes) * bucket_minutes
+            lane_buckets.setdefault(bucket, []).append(obs["lanes_occupied"])
+
+        # Frames read under a prompt that counted vehicles. Kept so the curve does not go
+        # blank for history collected before the geometry existed.
+        for obs in conn.execute(
+            """SELECT f.captured_at, o.vehicle_count
+                 FROM observations o
+                 JOIN frames f ON f.id = o.frame_id
+                WHERE o.usable = 1 AND o.vehicle_count IS NOT NULL
+                  AND f.terminal = ?
+                  AND f.captured_at >= ? AND f.captured_at <= ?""",
+            (origin, iso(window_start), iso(departure)),
+        ).fetchall():
             minutes_before = int(
                 (departure - parse_iso(obs["captured_at"])).total_seconds() // 60
             )
@@ -690,8 +710,10 @@ def arrival_curve(
             bucket = (minutes_before // bucket_minutes) * bucket_minutes
             buckets.setdefault(bucket, []).append(obs["vehicle_count"])
 
-    # Vehicle counts are the better signal when they exist; deck space is the free fallback.
-    if buckets:
+    # Lanes first, then counts, then deck space — best-supported measurement to weakest.
+    if lane_buckets:
+        source, unit, series, descending = "lanes", "lanes in use", lane_buckets, False
+    elif buckets:
         source, unit, series, descending = "frames", "vehicles waiting", buckets, False
     else:
         source, unit, series, descending = (

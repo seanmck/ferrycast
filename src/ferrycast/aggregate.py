@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta
 from .config import Config
 from .db import JobRun
 from .deckspace import notice_says_full
+from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
@@ -68,6 +69,8 @@ class _Obs:
     beyond_frame: bool
     confidence: float
     fullness: str | None = None
+    #: Which extractor produced this reading, so the record can say what it rests on.
+    source: str = ""
 
     @property
     def occupied(self) -> bool | None:
@@ -115,20 +118,44 @@ def _load_observations(
     *,
     usable_only: bool = True,
 ) -> list[_Obs]:
+    """Readings for this terminal's frames, geometry preferred over the model.
+
+    Both extractors write here, keyed by prompt version, and a frame can carry one of each.
+    Geometry wins where it exists: it is measured against known lane positions rather than
+    judged, so it cannot report a lane it is unable to see — which is exactly how the model
+    path went wrong, calling a compound clear while a queue stood in the lanes whose numbers
+    are not painted in view.
+
+    Filtering on `config.vision.prompt_version` alone, as this did, meant aggregation never
+    saw a geometric reading at all. Every frame was read and every record stayed `unknown`.
+    """
     sql = """
-        SELECT f.captured_at, o.vehicle_count, o.ferry_at_dock, o.queue_beyond_frame,
-               o.fullness, o.confidence, o.usable
+        SELECT o.frame_id, o.prompt_version, f.captured_at, o.vehicle_count, o.ferry_at_dock,
+               o.queue_beyond_frame, o.fullness, o.confidence, o.usable
           FROM observations o
           JOIN frames f ON f.id = o.frame_id
-         WHERE o.prompt_version = ?
+         WHERE o.prompt_version IN (?, ?)
            AND f.terminal = ?
            AND f.captured_at >= ?
            AND f.captured_at <= ?
     """
-    params = [config.vision.prompt_version, terminal, iso(start), iso(end)]
+    params = [
+        LANE_PROMPT_VERSION,
+        config.vision.prompt_version,
+        terminal,
+        iso(start),
+        iso(end),
+    ]
     if usable_only:
         sql += " AND o.usable = 1"
     sql += " ORDER BY f.captured_at"
+
+    best: dict[int, sqlite3.Row] = {}
+    for row in conn.execute(sql, tuple(params)).fetchall():
+        current = best.get(row["frame_id"])
+        if current is None or row["prompt_version"] == LANE_PROMPT_VERSION:
+            best[row["frame_id"]] = row
+
     return [
         _Obs(
             at=parse_iso(row["captured_at"]),
@@ -137,8 +164,9 @@ def _load_observations(
             beyond_frame=bool(row["queue_beyond_frame"]),
             confidence=float(row["confidence"] or 0.0),
             fullness=row["fullness"],
+            source=row["prompt_version"],
         )
-        for row in conn.execute(sql, tuple(params)).fetchall()
+        for row in sorted(best.values(), key=lambda r: r["captured_at"])
     ]
 
 
@@ -509,7 +537,8 @@ def compute_record(
         used = counted_before + after
 
     confidence = round(sum(o.confidence for o in used) / len(used), 3) if used else None
-    method = f"frames:{config.vision.prompt_version}"
+    sources = {o.source for o in used if o.source}
+    method = f"frames:{'+'.join(sorted(sources))}" if sources else "frames:none"
     filled_at = None
 
     # Frames, when we have them, measure the thing that actually matters — vehicles waiting
