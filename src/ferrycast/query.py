@@ -220,6 +220,58 @@ def _fetch_candidates(
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
+def _capacity_tally(
+    conn: sqlite3.Connection,
+    route: str,
+    origin: str,
+    level: _Level,
+    *,
+    target_season: str,
+    target_minutes: int,
+    target_long_weekend: bool,
+    exclude_date: str | None,
+    cap: int,
+) -> tuple[int, int, int]:
+    """How often the board reported comparable sailings at capacity.
+
+    Computed over comparable sailings directly, not over the outcome-filtered samples. The
+    board's account of the deck does not depend on the camera having managed to classify the
+    crossing, and tying it to that was self-defeating: the whole value of this signal is that
+    it accrues immediately while everything camera-derived is still catching up. On the day
+    it shipped the board had flagged five sailings at capacity and the page could show none
+    of them, because all five were still `unknown`.
+
+    Returns (at capacity, sailings the board spoke about, sailings it did not).
+    """
+    placeholders = ",".join("?" for _ in level.day_types)
+    sql = f"""
+        SELECT s.service_date, s.depart_hhmm, r.left_full
+          FROM sailings s
+          JOIN sailing_records r ON r.sailing_id = s.id
+         WHERE s.route = ? AND s.origin = ? AND s.day_type IN ({placeholders})
+    """
+    params: list = [route, origin, *level.day_types]
+    if level.same_season:
+        sql += " AND s.season = ?"
+        params.append(target_season)
+    if exclude_date:
+        sql += " AND s.service_date != ?"
+        params.append(exclude_date)
+    sql += " ORDER BY s.service_date DESC"
+
+    rows = [
+        row
+        for row in conn.execute(sql, tuple(params)).fetchall()
+        if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= level.tolerance
+        and (
+            not level.same_long_weekend
+            or is_long_weekend(date.fromisoformat(row["service_date"])) == target_long_weekend
+        )
+    ][:cap]
+    spoke = [row for row in rows if row["left_full"] is not None]
+    return sum(1 for row in spoke if row["left_full"]), len(spoke), len(rows) - len(spoke)
+
+
 def _candidate_reader(conn: sqlite3.Connection, route: str, origin: str, exclude_date: str | None):
     """A `_fetch_candidates` that answers each distinct bucket once.
 
@@ -362,7 +414,17 @@ def query_distribution(
 
     evidence = _evidence_of({row["method"] for row in matches})
 
-    spoke = [s for s in samples if s.left_full is not None]
+    at_capacity, capacity_of, capacity_unknown = _capacity_tally(
+        conn,
+        route.id,
+        origin,
+        used,
+        target_season=target_season,
+        target_minutes=target_minutes,
+        target_long_weekend=target_long_weekend,
+        exclude_date=target_date.isoformat(),
+        cap=cap,
+    )
 
     return Distribution(
         origin=origin,
@@ -382,9 +444,9 @@ def query_distribution(
         sufficient=n >= config.query.min_sample,
         evidence=evidence,
         evidence_note=EVIDENCE_NOTES.get(evidence, ""),
-        at_capacity=sum(1 for s in spoke if s.left_full),
-        at_capacity_of=len(spoke),
-        at_capacity_unknown=len(samples) - len(spoke),
+        at_capacity=at_capacity,
+        at_capacity_of=capacity_of,
+        at_capacity_unknown=capacity_unknown,
         typical_fill_minutes_before=typical_gap,
         typical_fill_local=typical_local,
         filled_share=round(

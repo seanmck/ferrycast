@@ -896,8 +896,28 @@
   {% endif %}
 {% endif %}
 
+{% macro capacity_card(d) %}
+  {# The board's own account of the deck, which no camera can see. Rendered in both branches
+     on purpose: it depends on neither the camera nor a stock of known outcomes, so gating it
+     behind those made the one signal that accrues immediately the last one to appear. #}
+  {% if d and d.at_capacity_of %}
+  <section class="card">
+    <p class="label">What the board said</p>
+    <div class="capline">
+      <span class="pct">{{ (d.at_capacity_share * 100) | round | int }}%</span>
+      <span>left at capacity</span>
+    </div>
+    <p class="note">{{ d.at_capacity }} of the {{ d.at_capacity_of }} comparable sailing{{ '' if d.at_capacity_of == 1 else 's' }} the board reported on{% if d.at_capacity_unknown %}. {{ d.at_capacity_unknown }} had no reading{% endif %}.</p>
+    <p class="note">Loading to capacity is not the same as leaving someone behind — a
+      sailing can fill and still take everyone, which is the tightest kind of success and
+      the one nothing else can show you.</p>
+  </section>
+  {% endif %}
+{% endmacro %}
+
 {% if distribution and distribution.n %}
   {% set d = distribution %}
+  {{ capacity_card(d) }}
   {# `filled` belongs in this number. It means the vessel ran out of room, so counting only
      waited_1 and waited_2plus produced "0% waited at least one sailing" directly above
      "1 filled up" — two lines of the same panel contradicting each other. The wording is
@@ -1082,22 +1102,6 @@
       means the queue ran past the edge of the camera frame.</p>
   </details>
 
-  {# The board's own account of the deck, which no camera can see. It needs neither the
-     camera nor depth of history, so it can say something while the rest is still filling. #}
-  {% if d.at_capacity_of %}
-  <section class="card">
-    <p class="label">What the board said</p>
-    <div class="capline">
-      <span class="pct">{{ (d.at_capacity_share * 100) | round | int }}%</span>
-      <span>left at capacity</span>
-    </div>
-    <p class="note">{{ d.at_capacity }} of the {{ d.at_capacity_of }} comparable sailing{{ '' if d.at_capacity_of == 1 else 's' }} the board reported on{% if d.at_capacity_unknown %}. {{ d.at_capacity_unknown }} had no reading{% endif %}.</p>
-    <p class="note">Loading to capacity is not the same as leaving someone behind — a
-      sailing can fill and still take everyone, which is the tightest kind of success and
-      the one nothing else can show you.</p>
-  </section>
-  {% endif %}
-
   <details id="curve-box">
     <summary class="btn btn-quiet">When did the queue build?</summary>
     <div id="curve-body"><p class="note">Loading…</p></div>
@@ -1105,6 +1109,7 @@
 
 {% elif selected_time %}
   {% set c = collection %}
+  {{ capacity_card(distribution) }}
   <section class="card">
     <p class="label">No history yet</p>
     <p class="note">This slot is answered from <em>past</em> comparable sailings, and there are
