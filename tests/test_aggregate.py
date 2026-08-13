@@ -568,3 +568,55 @@ def test_a_queue_with_no_departure_is_only_a_cancellation_where_the_berth_is_vis
     )
     assert blind == "unknown"
     assert (seeing, cancelled) == ("cancelled", True)
+
+
+def test_the_board_saying_full_is_recorded_but_never_becomes_the_outcome(conn, config):
+    """Two claims that must not be blurred. "We loaded as many as would fit" describes the
+    deck, which no camera sees. "Somebody was left on the tarmac" describes the compound,
+    which no board sees. Only the second is an overload — but a sailing that filled AND
+    cleared is the one you would have made by a margin nothing else can show."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure,
+        [(-45, "moderate"), (-15, "heavy"), (20, "empty")],
+    )
+    for minutes in (40, 10):
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    status_text, departed_hhmm, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30', ?, '12:41', 'ok')""",
+            (
+                config.route.id,
+                iso(departure - timedelta(minutes=minutes)),
+                day.isoformat(),
+                "Departed 12:41 pm Malaspina Sky Peak travel. Loading maximum "
+                "number of vehicles",
+            ),
+        )
+    conn.commit()
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["left_full"] == 1
+    # The compound cleared, so everyone got on. Loading to capacity did not change that.
+    assert row["outcome"] == "boarded"
+
+
+def test_a_sailing_with_no_board_note_records_left_full_false_not_null(conn, config):
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(conn, config, departure, [(-30, "light"), (20, "empty")])
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                status_text, fetch_status)
+           VALUES (?, 'SLT', ?, ?, '12:30', 'Malaspina Sky Upcoming', 'ok')""",
+        (config.route.id, iso(departure - timedelta(minutes=20)), day.isoformat()),
+    )
+    conn.commit()
+
+    aggregate_day(conn, config, day)
+    assert _record_for(conn)["left_full"] == 0

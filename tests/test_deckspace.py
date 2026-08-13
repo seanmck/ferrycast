@@ -1,4 +1,4 @@
-from ferrycast.deckspace import parse_deck_space, scrape_once
+from ferrycast.deckspace import notice_says_full, parse_deck_space, scrape_once
 
 AVAILABLE_PAGE = """
 <html><body>
@@ -141,3 +141,46 @@ def test_one_terminals_sailings_are_not_recorded_against_the_other(conn, config,
         "SELECT raw FROM deck_space WHERE terminal = 'ERL' AND fetch_status = 'unparsed'"
     ).fetchone()
     assert raw and "12:30" in raw[0]
+
+
+# --- the operator's note about how a sailing loaded --------------------------------------
+
+BOARD_TWICE = """
+<html><body>
+  11:45 am Departed 12:03 pm Malaspina Sky
+  11:45 am Departed 12:03 pm Malaspina Sky Arrived: 12:47 pm
+     Peak travel. Loading maximum number of vehicles
+  2:30 pm Malaspina Sky Upcoming
+  Last updated: 9:27 PM Refresh details Book to guarantee your spot
+</body></html>
+"""
+
+
+def test_the_note_survives_the_boards_habit_of_printing_each_sailing_twice():
+    """The board prints a terse line then a fuller one carrying the arrival time and the
+    operator's note. Keeping the first and discarding the rest threw the note away every
+    time — across 2368 stored rows not one carried it, though the page publishes it daily."""
+    rows = parse_deck_space(BOARD_TWICE, expected={"11:45", "14:30"})
+    by_time = {r.sailing_hhmm: r for r in rows}
+
+    assert notice_says_full(by_time["11:45"].status_text)
+    # and the merge keeps what the terse line had, rather than trading one for the other
+    assert by_time["11:45"].departed_hhmm == "12:03"
+
+
+def test_page_furniture_is_not_read_as_a_note_about_a_sailing():
+    """The last sailing has no following time to stop at, so its segment runs into the page
+    chrome. A phrase match over that would eventually find something it should not."""
+    rows = parse_deck_space(BOARD_TWICE, expected={"11:45", "14:30"})
+    last = {r.sailing_hhmm: r for r in rows}["14:30"]
+    assert "Last updated" not in (last.status_text or "")
+    assert "Book to guarantee" not in (last.status_text or "")
+
+
+def test_loading_to_capacity_is_not_the_same_claim_as_leaving_someone_behind():
+    """Kept apart deliberately. The note describes the deck; whether anyone was turned away
+    is about the compound. Only the second is an overload."""
+    assert notice_says_full("Peak travel. Loading maximum number of vehicles")
+    assert not notice_says_full("Departed 2:49 pm Malaspina Sky Arrived: 3:39 pm")
+    assert not notice_says_full(None)
+    assert not notice_says_full("cancelled")

@@ -117,6 +117,11 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     residual_fullness     TEXT,   -- the band once the vessel had actually gone
     queue_started_at      TEXT,   -- first frame with anything queued at all (UTC)
     cleared_at            TEXT,   -- first empty frame after departure (UTC)
+    -- The board's own "Loading maximum number of vehicles" for this sailing. It describes
+    -- the deck, which no camera can see. Stored separately from `outcome` on purpose: it is
+    -- not evidence that anyone was turned away, and pairing it with whether the compound
+    -- cleared is what makes it worth having.
+    left_full             INTEGER,
     method             TEXT,                 -- frames:<prompt_version> | deck_space | import:<source>
     computed_at        TEXT NOT NULL
 );
