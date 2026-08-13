@@ -86,6 +86,9 @@ class ComparableSailing:
     peak_fullness: str | None = None
     queue_started_local: str | None = None
     cleared_local: str | None = None
+    #: The board reported this sailing loading to capacity. None means it never said —
+    #: which is not the same as "no", and must not be shown as one.
+    left_full: bool | None = None
     filled_at_local: str | None = None
     fill_minutes_before: int | None = None
     evidence: str = "unknown"
@@ -116,10 +119,23 @@ class Distribution:
     typical_fill_minutes_before: int | None = None
     typical_fill_local: str | None = None
     filled_share: float = 0.0
+    # How often the board reported the vessel loading to capacity. `at_capacity_of` counts
+    # only the sailings it actually spoke about: a sailing it never mentioned is not a
+    # sailing that went with room to spare, and folding the two together would report a
+    # comfortable crossing on no evidence at all.
+    at_capacity: int = 0
+    at_capacity_of: int = 0
+    at_capacity_unknown: int = 0
+
+    @property
+    def at_capacity_share(self) -> float:
+        return (self.at_capacity / self.at_capacity_of) if self.at_capacity_of else 0.0
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["labels"] = OUTCOME_LABELS
+        # `asdict` copies fields, not properties, and the template is handed the dict.
+        data["at_capacity_share"] = self.at_capacity_share
         return data
 
 
@@ -185,7 +201,7 @@ def _fetch_candidates(
         SELECT s.service_date, s.depart_hhmm, s.day_type, s.season, s.scheduled_departure,
                r.outcome, r.peak_queue, r.queue_at_departure, r.carryover,
                r.confidence, r.queue_truncated, r.filled_at, r.method,
-               r.peak_fullness, r.queue_started_at, r.cleared_at
+               r.peak_fullness, r.queue_started_at, r.cleared_at, r.left_full
           FROM sailings s
           JOIN sailing_records r ON r.sailing_id = s.id
          WHERE s.route = ?
@@ -346,6 +362,8 @@ def query_distribution(
 
     evidence = _evidence_of({row["method"] for row in matches})
 
+    spoke = [s for s in samples if s.left_full is not None]
+
     return Distribution(
         origin=origin,
         destination=terminal.destination,
@@ -364,6 +382,9 @@ def query_distribution(
         sufficient=n >= config.query.min_sample,
         evidence=evidence,
         evidence_note=EVIDENCE_NOTES.get(evidence, ""),
+        at_capacity=sum(1 for s in spoke if s.left_full),
+        at_capacity_of=len(spoke),
+        at_capacity_unknown=len(samples) - len(spoke),
         typical_fill_minutes_before=typical_gap,
         typical_fill_local=typical_local,
         filled_share=round(
@@ -444,6 +465,7 @@ def _sample(conn: sqlite3.Connection, config: Config, row: sqlite3.Row) -> Compa
         peak_fullness=row["peak_fullness"],
         queue_started_local=_local_hhmm(row["queue_started_at"], config),
         cleared_local=_local_hhmm(row["cleared_at"], config),
+        left_full=None if row["left_full"] is None else bool(row["left_full"]),
         filled_at_local=filled_local,
         fill_minutes_before=gap,
         evidence=_evidence_of({row["method"]}),

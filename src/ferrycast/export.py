@@ -29,7 +29,7 @@ SAILING_EXPORT_SQL = """
            r.carryover, r.overload, r.cancelled, r.n_frames, r.confidence,
            r.queue_truncated, r.deck_space_min, r.method,
            r.peak_fullness, r.fullness_at_departure, r.residual_fullness,
-           r.queue_started_at, r.cleared_at, r.computed_at
+           r.queue_started_at, r.cleared_at, r.left_full, r.computed_at
       FROM sailings s
       LEFT JOIN sailing_records r ON r.sailing_id = s.id
 """

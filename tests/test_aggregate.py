@@ -3,7 +3,7 @@
 from datetime import date, datetime, timedelta
 
 from ferrycast.aggregate import aggregate_day, classify, classify_from_bands
-from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm
+from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm, parse_iso
 
 from .conftest import add_observation, build_sailing_frames
 
@@ -684,3 +684,42 @@ def test_a_sailing_with_no_board_note_records_left_full_false_not_null(conn, con
 
     aggregate_day(conn, config, day)
     assert _record_for(conn)["left_full"] == 0
+
+
+def test_the_clear_is_the_transition_not_a_later_confirmation(conn, config):
+    """The compound empties while the vessel loads, before it goes. On 2026-08-12 the tarmac
+    was bare at 12:00 and the 11:45 departed at 12:03.
+
+    This searched from twelve minutes *after* departure, so it could only ever return a time
+    later than the sailing left — a page showing both read as nonsense. At a 15-minute cadence
+    the error hid, because no frame fell between the last occupied one and departure.
+    """
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure,
+        # busy, then bare five minutes BEFORE departure, and still bare afterwards
+        [(-20, "heavy"), (-10, "heavy"), (-5, "empty"), (10, "empty"), (25, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    cleared = _record_for(conn)["cleared_at"]
+    assert cleared == iso(departure - timedelta(minutes=5))
+    assert parse_iso(cleared) < departure
+
+
+def test_a_compound_that_never_empties_has_no_clear(conn, config):
+    """Which is what an overload looks like, and what the residual is there to catch."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure,
+        [(-30, "heavy"), (-10, "heavy"), (20, "light"), (35, "light")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["cleared_at"] is None
+    assert row["residual_fullness"] == "light"
