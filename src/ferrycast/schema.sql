@@ -100,7 +100,13 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     carryover          INTEGER,
     overload           INTEGER,              -- 0/1
     cancelled          INTEGER,              -- 0/1
-    outcome            TEXT NOT NULL,        -- boarded | waited_1 | waited_2plus | cancelled | unknown
+    outcome            TEXT NOT NULL,        -- boarded | waited_1 | waited_2plus | filled | cancelled | unknown
+    -- The two claims `outcome` is a summary of. They are orthogonal, and each has its own
+    -- witness: only the board can say the vessel loaded to capacity, only a camera residual
+    -- or somebody in the line can say a vehicle was left on the tarmac. NULL is a real
+    -- answer — "no one has said" — and the page renders it as one rather than as a no.
+    filled             INTEGER,              -- 0/1/NULL: did the vessel run out of room?
+    left_behind        INTEGER,              -- 0/1/NULL: was anyone provably left behind?
     n_frames           INTEGER NOT NULL DEFAULT 0,
     confidence         REAL,
     queue_truncated    INTEGER NOT NULL DEFAULT 0,

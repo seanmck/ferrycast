@@ -624,7 +624,7 @@ def cmd_import_records(args) -> int:
     """Seed history from a hand-built CSV (known overload days, spreadsheet exports)."""
     import csv
 
-    from .aggregate import SailingRecord, store_record, upsert_sailings
+    from .aggregate import SailingRecord, axes_from_outcome, store_record, upsert_sailings
     from .schedule import Sailing, day_type, season
     from .timeutil import combine_local, parse_hhmm
 
@@ -671,6 +671,10 @@ def cmd_import_records(args) -> int:
                 (origin, departure.isoformat()),
             ).fetchone()["id"]
             carryover = row.get("carryover")
+            # A hand-built CSV carries one word per sailing, so the axes have to be read back
+            # out of it. Lossy in the one direction that does not matter here: an imported
+            # `boarded` never claimed to distinguish "had room" from "took everyone".
+            imported_filled, imported_left_behind = axes_from_outcome(outcome)
             store_record(
                 conn,
                 SailingRecord(
@@ -682,6 +686,8 @@ def cmd_import_records(args) -> int:
                     overload=outcome in ("waited_1", "waited_2plus"),
                     cancelled=outcome == "cancelled",
                     outcome=outcome,
+                    filled=imported_filled,
+                    left_behind=imported_left_behind,
                     n_frames=0,
                     confidence=None,
                     queue_truncated=False,

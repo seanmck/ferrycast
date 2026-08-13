@@ -5,13 +5,25 @@ straight from the PRD: given frames before and after a scheduled departure, if t
 does not drop near zero afterwards, the sailing was overloaded and the remaining vehicles
 are the carryover.
 
-The outcome vocabulary matches what the query UI reports:
+A record carries two orthogonal claims rather than one overloaded word:
 
-    boarded      — the queue cleared; a traveller in it made this sailing
-    waited_1     — overloaded, but the carryover fits the next sailing
+    filled       — did the vessel run out of room? Only the board can attest this.
+    left_behind  — was anyone provably left on the tarmac? Only a camera residual or
+                   somebody who was in the line can attest this.
+
+Both are three-valued: None means nobody has said, which is not "no". Keeping them apart is
+what lets the page distinguish a sailing that filled and still took everyone — the tightest
+kind of success, and the one nothing else can show — from one that turned people away.
+
+`outcome` is derived from the pair and kept for everything that reads a single word (the day
+board, the export, the CLI, an imported CSV of outcomes):
+
+    boarded      — had room, or the queue cleared; a traveller in it made this sailing
+    filled       — ran out of room, with no count of who waited
+    waited_1     — left behind, and the carryover fits the next sailing
     waited_2plus — carryover exceeds one vessel's capacity
     cancelled    — a queue persisted and no vessel ever appeared
-    unknown      — not enough usable frames to say (night, fog, capture gap)
+    unknown      — neither axis has an answer (night, fog, capture gap)
 """
 
 from __future__ import annotations
@@ -57,8 +69,12 @@ class SailingRecord:
     residual_fullness: str | None = None
     queue_started_at: str | None = None
     cleared_at: str | None = None
-    #: The board reported this sailing as loading to capacity. Never feeds `outcome`.
+    #: The board's capacity notice, verbatim from the feed. `filled` supersedes it as the
+    #: page-facing field; this stays because it says *the board* is the one who said so.
     left_full: bool | None = None
+    #: The two axes. None on either means no source was entitled to speak to it.
+    filled: bool | None = None
+    left_behind: bool | None = None
 
 
 @dataclass
@@ -427,6 +443,48 @@ def classify_from_bands(
     return "filled", True, False, None
 
 
+def outcome_from_axes(
+    *,
+    filled: bool | None,
+    left_behind: bool | None,
+    cancelled: bool,
+    waited: str | None = None,
+) -> str:
+    """The one `outcome` word the two axes add up to.
+
+    Derived rather than asserted, so the column and the axes can never disagree. Note that a
+    sailing which filled and still took everyone is `filled`: it did run out of room, and the
+    headline that counts those is answering "will there be room", not "did anyone miss it".
+    Which of the two it was is the `left_behind` axis' business, and the page states it there.
+    """
+    if cancelled:
+        return "cancelled"
+    if waited in ("waited_1", "waited_2plus"):
+        return waited
+    if filled:
+        return "filled"
+    if filled is False or left_behind is False:
+        return "boarded"
+    return "unknown"
+
+
+def axes_from_outcome(outcome: str) -> tuple[bool | None, bool | None]:
+    """(filled, left_behind) implied by an `outcome` word alone — the lossy direction.
+
+    Only for records whose axis columns were never written: history imported from a CSV of
+    outcomes, and databases aggregated before the split. `boarded` collapses two different
+    situations — the board seeing space, and the camera seeing the compound empty — into
+    "had room and took everyone", which is what the single-word vocabulary always implied.
+    """
+    if outcome in ("waited_1", "waited_2plus"):
+        return True, True
+    if outcome == "filled":
+        return True, None
+    if outcome == "boarded":
+        return False, False
+    return None, None
+
+
 def compute_record(
     conn: sqlite3.Connection,
     config: Config,
@@ -480,11 +538,12 @@ def compute_record(
     residual = after[0].vehicle_count if after else None
     residual_fullness = banded_after[0].fullness if banded_after else None
 
-    # What the board said about the deck. Kept beside the camera's view of the compound
-    # rather than folded into the outcome: "we loaded as many as would fit" and "somebody
-    # was left standing on the tarmac" are different claims, and only the second is an
-    # overload. Held together they say something neither can — a sailing that filled AND
-    # cleared is the one you would have made by a margin nobody can otherwise see.
+    # What the board said about the deck. It speaks to `filled` and never to `left_behind`:
+    # "we loaded as many as would fit" and "somebody was left standing on the tarmac" are
+    # different claims, and the feed cannot see the approach road to make the second. Held
+    # against the camera's view of the compound the pair say something neither can — a
+    # sailing that filled AND cleared is the one you would have made by a margin nobody
+    # can otherwise see.
     board_series = _deck_space_series(
         conn,
         sailing_row["route"],
@@ -534,7 +593,7 @@ def compute_record(
     # Bands are preferred where they exist. A count is the older contract and the weaker
     # measurement — it survives only so that frames read under prompt v1 keep their meaning.
     if banded_before or banded_after:
-        outcome, overload, cancelled, carryover = classify_from_bands(
+        camera, _, cancelled, carryover = classify_from_bands(
             residual_fullness=residual_fullness,
             fullness_at_departure=fullness_at_departure,
             departure_seen=departure_seen,
@@ -543,7 +602,7 @@ def compute_record(
         )
         used = banded_before + banded_after
     else:
-        outcome, overload, cancelled, carryover = classify(
+        camera, _, cancelled, carryover = classify(
             residual=residual,
             queue_at_departure=queue_at_departure,
             departure_seen=departure_seen,
@@ -554,35 +613,62 @@ def compute_record(
         )
         used = counted_before + after
 
+    # ---- Merge by claim, not by source ---------------------------------------------------
+    #
+    # Every source below writes only the axis it can actually witness, which is what stops
+    # them competing to own one word. The old shape let whichever spoke last win outright,
+    # and the last speaker was the report — so somebody saying "I got on" erased a fill the
+    # board had watched happen and cleared the overload with it.
+    filled: bool | None = None
+    left_behind: bool | None = None
+    waited: str | None = None  # the waited_1/waited_2plus refinement of left_behind
+
+    # The camera. A residual queue after the vessel has gone is the one direct sight of
+    # somebody left behind, and it implies the fill. A cleared compound proves the opposite
+    # about the people and nothing at all about the deck: a vessel can load to the last
+    # metre and still take everyone, so `filled` stays unknown rather than becoming False.
+    if camera in ("waited_1", "waited_2plus"):
+        filled, left_behind, waited = True, True, camera
+    elif camera == "filled":
+        filled, left_behind = True, True
+    elif camera == "boarded":
+        left_behind = False
+
     confidence = round(sum(o.confidence for o in used) / len(used), 3) if used else None
     sources = {o.source for o in used if o.source}
     method = f"frames:{'+'.join(sorted(sources))}" if sources else "frames:none"
-    filled_at = None
 
-    # Frames, when we have them, measure the thing that actually matters — vehicles waiting
-    # outside the terminal. Falling back to deck space keeps the historical record alive
-    # for every other sailing at no cost, at the price of a coarser answer.
-    if outcome == "unknown":
-        series = _deck_space_series(
-            conn,
-            sailing_row["route"],
-            sailing_row["origin"],
-            sailing_row["service_date"],
-            sailing_row["depart_hhmm"],
-        )
-        derived, filled_at, derived_confidence = classify_from_deck_space(series, departure)
-        if derived != "unknown":
-            outcome = derived
-            cancelled = derived == "cancelled"
-            overload = derived == "filled"
-            confidence = derived_confidence
-            method = "deck_space"
+    # The board, always — not only where the camera came up empty, as this used to be. It is
+    # the only source that can say *when* a sailing filled, and `filled_at` is what the
+    # "arrive before" advice is made of, so skipping the read whenever frames happened to
+    # classify the crossing threw away the more useful half of the reading.
+    deck, filled_at, deck_confidence = classify_from_deck_space(board_series, departure)
+    if deck == "filled":
+        filled = True
+    elif deck == "boarded" and filled is None:
+        # Saying "had space" needs a reading near departure — `classify_from_deck_space`
+        # holds that bar — and it can only ever fill a gap, never overturn a fill somebody
+        # else witnessed.
+        filled = False
+    elif deck == "cancelled":
+        cancelled = True
 
-    # Somebody who was in that queue outranks both machines: they observed the one thing
-    # this whole pipeline is inferring. So a report settles the outcome whatever else spoke.
+    # A capacity notice counts whatever the readings did. It appears on the board's second
+    # line once the vessel has gone, long after the last percentage, so a gap in the series
+    # is no reason to discount it — affirmative evidence does not expire, and a percentage
+    # taken before the rush is not evidence against it.
+    if left_full:
+        filled = True
+
+    if camera == "unknown" and (deck != "unknown" or left_full):
+        confidence = deck_confidence if deck_confidence is not None else 0.7
+        method = "deck_space"
+
+    # Somebody who was in that queue outranks both machines on the axis they can speak to:
+    # they observed the one thing this whole pipeline is inferring.
     #
-    # What it must not settle is `filled_at`. A traveller who joined at 11:20 and did not
-    # get on proves the cutoff was *earlier* than 11:20 — treating their arrival as the
+    # What a report must not settle is `filled_at`. A traveller who joined at 11:20 and did
+    # not get on proves the cutoff was *earlier* than 11:20 — treating their arrival as the
     # cutoff would tell the next traveller they can turn up later than they really can,
     # which is the one direction this app is not allowed to be wrong in. Deck space keeps
     # that job; the bound the report does establish is shown on the page instead.
@@ -595,22 +681,29 @@ def compute_record(
     )
     reported = outcome_from_reports(reports)
     if reported:
-        outcome = reported
-        overload = reported == "filled"
+        # Whoever filed it was standing there, so the sailing ran.
         cancelled = False
+        if reported == "boarded":
+            # Boarding proves the reporter got on and nothing whatever about the people
+            # behind them. So it may lift `unknown`, and it may resolve a fill into "took
+            # everyone" — the two facts are true at once — but it never un-fills a sailing.
+            if left_behind is None:
+                left_behind = False
+        else:
+            filled, left_behind = True, True
+            waited = reported if reported in ("waited_1", "waited_2plus") else None
         confidence = report_confidence(reports)
         method = "report"
-        if outcome == "filled" and filled_at is None:
-            _, filled_at, _ = classify_from_deck_space(
-                _deck_space_series(
-                    conn,
-                    sailing_row["route"],
-                    sailing_row["origin"],
-                    sailing_row["service_date"],
-                    sailing_row["depart_hhmm"],
-                ),
-                departure,
-            )
+
+    # A cancelled sailing has no deck to fill and no line to turn away. Leaving stale axes
+    # on it would put it in both the cancelled column and the filled one.
+    if cancelled:
+        filled = left_behind = None
+        waited = None
+
+    outcome = outcome_from_axes(
+        filled=filled, left_behind=left_behind, cancelled=cancelled, waited=waited
+    )
 
     return SailingRecord(
         sailing_id=sailing_row["id"],
@@ -618,7 +711,9 @@ def compute_record(
         queue_at_departure=queue_at_departure,
         residual_queue=residual,
         carryover=carryover,
-        overload=overload,
+        # An overload is people left on the tarmac, which is the `left_behind` axis and only
+        # ever that. A vessel loading to capacity is not one.
+        overload=bool(left_behind),
         cancelled=cancelled,
         outcome=outcome,
         n_frames=len(observations),
@@ -631,6 +726,8 @@ def compute_record(
         fullness_at_departure=fullness_at_departure,
         residual_fullness=residual_fullness,
         left_full=left_full,
+        filled=filled,
+        left_behind=left_behind,
         queue_started_at=_first_occupied_at(before),
         cleared_at=_cleared_at(observations, settle_from),
     )
@@ -642,8 +739,9 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
                (sailing_id, peak_queue, queue_at_departure, residual_queue, carryover,
                 overload, cancelled, outcome, n_frames, confidence, queue_truncated,
                 deck_space_min, filled_at, method, peak_fullness, fullness_at_departure,
-                residual_fullness, queue_started_at, cleared_at, left_full, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                residual_fullness, queue_started_at, cleared_at, left_full,
+                filled, left_behind, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.sailing_id,
             record.peak_queue,
@@ -665,6 +763,8 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
             record.queue_started_at,
             record.cleared_at,
             None if record.left_full is None else int(record.left_full),
+            None if record.filled is None else int(record.filled),
+            None if record.left_behind is None else int(record.left_behind),
             iso(now_utc()),
         ),
     )

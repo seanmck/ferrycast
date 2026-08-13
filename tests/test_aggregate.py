@@ -570,11 +570,12 @@ def test_a_queue_with_no_departure_is_only_a_cancellation_where_the_berth_is_vis
     assert (seeing, cancelled) == ("cancelled", True)
 
 
-def test_the_board_saying_full_is_recorded_but_never_becomes_the_outcome(conn, config):
+def test_the_board_saying_full_fills_the_sailing_without_leaving_anyone_behind(conn, config):
     """Two claims that must not be blurred. "We loaded as many as would fit" describes the
     deck, which no camera sees. "Somebody was left on the tarmac" describes the compound,
-    which no board sees. Only the second is an overload — but a sailing that filled AND
-    cleared is the one you would have made by a margin nothing else can show."""
+    which no board sees. Only the second is an overload — and a sailing that filled AND
+    cleared is the one you would have made by a margin nothing else can show, which needs
+    both axes to be sayable at once."""
     day = date(2026, 8, 14)
     departure = _departure(config, day, "12:30")
     _band_frames(
@@ -601,8 +602,11 @@ def test_the_board_saying_full_is_recorded_but_never_becomes_the_outcome(conn, c
     row = _record_for(conn)
 
     assert row["left_full"] == 1
-    # The compound cleared, so everyone got on. Loading to capacity did not change that.
-    assert row["outcome"] == "boarded"
+    assert row["filled"] == 1
+    # The compound cleared, so everyone got on. The vessel still ran out of room.
+    assert row["left_behind"] == 0
+    assert row["overload"] == 0
+    assert row["outcome"] == "filled"
 
 
 def _geom_frames(conn, config, departure, readings, *, terminal="SLT"):
@@ -667,6 +671,33 @@ def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
 
     assert row["peak_fullness"] == "heavy"  # not the model's "empty"
     assert row["method"] == "frames:geom-v1"
+
+
+def test_a_capacity_notice_alone_is_enough_to_say_a_sailing_filled(conn, config):
+    """No percentages, no frames, one line of board text — and it is affirmative evidence,
+    so it does not need a reading near departure to back it up. The notice appears on the
+    board's second line once the vessel has gone, after the last percentage would have been
+    published, which is exactly the shape of series the "had space" rule refuses to read."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                status_text, fetch_status)
+           VALUES (?, 'SLT', ?, ?, '12:30',
+                   'Departed 12:41 pm Peak travel. Loading maximum number of vehicles', 'ok')""",
+        (config.route.id, iso(departure + timedelta(minutes=15)), day.isoformat()),
+    )
+    conn.commit()
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["filled"] == 1
+    # Nobody watched the approach road, so the page must not claim either way.
+    assert row["left_behind"] is None
+    assert row["outcome"] == "filled"
+    assert row["method"] == "deck_space"
 
 
 def test_a_sailing_with_no_board_note_records_left_full_false_not_null(conn, config):

@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 
+from .aggregate import axes_from_outcome
 from .config import Config
 from .holidays import is_long_weekend
 from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
@@ -89,6 +90,10 @@ class ComparableSailing:
     #: The board reported this sailing loading to capacity. None means it never said —
     #: which is not the same as "no", and must not be shown as one.
     left_full: bool | None = None
+    #: The two axes, per sailing, so a listed date carries the same facts the summary is
+    #: built from rather than a second account of them.
+    filled: bool | None = None
+    left_behind: bool | None = None
     filled_at_local: str | None = None
     fill_minutes_before: int | None = None
     evidence: str = "unknown"
@@ -118,24 +123,27 @@ class Distribution:
     # the "how late could I turn up" answer, free from the deck-space feed.
     typical_fill_minutes_before: int | None = None
     typical_fill_local: str | None = None
+    #: The share that ran out of room, whether or not anyone was left behind by it.
     filled_share: float = 0.0
-    # How often the board reported the vessel loading to capacity. `at_capacity_of` counts
-    # only the sailings it actually spoke about: a sailing it never mentioned is not a
-    # sailing that went with room to spare, and folding the two together would report a
-    # comfortable crossing on no evidence at all.
-    at_capacity: int = 0
-    at_capacity_of: int = 0
-    at_capacity_unknown: int = 0
-
-    @property
-    def at_capacity_share(self) -> float:
-        return (self.at_capacity / self.at_capacity_of) if self.at_capacity_of else 0.0
+    # The sailing axis: what the board can attest about every sailing, and the three
+    # segments of the bar. They sum to `n`.
+    had_space: int = 0
+    filled: int = 0
+    cancelled: int = 0
+    # The person axis, which refines `filled` and nothing else. These three sum to `filled`.
+    # `unresolved` is the honest third state — the vessel ran out of room and nobody has
+    # said whether that cost anyone their crossing.
+    left_behind: int = 0
+    took_everyone: int = 0
+    unresolved: int = 0
+    # How far each source reached into the pool, so the page can say what it rests on
+    # instead of implying every sailing was watched the same way.
+    board_reported: int = 0
+    sharpened: int = 0
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["labels"] = OUTCOME_LABELS
-        # `asdict` copies fields, not properties, and the template is handed the dict.
-        data["at_capacity_share"] = self.at_capacity_share
         return data
 
 
@@ -199,7 +207,8 @@ def _fetch_candidates(
     placeholders = ",".join("?" for _ in day_types)
     sql = f"""
         SELECT s.service_date, s.depart_hhmm, s.day_type, s.season, s.scheduled_departure,
-               r.outcome, r.peak_queue, r.queue_at_departure, r.carryover,
+               r.outcome, r.filled, r.left_behind,
+               r.peak_queue, r.queue_at_departure, r.carryover,
                r.confidence, r.queue_truncated, r.filled_at, r.method,
                r.peak_fullness, r.queue_started_at, r.cleared_at, r.left_full
           FROM sailings s
@@ -209,6 +218,9 @@ def _fetch_candidates(
            AND s.day_type IN ({placeholders})
            AND r.outcome != 'unknown'
     """
+    # One pool, one sufficiency rule. `outcome` is now derived from the two axes, so
+    # "not unknown" is exactly "at least one axis has an answer" — which is how the board's
+    # readings widen this denominator instead of being tallied separately beside it.
     params: list = [route, origin, *day_types]
     if season_bucket:
         sql += " AND s.season = ?"
@@ -220,56 +232,67 @@ def _fetch_candidates(
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
-def _capacity_tally(
-    conn: sqlite3.Connection,
-    route: str,
-    origin: str,
-    level: _Level,
-    *,
-    target_season: str,
-    target_minutes: int,
-    target_long_weekend: bool,
-    exclude_date: str | None,
-    cap: int,
-) -> tuple[int, int, int]:
-    """How often the board reported comparable sailings at capacity.
+def _axes(row: sqlite3.Row) -> tuple[bool | None, bool | None]:
+    """(filled, left_behind) for one comparable sailing.
 
-    Computed over comparable sailings directly, not over the outcome-filtered samples. The
-    board's account of the deck does not depend on the camera having managed to classify the
-    crossing, and tying it to that was self-defeating: the whole value of this signal is that
-    it accrues immediately while everything camera-derived is still catching up. On the day
-    it shipped the board had flagged five sailings at capacity and the page could show none
-    of them, because all five were still `unknown`.
-
-    Returns (at capacity, sailings the board spoke about, sailings it did not).
+    Falls back to the outcome word where the columns were never written — an imported CSV,
+    or a database aggregated before the axes existed. Such a record still answers, at the
+    coarser resolution the single overloaded field could carry.
     """
-    placeholders = ",".join("?" for _ in level.day_types)
-    sql = f"""
-        SELECT s.service_date, s.depart_hhmm, r.left_full
-          FROM sailings s
-          JOIN sailing_records r ON r.sailing_id = s.id
-         WHERE s.route = ? AND s.origin = ? AND s.day_type IN ({placeholders})
-    """
-    params: list = [route, origin, *level.day_types]
-    if level.same_season:
-        sql += " AND s.season = ?"
-        params.append(target_season)
-    if exclude_date:
-        sql += " AND s.service_date != ?"
-        params.append(exclude_date)
-    sql += " ORDER BY s.service_date DESC"
+    if row["filled"] is None and row["left_behind"] is None:
+        return axes_from_outcome(row["outcome"])
+    return (
+        None if row["filled"] is None else bool(row["filled"]),
+        None if row["left_behind"] is None else bool(row["left_behind"]),
+    )
 
-    rows = [
-        row
-        for row in conn.execute(sql, tuple(params)).fetchall()
-        if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= level.tolerance
-        and (
-            not level.same_long_weekend
-            or is_long_weekend(date.fromisoformat(row["service_date"])) == target_long_weekend
-        )
-    ][:cap]
-    spoke = [row for row in rows if row["left_full"] is not None]
-    return sum(1 for row in spoke if row["left_full"]), len(spoke), len(rows) - len(spoke)
+
+def _axis_counts(matches: list[sqlite3.Row]) -> dict[str, int]:
+    """Tally both axes over one pool.
+
+    This replaces a separate capacity tally computed over its own set of sailings with its
+    own sufficiency rule. Two pools meant two denominators for one question — "0 of 3 left
+    at capacity" printed above "1 comparable sailing, 0% ran out of room" — and no reader
+    could reconcile them because they were never counting the same sailings.
+    """
+    tally = dict.fromkeys(
+        (
+            "had_space",
+            "filled",
+            "cancelled",
+            "left_behind",
+            "took_everyone",
+            "unresolved",
+            "board_reported",
+            "sharpened",
+        ),
+        0,
+    )
+    for row in matches:
+        if row["left_full"] is not None:
+            tally["board_reported"] += 1
+            if _evidence_of({row["method"]}) in ("frames", "report"):
+                tally["sharpened"] += 1
+
+        if row["outcome"] == "cancelled":
+            tally["cancelled"] += 1
+            continue
+
+        filled, left_behind = _axes(row)
+        if filled:
+            tally["filled"] += 1
+            if left_behind is True:
+                tally["left_behind"] += 1
+            elif left_behind is False:
+                tally["took_everyone"] += 1
+            else:
+                tally["unresolved"] += 1
+        else:
+            # Everything that did not run out of room, including a compound the camera
+            # watched empty without the board ever saying how close the deck came. The
+            # segment is labelled for the traveller — there was space when it mattered.
+            tally["had_space"] += 1
+    return tally
 
 
 def _candidate_reader(conn: sqlite3.Connection, route: str, origin: str, exclude_date: str | None):
@@ -413,18 +436,7 @@ def query_distribution(
     typical_gap, typical_local = _typical_fill(config, matches, target_date, depart_hhmm)
 
     evidence = _evidence_of({row["method"] for row in matches})
-
-    at_capacity, capacity_of, capacity_unknown = _capacity_tally(
-        conn,
-        route.id,
-        origin,
-        used,
-        target_season=target_season,
-        target_minutes=target_minutes,
-        target_long_weekend=target_long_weekend,
-        exclude_date=target_date.isoformat(),
-        cap=cap,
-    )
+    axes = _axis_counts(matches)
 
     return Distribution(
         origin=origin,
@@ -444,16 +456,10 @@ def query_distribution(
         sufficient=n >= config.query.min_sample,
         evidence=evidence,
         evidence_note=EVIDENCE_NOTES.get(evidence, ""),
-        at_capacity=at_capacity,
-        at_capacity_of=capacity_of,
-        at_capacity_unknown=capacity_unknown,
         typical_fill_minutes_before=typical_gap,
         typical_fill_local=typical_local,
-        filled_share=round(
-            sum(counts[o] for o in ("filled", "waited_1", "waited_2plus")) / n, 4
-        )
-        if n
-        else 0.0,
+        filled_share=round(axes["filled"] / n, 4) if n else 0.0,
+        **axes,
     )
 
 
@@ -513,6 +519,7 @@ def _sample(conn: sqlite3.Connection, config: Config, row: sqlite3.Row) -> Compa
     filled_local = None
     if row["filled_at"]:
         filled_local = local(parse_iso(row["filled_at"]), config.tz).strftime("%H:%M")
+    filled, left_behind = _axes(row)
     return ComparableSailing(
         service_date=row["service_date"],
         depart_hhmm=row["depart_hhmm"],
@@ -528,6 +535,8 @@ def _sample(conn: sqlite3.Connection, config: Config, row: sqlite3.Row) -> Compa
         queue_started_local=_local_hhmm(row["queue_started_at"], config),
         cleared_local=_local_hhmm(row["cleared_at"], config),
         left_full=None if row["left_full"] is None else bool(row["left_full"]),
+        filled=filled,
+        left_behind=left_behind,
         filled_at_local=filled_local,
         fill_minutes_before=gap,
         evidence=_evidence_of({row["method"]}),
@@ -663,6 +672,9 @@ def day_board(
         )
         counts = _counts_of(matches)
         n = sum(counts.values())
+        # Through the same tally as the panel, not a second sum over the outcome words:
+        # a row that says 46% beside a headline of 54% reads as two findings.
+        axes = _axis_counts(matches)
         gap, arrive_by = _typical_fill(config, matches, target_date, depart_hhmm)
         board.append(
             BoardSailing(
@@ -671,13 +683,7 @@ def day_board(
                 counts=counts,
                 shares={k: (round(v / n, 4) if n else 0.0) for k, v in counts.items()},
                 boarded_share=round(counts["boarded"] / n, 4) if n else 0.0,
-                filled_share=(
-                    round(
-                        sum(counts[o] for o in ("filled", "waited_1", "waited_2plus")) / n, 4
-                    )
-                    if n
-                    else 0.0
-                ),
+                filled_share=round(axes["filled"] / n, 4) if n else 0.0,
                 sufficient=n >= config.query.min_sample,
                 match_level=used.name,
                 # Only a count can be qualified. A sailing with no history anywhere walks

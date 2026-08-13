@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from ferrycast.timeutil import combine_local, parse_hhmm
 from ferrycast.web.app import _countdown, create_app
 
 from .test_query import PLAIN_FRIDAY, fridays, seed_record
@@ -688,8 +689,9 @@ def test_the_legend_does_not_mix_the_boat_with_the_people(client, conn, config):
     seed_record(conn, config, date(2026, 7, 3), "12:30", "waited_1")
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
-    assert "The sailing" in body
+    assert "How the 1 went" in body
     assert "Ran out of room" in body
+    assert "Left vehicles behind" in body
     assert "Of those, how long people waited" in body
     # The old flat row, which is what said 0% while someone waited.
     assert "Filled up before departure" not in body
@@ -703,23 +705,29 @@ def test_the_wait_breakdown_is_hidden_when_nothing_ran_out(client, conn, config)
     assert "Of those, how long people waited" not in body
 
 
-def test_an_unexplained_fill_is_labelled_not_known(client, conn, config):
-    """`filled` after the split means "ran out, and nobody said how long they waited"."""
+def test_an_unexplained_fill_says_no_one_has_said(client, conn, config):
+    """The third state, drawn as neither success nor failure. "Ran out of room, and nobody
+    has said whether that cost anyone their crossing" is also the page's standing invitation:
+    one report from that line resolves it."""
     seed_record(conn, config, date(2026, 7, 3), "12:30", "filled")
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
-    assert "Not known" in body
-    assert "nobody has\n          reported how long" in body or "reported how long" in body
+    assert "No one has said" in body
+    assert "One report from that\n        line settles it" in body
+    # Nothing said how long anyone waited, so the wait question is not asked.
+    assert "Of those, how long people waited" not in body
 
 
-def test_the_board_capacity_signal_reaches_the_page(client, conn, config):
-    """It was stored and read by nothing — not the query layer, not the export, not a single
-    template. A column, not a feature."""
+def test_a_capacity_notice_alone_puts_a_sailing_in_the_pool(client, conn, config):
+    """What the separate capacity card existed to work around. The board's account of the
+    deck used to be tallied beside the distribution, over its own sailings, because a notice
+    fed `left_full` and never the outcome — so a sailing the board had called full sat in a
+    second panel with a second denominator while the hero said it knew of nothing.
+
+    The notice asserts `filled`, so these are simply comparable sailings that ran out of
+    room, counted once."""
     from ferrycast.aggregate import aggregate_day
 
-    from .test_deckspace_history import add_deck_space
-
-    for day in fridays(3):
-        add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
+    for day in fridays(4):
         conn.execute(
             """INSERT INTO deck_space
                    (route, terminal, observed_at, service_date, sailing_hhmm,
@@ -733,54 +741,44 @@ def test_the_board_capacity_signal_reaches_the_page(client, conn, config):
 
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
-    assert "left at capacity" in body
-    assert "At capacity" in body
-    assert "of the 3 comparable sailings the board reported on" in body
+    assert "No history yet" not in body
+    assert "4 comparable sailings" in body
+    assert "100%" in body
+    assert "ran out of room" in body
+    # Nobody watched the tarmac, so the page says so rather than claiming a success.
+    assert "No one has said" in body
+    assert "The board reported on 4 of the 4" in body
 
 
-def test_a_board_that_stayed_silent_is_an_answer_but_no_board_at_all_is_not(client, conn, config):
-    """Two different nulls. Scraped through departure and never mentioning capacity is
-    evidence the sailing had room. No reading at all is evidence of nothing, and showing it
-    as "no" would lie in the direction that tells someone a sailing had space."""
-    from .test_query import seed_record
+def test_the_board_and_the_camera_share_one_denominator(client, conn, config):
+    """The reconciliation, end to end: the board saw three sailings fill, the camera saw two
+    of those compounds empty, and one sailing nobody watched at all. Three panels with
+    denominators of 3, 2 and 1 become one panel of 4 — the board supplies the width and the
+    sharper claims sit inside it."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_aggregate import _band_frames
+    from .test_deckspace_history import add_deck_space
 
     days = fridays(4)
     for day in days[:3]:
-        sailing_id = seed_record(conn, config, day, "12:30", "boarded")
-        conn.execute(
-            "UPDATE sailing_records SET left_full = 0 WHERE sailing_id = ?", (sailing_id,)
-        )
-    # The board never covered the fourth.
-    seed_record(conn, config, days[3], "12:30", "boarded")
-    conn.commit()
+        add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
+        aggregate_day(conn, config, day)
+    # Two of the three also have frames showing the compound emptied.
+    for day in days[:2]:
+        departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+        _band_frames(conn, config, departure, [(-30, "heavy"), (-10, "heavy"), (20, "empty")])
+        aggregate_day(conn, config, day)
+    # And one sailing the board never mentioned, read from frames alone.
+    departure = combine_local(days[3], parse_hhmm("12:30"), config.tz)
+    _band_frames(conn, config, departure, [(-30, "light"), (-10, "light"), (20, "empty")])
+    aggregate_day(conn, config, days[3])
 
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
-    # Three the board covered and never called full: a real 0%, not a shrug.
-    assert "of the 3 comparable sailings the board reported on" in body
-    assert "1 had no reading" in body
-    assert "not known" in body
-
-
-def test_capacity_shows_even_when_no_outcome_is_known(client, conn, config):
-    """The failure this shipped with. The board's account of the deck does not depend on the
-    camera having managed to classify the crossing, but the tally was computed from the
-    outcome-filtered samples and the card was gated behind having any. On the day it went
-    out the board had flagged five sailings at capacity and the page could show none of
-    them, because all five were still `unknown` — the one signal that accrues immediately
-    was the last one able to appear."""
-    from .test_query import fridays, seed_record
-
-    for day in fridays(4):
-        sailing_id = seed_record(conn, config, day, "12:30", "unknown")
-        conn.execute(
-            "UPDATE sailing_records SET left_full = 1 WHERE sailing_id = ?", (sailing_id,)
-        )
-    conn.commit()
-
-    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
-
-    assert "No history yet" in body           # no outcome anywhere
-    assert "100%" in body                     # ...and the board still has something to say
-    assert "left at capacity" in body
-    assert "of the 4 comparable sailings the board reported on" in body
+    assert "4 comparable sailings" in body
+    assert "75%" in body                              # three of the four ran out of room
+    assert "Of the 3 that filled" in body
+    assert "2 filled and still took everyone" in body
+    assert "for 1 nobody has said either way" in body
+    assert "The board reported on 3 of the 4" in body
