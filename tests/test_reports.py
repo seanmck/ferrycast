@@ -83,7 +83,7 @@ def board_says_departed(conn, config, departed: str, *, hhmm="12:30", origin="SL
 
 def outcome_of(conn, service_date: date, hhmm: str, origin: str = "SLT") -> str:
     row = conn.execute(
-        """SELECT r.outcome, r.method, r.filled_at
+        """SELECT r.outcome, r.method, r.filled_at, r.filled, r.left_behind, r.overload
              FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
             WHERE s.origin = ? AND s.service_date = ? AND s.depart_hhmm = ?""",
         (origin, service_date.isoformat(), hhmm),
@@ -211,6 +211,80 @@ def test_a_report_outranks_the_deck_space_feed(conn, config):
     file_report(conn, config, boarded=False, joined=time(11, 50))
 
     assert outcome_of(conn, SAILED, "12:30")["outcome"] == "filled"
+
+
+def _board_fills_the_sailing(conn, config, *, at_minutes=40):
+    """The deck feed watching the vessel run out of room `at_minutes` before departure."""
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    for minutes, available in [(90, 30), (60, 10), (at_minutes, 0)]:
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    percent_available, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30', ?, 'ok')""",
+            (
+                config.route.id,
+                iso(departure - timedelta(minutes=minutes)),
+                SAILED.isoformat(),
+                available,
+            ),
+        )
+    conn.commit()
+
+
+def test_getting_on_does_not_un_fill_a_sailing_the_board_watched_fill(conn, config):
+    """The override that made a report the last word on everything. A "got on" report used
+    to clobber a deck-space `filled` down to `boarded` and clear the overload with it, so
+    one person's luck deleted the board's account of the deck.
+
+    Both facts are true at once, and together they are the interesting case: the vessel ran
+    out of room and this person still made it.
+    """
+    _board_fills_the_sailing(conn, config)
+    aggregate_day(conn, config, SAILED)
+    assert outcome_of(conn, SAILED, "12:30")["filled"] == 1
+
+    file_report(conn, config, boarded=True, joined=time(11, 40))
+
+    record = outcome_of(conn, SAILED, "12:30")
+    assert record["filled"] == 1, "the fill survived a report from someone who got on"
+    assert record["left_behind"] == 0
+    assert record["outcome"] == "filled"
+    assert record["overload"] == 0
+
+
+def test_getting_on_lifts_a_sailing_nothing_else_could_classify(conn, config):
+    """The one job a "got on" report keeps on its own: the reporter was aboard, so it ran."""
+    file_report(conn, config, boarded=True)
+
+    record = outcome_of(conn, SAILED, "12:30")
+    assert record["outcome"] == "boarded"
+    assert record["left_behind"] == 0
+    # Boarding says nothing whatever about the deck.
+    assert record["filled"] is None
+
+
+def test_being_turned_away_outranks_a_board_that_saw_space(conn, config):
+    """Miss beats everything. The feed describes the deck and cannot see the approach road;
+    somebody standing on that road can."""
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                percent_available, fetch_status)
+           VALUES (?, 'SLT', ?, ?, '12:30', 30, 'ok')""",
+        (config.route.id, iso(departure - timedelta(minutes=10)), SAILED.isoformat()),
+    )
+    conn.commit()
+    aggregate_day(conn, config, SAILED)
+    assert outcome_of(conn, SAILED, "12:30")["filled"] == 0
+
+    file_report(conn, config, boarded=False, sailings_waited=2)
+
+    record = outcome_of(conn, SAILED, "12:30")
+    assert (record["filled"], record["left_behind"]) == (1, 1)
+    assert record["outcome"] == "waited_2plus"
+    assert record["overload"] == 1
 
 
 def test_a_report_never_sets_the_arrive_before_time(conn, config):

@@ -40,12 +40,25 @@ def seed_record(conn, config, service_date: date, hhmm: str, outcome: str, origi
         "SELECT id FROM sailings WHERE origin = ? AND scheduled_departure = ?",
         (origin, departure.isoformat()),
     ).fetchone()["id"]
+    # The axes are left NULL unless a test asks for them, which is also the shape of every
+    # record written before they existed — so the fallback that reads them back out of the
+    # outcome word is exercised by default rather than only where it is named.
     conn.execute(
         """INSERT OR REPLACE INTO sailing_records
-               (sailing_id, outcome, peak_queue, carryover, n_frames, confidence,
+               (sailing_id, outcome, filled, left_behind, left_full, method,
+                peak_queue, carryover, n_frames, confidence,
                 queue_truncated, computed_at)
-           VALUES (?, ?, ?, ?, 8, 0.9, 0, '2026-01-01T00:00:00Z')""",
-        (sailing_id, outcome, kw.get("peak_queue", 50), kw.get("carryover")),
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 8, 0.9, 0, '2026-01-01T00:00:00Z')""",
+        (
+            sailing_id,
+            outcome,
+            kw.get("filled"),
+            kw.get("left_behind"),
+            kw.get("left_full"),
+            kw.get("method"),
+            kw.get("peak_queue", 50),
+            kw.get("carryover"),
+        ),
     )
     conn.commit()
     return sailing_id
@@ -317,6 +330,90 @@ def test_an_ordinary_friday_is_not_polluted_by_long_weekend_ones(conn, config):
     d = query_distribution(conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30")
     assert d.match_level == "exact"
     assert d.counts["filled"] == 0, "the long-weekend Friday should not be in this sample"
+
+
+# ---- Two axes, one pool -----------------------------------------------------------------
+#
+# The board's account of the deck used to be tallied separately, over its own set of
+# sailings with its own sufficiency rule, so the page carried two denominators for one
+# question. These pin the merged pool: the sailing axis sums to n, and the person axis sums
+# to the filled slice it decomposes.
+
+
+def test_the_sailing_axis_sums_to_the_sample(conn, config):
+    days = fridays(4)
+    seed_record(conn, config, days[0], "12:30", "boarded", filled=0, left_behind=0)
+    seed_record(conn, config, days[1], "12:30", "filled", filled=1)
+    seed_record(conn, config, days[2], "12:30", "filled", filled=1, left_behind=0)
+    seed_record(conn, config, days[3], "12:30", "cancelled")
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    assert d.n == 4
+    assert d.had_space + d.filled + d.cancelled == d.n
+    assert (d.had_space, d.filled, d.cancelled) == (1, 2, 1)
+    assert d.filled_share == 0.5
+
+
+def test_the_person_axis_sums_to_the_filled_slice(conn, config):
+    days = fridays(4)
+    seed_record(conn, config, days[0], "12:30", "waited_1", filled=1, left_behind=1)
+    seed_record(conn, config, days[1], "12:30", "filled", filled=1, left_behind=0)
+    # Ran out of room, and nobody has said whether that cost anyone their crossing.
+    seed_record(conn, config, days[2], "12:30", "filled", filled=1)
+    seed_record(conn, config, days[3], "12:30", "boarded", filled=0, left_behind=0)
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    assert d.filled == 3
+    assert d.left_behind + d.took_everyone + d.unresolved == d.filled
+    assert (d.left_behind, d.took_everyone, d.unresolved) == (1, 1, 1)
+
+
+def test_a_board_only_sailing_with_space_near_departure_counts_as_had_space(conn, config):
+    """The whole point of pooling. The board is the fast-accruing source, so its readings
+    widen this denominator instead of living in a card beside it — under the same
+    sufficiency rule as everything else, which is what the separate tally never used."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_deckspace_history import add_deck_space
+
+    for day in fridays(4):
+        # Scraped through to ten minutes before departure and never short of room.
+        add_deck_space(conn, config, "SLT", day, "12:30", [(90, 60), (40, 35), (10, 20)])
+        aggregate_day(conn, config, day)
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    assert d.n == 4
+    assert d.had_space == 4
+    assert d.filled_share == 0.0
+    assert d.board_reported == 4
+
+
+def test_a_feed_that_stopped_early_asserts_nothing(conn, config):
+    """The looser rule the capacity tally used: any reading at all counted as "the board
+    spoke", so a series that went quiet an hour out was published as a comfortable crossing.
+    One rule now, and it is the strict one."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_deckspace_history import add_deck_space
+
+    for day in fridays(4):
+        add_deck_space(conn, config, "SLT", day, "12:30", [(180, 60), (120, 45)])
+        aggregate_day(conn, config, day)
+
+    d = query_distribution(
+        conn, config, origin="SLT", target_date=PLAIN_FRIDAY, depart_hhmm="12:30"
+    )
+
+    assert d.n == 0
 
 
 # ---- Recency cap ------------------------------------------------------------------------

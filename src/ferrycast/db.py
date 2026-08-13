@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -89,6 +89,22 @@ def _add_left_full(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sailing_records ADD COLUMN left_full INTEGER")
 
 
+def _add_claim_axes(conn: sqlite3.Connection) -> None:
+    """v7 -> v8: the two claims `outcome` was overloading.
+
+    `filled` describes the vessel and `left_behind` describes the approach road, and no
+    source witnesses both — the board sees the deck and never the road, the camera sees the
+    road and never the deck. Held as one word, `filled` meant "loaded to capacity" when it
+    came from deck space and "vehicles were provably left on the tarmac" when it came from a
+    camera band, so the page could not tell a tight success from a failure.
+
+    Nullable on purpose: "nobody has said" is a third state, and the page shows it as one.
+    """
+    for column in ("filled", "left_behind"):
+        if not _column_exists(conn, "sailing_records", column):
+            conn.execute(f"ALTER TABLE sailing_records ADD COLUMN {column} INTEGER")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
@@ -97,6 +113,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _add_fullness,
     5: _add_record_fullness,
     6: _add_left_full,
+    7: _add_claim_axes,
 }
 
 

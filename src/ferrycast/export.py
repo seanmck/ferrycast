@@ -25,7 +25,8 @@ FRAME_EXPORT_SQL = """
 SAILING_EXPORT_SQL = """
     SELECT s.id AS sailing_id, s.route, s.origin, s.destination, s.service_date,
            s.scheduled_departure, s.depart_hhmm, s.day_type, s.season,
-           r.outcome, r.peak_queue, r.queue_at_departure, r.residual_queue,
+           r.outcome, r.filled, r.left_behind,
+           r.peak_queue, r.queue_at_departure, r.residual_queue,
            r.carryover, r.overload, r.cancelled, r.n_frames, r.confidence,
            r.queue_truncated, r.deck_space_min, r.method,
            r.peak_fullness, r.fullness_at_departure, r.residual_fullness,

@@ -162,8 +162,14 @@ def test_aggregation_builds_history_with_no_frames_at_all(conn, config):
     assert conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 0
 
 
-def test_frame_evidence_wins_over_deck_space(conn, config):
-    """When an on-demand check did read the queue, use the better measurement."""
+def test_frames_and_deck_space_answer_different_questions(conn, config):
+    """They were treated as rivals for one word, and the frames won by being read first.
+
+    They are not rivals. The board watched the deck run out of room; the camera watched the
+    compound empty. Both are true, and together they are the tightest kind of success — the
+    thing the old single outcome had no way to say, because whichever source spoke last
+    deleted the other's finding.
+    """
     day = date(2026, 8, 14)
     departure = combine_local(day, parse_hhmm("12:30"), config.tz)
     add_deck_space(conn, config, "SLT", day, "12:30", [(45, 10), (25, 0)])
@@ -174,12 +180,16 @@ def test_frame_evidence_wins_over_deck_space(conn, config):
     aggregate_day(conn, config, day)
 
     row = conn.execute(
-        """SELECT r.outcome, r.method FROM sailings s
+        """SELECT r.outcome, r.filled, r.left_behind, r.method, r.filled_at FROM sailings s
              JOIN sailing_records r ON r.sailing_id = s.id
             WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30'"""
     ).fetchone()
-    assert row["outcome"] == "boarded"
+    assert (row["filled"], row["left_behind"]) == (1, 0)
+    assert row["outcome"] == "filled"
+    # The queue was measured, so the record still rests on the better measurement...
     assert row["method"].startswith("frames")
+    # ...and the board's reading is kept for the one thing only it can date: the cutoff.
+    assert row["filled_at"]
 
 
 def test_deck_space_of_another_route_is_not_borrowed(conn, config):

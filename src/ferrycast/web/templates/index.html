@@ -17,9 +17,40 @@
   .cap.no .dot { background: var(--line-strong); }
   .cap.unk { color: var(--label); border-style: dashed; border-color: var(--line-strong); }
   .cap.unk .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--label); }
-  .capline { display: flex; align-items: baseline; gap: 0.625rem; }
-  .capline .pct { font-family: "Instrument Serif", Georgia, serif; font-size: 2.75rem;
-                  line-height: 1; color: var(--o-filled); font-variant-numeric: tabular-nums; }
+
+  /* The person axis, which lives inside the `filled` slice and must read as a decomposition
+     of it rather than as three more siblings of the sailing axis. All three are in the
+     filled family: cedar for the failure, moss pulled toward kelp for the success, and the
+     same moss hatched for "nobody has said" — ignorance drawn as neither of the other two,
+     and legible without colour. */
+  .seg-left       { background: var(--o-waited_2plus); }
+  .seg-took       { background: color-mix(in srgb, var(--o-filled) 62%, var(--o-boarded)); }
+  .seg-unresolved { background: repeating-linear-gradient(135deg,
+                      var(--o-filled) 0 4px,
+                      color-mix(in srgb, var(--o-filled) 40%, var(--surface)) 4px 8px); }
+
+  /* Indented to the sub-legend's margin and half the height of the bar above, so the two
+     never read as one chart split in two. */
+  .bar.mini { height: 8px; margin: 0.5rem 0 0.125rem 1.5rem; max-width: 11rem; }
+  .bar.mini span { min-width: 3px; }
+
+  .legend.sub { margin: 0.125rem 0 0.375rem 0.9rem; padding-left: 0.8rem;
+                border-left: 1px solid var(--line); }
+  .legend.sub li { font-size: 0.875rem; color: var(--muted); padding: 0.2rem 0; }
+  .legend.sub .dot { width: 10px; height: 10px; }
+
+  /* Which evidence could have produced this row. A pill rather than prose: it qualifies the
+     count beside it, and a sentence would read as another finding. */
+  .src { font-family: "IBM Plex Mono", monospace; font-size: 0.625rem; letter-spacing: 0.08em;
+         text-transform: uppercase; color: var(--label); border: 1px solid var(--line-strong);
+         border-radius: 999px; padding: 0.1rem 0.4rem; white-space: nowrap; }
+
+  /* The layered claim, set off from the headline it refines by a rule rather than a gap:
+     it is a second sentence about the same number, not a second number. */
+  .layered { margin-top: 1rem; padding-top: 0.875rem;
+             border-top: 1px solid color-mix(in srgb, var(--hero-ink) 16%, transparent);
+             font-size: 0.875rem; line-height: 1.55; color: var(--hero-muted); }
+  .layered strong { color: var(--hero-ink); font-weight: 500; }
 
   .depart .time { font-family: "Instrument Serif", Georgia, serif; font-size: 4.5rem; line-height: 0.9; }
   .depart .in { font-family: "IBM Plex Mono", monospace; font-size: 1rem; color: var(--muted); }
@@ -40,7 +71,9 @@
                    line-height: 0.85; color: var(--buoy); }
   .headline .of  { font-size: 0.9375rem; color: var(--hero-muted); line-height: 1.35; max-width: 16ch; }
 
-  .arrive { display: flex; align-items: baseline; gap: 0.625rem; flex-wrap: wrap; }
+  /* Centred, not baseline: the qualifier wraps to two or three lines at phone width, and
+     aligning the numeral to only its first line leaves the time floating above the block. */
+  .arrive { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; }
   .arrive .time { font-family: "Instrument Serif", Georgia, serif; font-size: 2.375rem; line-height: 1; }
   .arrive .qual { font-size: 0.875rem; color: var(--muted); }
 
@@ -896,60 +929,72 @@
   {% endif %}
 {% endif %}
 
-{% macro capacity_card(d) %}
-  {# The board's own account of the deck, which no camera can see. Rendered in both branches
-     on purpose: it depends on neither the camera nor a stock of known outcomes, so gating it
-     behind those made the one signal that accrues immediately the last one to appear. #}
-  {% if d and d.at_capacity_of %}
-  <section class="card">
-    <p class="label">What the board said</p>
-    <div class="capline">
-      <span class="pct">{{ (d.at_capacity_share * 100) | round | int }}%</span>
-      <span>left at capacity</span>
-    </div>
-    <p class="note">{{ d.at_capacity }} of the {{ d.at_capacity_of }} comparable sailing{{ '' if d.at_capacity_of == 1 else 's' }} the board reported on{% if d.at_capacity_unknown %}. {{ d.at_capacity_unknown }} had no reading{% endif %}.</p>
-    <p class="note">Loading to capacity is not the same as leaving someone behind — a
-      sailing can fill and still take everyone, which is the tightest kind of success and
-      the one nothing else can show you.</p>
-  </section>
-  {% endif %}
-{% endmacro %}
-
 {% if distribution and distribution.n %}
   {% set d = distribution %}
-  {{ capacity_card(d) }}
-  {# `filled` belongs in this number. It means the vessel ran out of room, so counting only
-     waited_1 and waited_2plus produced "0% waited at least one sailing" directly above
-     "1 filled up" — two lines of the same panel contradicting each other. The wording is
-     about the sailing rather than the person, because deck-space evidence can show a vessel
-     filling without proving anyone was actually turned away. #}
-  {% set waited = d.filled_share %}
-  {% set top = d.counts | dictsort(by='value') | last %}
 
-  {# ---- The answer, on the one inverted panel. ---- #}
+  {# ---- The answer, on the one inverted panel. ----
+
+     One question asked once. This used to be three panels — a capacity card, this bar, and
+     the legend below — each answering "will there be room?" from its own pool with its own
+     sufficiency rule, so their denominators disagreed and no reader could reconcile them.
+     The sharp claims now sit *inside* the wide denominator instead of beside it. #}
   <section class="hero">
     <p class="label">{{ d.n }} comparable sailing{{ '' if d.n == 1 else 's' }}</p>
 
     <div class="headline">
-      <span class="pct">{{ (waited * 100) | round | int }}%</span>
+      <span class="pct">{{ (d.filled_share * 100) | round | int }}%</span>
       <span class="of">ran out of room</span>
     </div>
 
+    {# The sailing axis only: three segments the board can attest for every crossing. The
+       person axis refines the middle one and gets a bar of its own further down, so the two
+       sets of colours never share a canvas. #}
     <div class="bar" role="img"
          aria-label="Outcome distribution across {{ d.n }} comparable sailings">
-      {% for key, count in d.counts.items() if count %}
-        <span class="seg-{{ key }}" style="flex: {{ count }}"
-              title="{{ labels[key] }}: {{ count }}"></span>
-      {% endfor %}
+      {% if d.had_space %}<span class="seg-boarded" style="flex: {{ d.had_space }}"
+            title="Had space: {{ d.had_space }}"></span>{% endif %}
+      {% if d.filled %}<span class="seg-filled" style="flex: {{ d.filled }}"
+            title="Ran out of room: {{ d.filled }}"></span>{% endif %}
+      {% if d.cancelled %}<span class="seg-cancelled" style="flex: {{ d.cancelled }}"
+            title="Cancelled: {{ d.cancelled }}"></span>{% endif %}
     </div>
 
     <div class="tally">
-      {% for key, count in d.counts.items() if count %}
-        <div><b style="color: var(--o-{{ key }})">{{ count }}</b>{{ short_labels[key] }}</div>
-      {% endfor %}
+      {% if d.had_space %}
+        <div><b style="color: var(--o-boarded)">{{ d.had_space }}</b>had space</div>
+      {% endif %}
+      {% if d.filled %}
+        <div><b style="color: var(--o-filled)">{{ d.filled }}</b>filled</div>
+      {% endif %}
+      {% if d.cancelled %}
+        <div><b style="color: var(--o-cancelled)">{{ d.cancelled }}</b>cancelled</div>
+      {% endif %}
     </div>
 
-    <p class="note">Most likely: {{ labels[top[0]] }} — {{ (d.shares[top[0]] * 100) | round | int }}%.</p>
+    {% if d.filled %}
+      {# Built from the clauses that have something in them: printing "0 provably left
+         vehicles behind" would be answering with an absence. The em dash closes before the
+         last clause when there is one, which is why the gloss carries its own. #}
+      {% set parts = [] %}
+      {% if d.left_behind %}
+        {% set parts = parts + ['<strong>' ~ d.left_behind ~ ' provably left vehicles behind</strong>'] %}
+      {% endif %}
+      {% if d.took_everyone %}
+        {% set parts = parts + [d.took_everyone ~ ' filled and still took everyone — the tightest kind of success' ~ (' —' if d.unresolved else '')] %}
+      {% endif %}
+      {% if d.unresolved %}
+        {% set parts = parts + ['for ' ~ d.unresolved ~ ' nobody has said either way'] %}
+      {% endif %}
+      <p class="layered">Of the {{ d.filled }} that filled:
+        {{ (parts[:-1] | join(', ') ~ (' and ' if parts | length > 1 else '') ~ parts[-1]) | safe }}.
+        The split is broken down under “How the {{ d.n }} went.”</p>
+    {% endif %}
+
+    {% if d.board_reported %}
+      <p class="note">The board reported on {{ d.board_reported }} of the {{ d.n }}{% if
+        d.sharpened %}; camera frames or line reports sharpened
+        {{ d.sharpened }} of those{% endif %}.</p>
+    {% endif %}
   </section>
 
   {# ---- What to do about it. ---- #}
@@ -989,40 +1034,72 @@
       <hr class="rule">
     {% endif %}
 
-    {# Two questions, not one list of five alternatives. "Space the whole time" and
-       "Cancelled" describe the sailing; "Waited 1 sailing" describes a person — and a
-       person only waits because the vessel ran out of room, so waited_1 and waited_2plus
-       are refinements of `filled`, not siblings of it.
+    {# Two axes, not five siblings. "Space the whole time" and "Cancelled" describe the
+       sailing; "Left vehicles behind" describes a person — and a person is only left behind
+       because the vessel ran out of room, so the person axis is a decomposition of the
+       middle row rather than a set of alternatives to it.
 
        Flattened, the panel contradicted itself: "Filled up before departure 0%" printed
        directly above "Waited 1 sailing 100%", which says the boat had room and somebody
-       waited anyway. Grouping puts the implication back. #}
-    {% set ran_out = d.counts.get('filled', 0) + d.counts.get('waited_1', 0)
-                     + d.counts.get('waited_2plus', 0) %}
-
-    <p class="label">The sailing</p>
+       waited anyway. Nesting puts the implication back. #}
+    <p class="label">How the {{ d.n }} went</p>
     <ul class="legend">
       <li>
         <span class="dot seg-boarded"></span>Space the whole time
-        <span class="count">{{ d.counts.get('boarded', 0) }} ·
-          {{ (d.shares.get('boarded', 0) * 100) | round | int }}%</span>
+        <span class="count">{{ d.had_space }} ·
+          {{ (d.had_space / d.n * 100) | round | int }}%</span>
       </li>
       <li>
         <span class="dot seg-filled"></span>Ran out of room
-        <span class="count">{{ ran_out }} · {{ (d.filled_share * 100) | round | int }}%</span>
-      </li>
-      <li>
-        <span class="dot seg-cancelled"></span>Cancelled
-        <span class="count">{{ d.counts.get('cancelled', 0) }} ·
-          {{ (d.shares.get('cancelled', 0) * 100) | round | int }}%</span>
+        <span class="count">{{ d.filled }} · {{ (d.filled_share * 100) | round | int }}%</span>
       </li>
     </ul>
 
-    {# Only shown when something did run out — otherwise it is three zeroes answering a
-       question nobody asked. Counts rather than percentages: these are a breakdown of the
-       row above, and a second column of percentages summing to something else invites the
-       reader to add them to the first. #}
-    {% if ran_out %}
+    {% if d.filled %}
+      {# The filled slice decomposed, on a bar of its own: indented to the sub-legend so the
+         sub-colours key a chart of exactly that slice and never sit on the same rule as the
+         sailing-axis colours above. Counts rather than percentages — a second column of
+         percentages summing to something else invites the reader to add them to the first. #}
+      <div class="bar mini" role="img"
+           aria-label="Breakdown of the {{ d.filled }} sailing{{ '' if d.filled == 1 else 's' }} that ran out of room">
+        {% if d.left_behind %}<span class="seg-left" style="flex: {{ d.left_behind }}"></span>{% endif %}
+        {% if d.took_everyone %}<span class="seg-took" style="flex: {{ d.took_everyone }}"></span>{% endif %}
+        {% if d.unresolved %}<span class="seg-unresolved" style="flex: {{ d.unresolved }}"></span>{% endif %}
+      </div>
+      <ul class="legend sub">
+        {% if d.left_behind %}
+          <li>
+            <span class="dot seg-left"></span>Left vehicles behind
+            <span class="count">{{ d.left_behind }} <span class="src">camera · line</span></span>
+          </li>
+        {% endif %}
+        {% if d.took_everyone %}
+          <li>
+            <span class="dot seg-took"></span>Took everyone anyway
+            <span class="count">{{ d.took_everyone }} <span class="src">board + line</span></span>
+          </li>
+        {% endif %}
+        {% if d.unresolved %}
+          <li>
+            <span class="dot seg-unresolved"></span>No one has said
+            <span class="count">{{ d.unresolved }} <span class="src">board only</span></span>
+          </li>
+        {% endif %}
+      </ul>
+    {% endif %}
+
+    <ul class="legend">
+      <li>
+        <span class="dot seg-cancelled"></span>Cancelled
+        <span class="count">{{ d.cancelled }} ·
+          {{ (d.cancelled / d.n * 100) | round | int }}%</span>
+      </li>
+    </ul>
+
+    {# Only where somebody actually said how long they waited. Without that it is two zeroes
+       answering a question nobody asked — the sub-legend above has already said what is
+       known about the people. #}
+    {% if d.counts.get('waited_1', 0) or d.counts.get('waited_2plus', 0) %}
       <p class="label">Of those, how long people waited</p>
       <ul class="legend">
         <li>
@@ -1033,17 +1110,17 @@
           <span class="dot seg-waited_2plus"></span>Waited 2+ sailings
           <span class="count">{{ d.counts.get('waited_2plus', 0) }}</span>
         </li>
-        {% if d.counts.get('filled', 0) %}
-          <li>
-            <span class="dot seg-filled"></span>Not known
-            <span class="count">{{ d.counts.get('filled', 0) }}</span>
-          </li>
-        {% endif %}
       </ul>
-      {% if d.counts.get('filled', 0) %}
-        <p class="note">"Not known" means the vessel was seen to fill, but nobody has
-          reported how long they then waited.</p>
-      {% endif %}
+    {% endif %}
+
+    {% if d.took_everyone %}
+      <p class="note">“Took everyone anyway” is the board’s capacity notice resolved by
+        someone who was in the line — the margin nobody can otherwise see.</p>
+    {% endif %}
+    {% if d.unresolved %}
+      <p class="note">“No one has said” means the vessel was seen to run out of room and
+        nobody has reported whether that cost anyone their crossing. One report from that
+        line settles it.</p>
     {% endif %}
 
     {% if d.evidence_note %}<p class="note">{{ d.evidence_note }}</p>{% endif %}
@@ -1065,7 +1142,7 @@
     <summary class="btn">See the {{ d.samples | length }} dates</summary>
     <table>
       <thead>
-        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>At capacity</th><th>Peak</th></tr>
+        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Left behind</th><th>Peak</th></tr>
       </thead>
       <tbody>
         {% for s in d.samples %}
@@ -1075,10 +1152,18 @@
             <td class="outcome">
               <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
             </td>
+            {# The person axis per sailing, so a row carries the same two facts the summary
+               above is built from. It used to carry the board's capacity notice instead,
+               which now speaks to the outcome column beside it — the pair read as one claim
+               stated twice, and disagreed whenever a percentage rather than a notice was
+               what saw the vessel fill. #}
             <td>
-              {%- if s.left_full is none -%}
-                <span class="cap unk"><span class="dot"></span>not known</span>
-              {%- elif s.left_full -%}
+              {%- if s.outcome == 'cancelled' -%}
+                {# Nothing sailed, so there was no line to leave behind. #}
+                —
+              {%- elif s.left_behind is none -%}
+                <span class="cap unk"><span class="dot"></span>no one has said</span>
+              {%- elif s.left_behind -%}
                 <span class="cap yes"><span class="dot"></span>yes</span>
               {%- else -%}
                 <span class="cap no"><span class="dot"></span>no</span>
@@ -1095,11 +1180,11 @@
         {% endfor %}
       </tbody>
     </table>
-    <p class="note">“At capacity” is the board&#39;s own account of the deck, which no camera
-      can see; “not known” means it never said, which is not the same as no. The outcome
-      column is about the compound instead — whether anyone was left standing on the tarmac.
-      Peak is how full the compound got; older sailings show a vehicle count, and a “+” there
-      means the queue ran past the edge of the camera frame.</p>
+    <p class="note">The outcome is about the vessel — whether it ran out of room, which the
+      board can see and no camera can. “Left behind” is about the approach road, which only a
+      camera residual or somebody in the line can see; “no one has said” means neither did,
+      which is not the same as no. Peak is how full the compound got; older sailings show a
+      vehicle count, and a “+” there means the queue ran past the edge of the camera frame.</p>
   </details>
 
   <details id="curve-box">
@@ -1109,7 +1194,6 @@
 
 {% elif selected_time %}
   {% set c = collection %}
-  {{ capacity_card(distribution) }}
   <section class="card">
     <p class="label">No history yet</p>
     <p class="note">This slot is answered from <em>past</em> comparable sailings, and there are
