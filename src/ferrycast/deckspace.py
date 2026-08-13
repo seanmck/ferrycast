@@ -43,6 +43,14 @@ DEPARTED_RE = re.compile(
 # segment swallows the page footer, and the site's "Cancelled Sailings" link with it.
 SEGMENT_LIMIT = 400
 
+# Where the per-sailing text ends and the page's own chrome begins.
+FOOTER_RE = re.compile(r"Last updated:|Refresh details|Ferry tracking", re.IGNORECASE)
+
+# The operator's own words for "this sailing filled". Deliberately a phrase match on
+# published wording rather than an inference: it says how they loaded, which is a different
+# claim from "somebody was turned away", and only the second is an overload.
+FULL_NOTE_RE = re.compile(r"loading maximum number of vehicles", re.IGNORECASE)
+
 # How much of an unrecognised page to keep for diagnosis. Enough to see the structure,
 # bounded so a redesigned site cannot fill the volume one scrape at a time.
 RAW_LIMIT = 4000
@@ -124,6 +132,12 @@ def parse_deck_space(html: str, expected: Sequence[str] | None = None) -> list[D
         # departure and arrival times that are not sailings.
         end = accepted[index + 1][0].start() if index + 1 < len(accepted) else len(text)
         segment = text[match.end() : min(end, match.end() + SEGMENT_LIMIT)]
+        # The last sailing has no following time to stop at, so its segment runs on into the
+        # page furniture. Cut at the footer marker: chrome is not a note about a sailing, and
+        # a phrase match over it would eventually find something it should not.
+        footer = FOOTER_RE.search(segment)
+        if footer:
+            segment = segment[: footer.start()]
 
         status = STATUS_RE.search(segment)
         if status is not None and CANCELLED_RE.fullmatch(status.group(1)):
@@ -158,19 +172,63 @@ def parse_deck_space(html: str, expected: Sequence[str] | None = None) -> list[D
     return _dedupe(rows)
 
 
-def _snippet(segment: str, limit: int = 80) -> str:
+def _snippet(segment: str, limit: int = 200) -> str:
+    """The per-sailing text, kept whole enough to be searchable.
+
+    Was 80, which cut "Peak travel. Loading maximum number of vehicles" to "...maximum num"
+    — present in the database but matching no query anyone would write, which is worse than
+    absent because it looks like the page never said it.
+    """
     return " ".join(segment.split())[:limit] or None
 
 
+def notice_says_full(status_text: str | None) -> bool:
+    """Whether the board reported this sailing as loading to capacity.
+
+    Not an overload on its own — see `parse_deck_space`. It describes the deck, which no
+    camera can see; whether anyone was left behind is about the compound, which no board can
+    see. The two together are worth more than either, and neither substitutes for the other.
+    """
+    return bool(status_text and FULL_NOTE_RE.search(status_text))
+
+
+def _merge(first: DeckSpaceRow, second: DeckSpaceRow) -> DeckSpaceRow:
+    """Combine two views of one sailing, preferring whichever actually said something."""
+    return DeckSpaceRow(
+        sailing_hhmm=first.sailing_hhmm,
+        percent_available=(
+            first.percent_available if first.percent_available is not None
+            else second.percent_available
+        ),
+        vessel=first.vessel or second.vessel,
+        status_text=max(
+            (first.status_text or ""), (second.status_text or ""), key=len
+        ) or None,
+        departed_hhmm=first.departed_hhmm or second.departed_hhmm,
+    )
+
+
 def _dedupe(rows: list[DeckSpaceRow]) -> list[DeckSpaceRow]:
-    seen: set[str | None] = set()
-    unique: list[DeckSpaceRow] = []
+    """One row per sailing, merged rather than first-wins.
+
+    The board prints each sailing twice: a terse line, then a fuller one carrying the
+    arrival time and the operator's note. Keeping the first and discarding the rest threw
+    the fuller one away every time — which is why, across 2368 stored rows, not one carried
+    "Loading maximum number of vehicles" despite the page publishing it several times a day.
+
+    They are two views of the same sailing in the same scrape, not competing claims, so they
+    are merged: any field one of them filled in is kept.
+    """
+    order: list[str | None] = []
+    merged: dict[str | None, DeckSpaceRow] = {}
     for row in rows:
-        if row.sailing_hhmm in seen:
-            continue
-        seen.add(row.sailing_hhmm)
-        unique.append(row)
-    return unique
+        key = row.sailing_hhmm
+        if key in merged:
+            merged[key] = _merge(merged[key], row)
+        else:
+            order.append(key)
+            merged[key] = row
+    return [merged[key] for key in order]
 
 
 def store_rows(

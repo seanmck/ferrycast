@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 
 from .config import Config
 from .db import JobRun
+from .deckspace import notice_says_full
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
@@ -55,6 +56,8 @@ class SailingRecord:
     residual_fullness: str | None = None
     queue_started_at: str | None = None
     cleared_at: str | None = None
+    #: The board reported this sailing as loading to capacity. Never feeds `outcome`.
+    left_full: bool | None = None
 
 
 @dataclass
@@ -431,6 +434,24 @@ def compute_record(
     residual = after[0].vehicle_count if after else None
     residual_fullness = banded_after[0].fullness if banded_after else None
 
+    # What the board said about the deck. Kept beside the camera's view of the compound
+    # rather than folded into the outcome: "we loaded as many as would fit" and "somebody
+    # was left standing on the tarmac" are different claims, and only the second is an
+    # overload. Held together they say something neither can — a sailing that filled AND
+    # cleared is the one you would have made by a margin nobody can otherwise see.
+    board_series = _deck_space_series(
+        conn,
+        sailing_row["route"],
+        sailing_row["origin"],
+        sailing_row["service_date"],
+        sailing_row["depart_hhmm"],
+    )
+    left_full = (
+        any(notice_says_full(row["status_text"]) for row in board_series)
+        if board_series
+        else None
+    )
+
     deck_min = _deck_space_min(
         conn,
         sailing_row["route"],
@@ -562,6 +583,7 @@ def compute_record(
         peak_fullness=peak_fullness,
         fullness_at_departure=fullness_at_departure,
         residual_fullness=residual_fullness,
+        left_full=left_full,
         queue_started_at=_first_occupied_at(before),
         cleared_at=_first_clear_at(observations, settle_from),
     )
@@ -573,8 +595,8 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
                (sailing_id, peak_queue, queue_at_departure, residual_queue, carryover,
                 overload, cancelled, outcome, n_frames, confidence, queue_truncated,
                 deck_space_min, filled_at, method, peak_fullness, fullness_at_departure,
-                residual_fullness, queue_started_at, cleared_at, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                residual_fullness, queue_started_at, cleared_at, left_full, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.sailing_id,
             record.peak_queue,
@@ -595,6 +617,7 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
             record.residual_fullness,
             record.queue_started_at,
             record.cleared_at,
+            None if record.left_full is None else int(record.left_full),
             iso(now_utc()),
         ),
     )

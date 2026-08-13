@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -79,6 +79,16 @@ def _add_record_fullness(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE sailing_records ADD COLUMN {column} TEXT")
 
 
+def _add_left_full(conn: sqlite3.Connection) -> None:
+    """v6 -> v7: whether the board said this sailing loaded to capacity.
+
+    Free, published every few minutes, and until now discarded: the parser kept the first of
+    the board's two lines per sailing and the note only appears on the second.
+    """
+    if not _column_exists(conn, "sailing_records", "left_full"):
+        conn.execute("ALTER TABLE sailing_records ADD COLUMN left_full INTEGER")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
@@ -86,6 +96,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     3: _add_sailings_waited,
     4: _add_fullness,
     5: _add_record_fullness,
+    6: _add_left_full,
 }
 
 
