@@ -760,3 +760,27 @@ def test_a_board_that_stayed_silent_is_an_answer_but_no_board_at_all_is_not(clie
     assert "of the 3 comparable sailings the board reported on" in body
     assert "1 had no reading" in body
     assert "not known" in body
+
+
+def test_capacity_shows_even_when_no_outcome_is_known(client, conn, config):
+    """The failure this shipped with. The board's account of the deck does not depend on the
+    camera having managed to classify the crossing, but the tally was computed from the
+    outcome-filtered samples and the card was gated behind having any. On the day it went
+    out the board had flagged five sailings at capacity and the page could show none of
+    them, because all five were still `unknown` — the one signal that accrues immediately
+    was the last one able to appear."""
+    from .test_query import fridays, seed_record
+
+    for day in fridays(4):
+        sailing_id = seed_record(conn, config, day, "12:30", "unknown")
+        conn.execute(
+            "UPDATE sailing_records SET left_full = 1 WHERE sailing_id = ?", (sailing_id,)
+        )
+    conn.commit()
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "No history yet" in body           # no outcome anywhere
+    assert "100%" in body                     # ...and the board still has something to say
+    assert "left at capacity" in body
+    assert "of the 4 comparable sailings the board reported on" in body
