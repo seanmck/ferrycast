@@ -94,6 +94,14 @@ def cmd_doctor(args) -> int:
         problems.append("database missing — run `ferrycast init`")
         print(f"FAIL  database: not found at {config.db_path}")
 
+    # Not pass/fail: a tz database cannot be shown wrong from the inside, only different
+    # from another machine's. Printed so two environments can be compared at a glance,
+    # because the timetable is local clock time and a stale rule shifts every window by an
+    # hour with nothing raising.
+    from .timeutil import timezone_rule
+
+    print(f"info  timezone {timezone_rule(config.tz).summary()}")
+
     if os.environ.get("ANTHROPIC_API_KEY"):
         print("ok    ANTHROPIC_API_KEY is set")
     else:
