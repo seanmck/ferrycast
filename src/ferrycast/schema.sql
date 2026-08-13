@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     fullness_at_departure TEXT,
     residual_fullness     TEXT,   -- the band once the vessel had actually gone
     queue_started_at      TEXT,   -- first frame with anything queued at all (UTC)
-    cleared_at            TEXT,   -- first empty frame after departure (UTC)
+    cleared_at            TEXT,   -- when the compound emptied (UTC); usually before departure,
+                                  -- since it drains while the vessel loads
     -- The board's own "Loading maximum number of vehicles" for this sailing. It describes
     -- the deck, which no camera can see. Stored separately from `outcome` on purpose: it is
     -- not evidence that anyone was turned away, and pairing it with whether the compound

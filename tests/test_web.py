@@ -709,3 +709,54 @@ def test_an_unexplained_fill_is_labelled_not_known(client, conn, config):
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
     assert "Not known" in body
     assert "nobody has\n          reported how long" in body or "reported how long" in body
+
+
+def test_the_board_capacity_signal_reaches_the_page(client, conn, config):
+    """It was stored and read by nothing — not the query layer, not the export, not a single
+    template. A column, not a feature."""
+    from ferrycast.aggregate import aggregate_day
+
+    from .test_deckspace_history import add_deck_space
+
+    for day in fridays(3):
+        add_deck_space(conn, config, "SLT", day, "12:30", [(90, 50), (60, 25), (30, 0)])
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    status_text, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30',
+                       'Peak travel. Loading maximum number of vehicles', 'ok')""",
+            (config.route.id, f"{day.isoformat()}T19:22:00Z", day.isoformat()),
+        )
+        conn.commit()
+        aggregate_day(conn, config, day)
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "left at capacity" in body
+    assert "At capacity" in body
+    assert "of the 3 comparable sailings the board reported on" in body
+
+
+def test_a_board_that_stayed_silent_is_an_answer_but_no_board_at_all_is_not(client, conn, config):
+    """Two different nulls. Scraped through departure and never mentioning capacity is
+    evidence the sailing had room. No reading at all is evidence of nothing, and showing it
+    as "no" would lie in the direction that tells someone a sailing had space."""
+    from .test_query import seed_record
+
+    days = fridays(4)
+    for day in days[:3]:
+        sailing_id = seed_record(conn, config, day, "12:30", "boarded")
+        conn.execute(
+            "UPDATE sailing_records SET left_full = 0 WHERE sailing_id = ?", (sailing_id,)
+        )
+    # The board never covered the fourth.
+    seed_record(conn, config, days[3], "12:30", "boarded")
+    conn.commit()
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    # Three the board covered and never called full: a real 0%, not a shrug.
+    assert "of the 3 comparable sailings the board reported on" in body
+    assert "1 had no reading" in body
+    assert "not known" in body

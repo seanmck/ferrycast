@@ -355,14 +355,32 @@ def _first_occupied_at(observations: list[_Obs]) -> str | None:
     return None
 
 
-def _first_clear_at(observations: list[_Obs], settle_from: datetime) -> str | None:
-    """When the compound emptied once the vessel had gone.
+def _cleared_at(observations: list[_Obs], settle_from: datetime) -> str | None:
+    """When the compound actually emptied.
 
-    The sharp transition, and the one that carries the outcome: a full compound goes to bare
-    asphalt between one frame and the next.
+    Previously this searched from `settle_from` onward, which is at least twelve minutes
+    *after* departure — so it could only ever return a time later than the sailing left, and
+    a page showing both read as nonsense. It was not measuring the clear at all; it was
+    measuring the first frame that later confirmed one.
+
+    The compound empties while the vessel loads, before it goes: on 2026-08-12 the tarmac was
+    bare at 12:00 and the 11:45 departed at 12:03. So the clear is the transition — the first
+    empty frame after the last occupied one — and it usually lands before departure.
+
+    None means it never emptied, which is what an overload looks like and is exactly the case
+    the residual is there to catch.
     """
+    last_occupied = None
     for o in observations:
-        if o.at >= settle_from and o.occupied is False:
+        if o.at > settle_from:
+            break
+        if o.occupied:
+            last_occupied = o.at
+    if last_occupied is None:
+        # Nothing was ever queued, so there was no clear to observe.
+        return None
+    for o in observations:
+        if o.at > last_occupied and o.occupied is False:
             return iso(o.at)
     return None
 
@@ -614,7 +632,7 @@ def compute_record(
         residual_fullness=residual_fullness,
         left_full=left_full,
         queue_started_at=_first_occupied_at(before),
-        cleared_at=_first_clear_at(observations, settle_from),
+        cleared_at=_cleared_at(observations, settle_from),
     )
 
 

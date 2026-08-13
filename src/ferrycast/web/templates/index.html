@@ -4,6 +4,23 @@
 
 {% block style %}
   .depart { display: flex; align-items: baseline; gap: 0.875rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  /* Three states, three shapes — "not known" must never read as "no", and the distinction
+     has to survive greyscale and colour blindness because it is evidence vs its absence. */
+  .cap { display: inline-flex; align-items: center; gap: 0.375rem;
+         font-family: "IBM Plex Mono", monospace; font-size: 0.75rem; line-height: 1;
+         padding: 0.2rem 0.45rem; border-radius: 999px; border: 1px solid transparent; }
+  .cap .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex: none; }
+  .cap.yes { background: color-mix(in srgb, var(--o-filled) 18%, transparent);
+             border-color: color-mix(in srgb, var(--o-filled) 45%, transparent); }
+  .cap.yes .dot { background: var(--o-filled); }
+  .cap.no { color: var(--muted); border-color: var(--line-strong); }
+  .cap.no .dot { background: var(--line-strong); }
+  .cap.unk { color: var(--label); border-style: dashed; border-color: var(--line-strong); }
+  .cap.unk .dot { background: transparent; box-shadow: inset 0 0 0 1px var(--label); }
+  .capline { display: flex; align-items: baseline; gap: 0.625rem; }
+  .capline .pct { font-family: "Instrument Serif", Georgia, serif; font-size: 2.75rem;
+                  line-height: 1; color: var(--o-filled); font-variant-numeric: tabular-nums; }
+
   .depart .time { font-family: "Instrument Serif", Georgia, serif; font-size: 4.5rem; line-height: 0.9; }
   .depart .in { font-family: "IBM Plex Mono", monospace; font-size: 1rem; color: var(--muted); }
 
@@ -1028,7 +1045,7 @@
     <summary class="btn">See the {{ d.samples | length }} dates</summary>
     <table>
       <thead>
-        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>Filled</th><th>Peak</th><th>Cleared</th></tr>
+        <tr><th>Date</th><th>Time</th><th>Outcome</th><th>At capacity</th><th>Peak</th></tr>
       </thead>
       <tbody>
         {% for s in d.samples %}
@@ -1038,7 +1055,15 @@
             <td class="outcome">
               <span class="dot seg-{{ s.outcome }}"></span>{{ short_labels[s.outcome] }}
             </td>
-            <td class="n">{{ s.filled_at_local or '—' }}</td>
+            <td>
+              {%- if s.left_full is none -%}
+                <span class="cap unk"><span class="dot"></span>not known</span>
+              {%- elif s.left_full -%}
+                <span class="cap yes"><span class="dot"></span>yes</span>
+              {%- else -%}
+                <span class="cap no"><span class="dot"></span>no</span>
+              {%- endif -%}
+            </td>
             <td class="n">
               {%- if s.peak_fullness -%}
                 {{ s.peak_fullness }}
@@ -1046,16 +1071,32 @@
                 {{ s.peak_queue }}{% if s.queue_truncated %}+{% endif %}
               {%- else -%}—{%- endif -%}
             </td>
-            <td class="n">{{ s.cleared_local or '—' }}</td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
-    <p class="note">“Filled” is when the vessel ran out of room, and “cleared” is when the
-      compound emptied after the vessel had gone — the point everyone waiting had got on.
-      Peak is how full the compound got; older sailings show a vehicle count instead, and a
-      “+” there means the queue ran past the edge of the camera frame.</p>
+    <p class="note">“At capacity” is the board&#39;s own account of the deck, which no camera
+      can see; “not known” means it never said, which is not the same as no. The outcome
+      column is about the compound instead — whether anyone was left standing on the tarmac.
+      Peak is how full the compound got; older sailings show a vehicle count, and a “+” there
+      means the queue ran past the edge of the camera frame.</p>
   </details>
+
+  {# The board's own account of the deck, which no camera can see. It needs neither the
+     camera nor depth of history, so it can say something while the rest is still filling. #}
+  {% if d.at_capacity_of %}
+  <section class="card">
+    <p class="label">What the board said</p>
+    <div class="capline">
+      <span class="pct">{{ (d.at_capacity_share * 100) | round | int }}%</span>
+      <span>left at capacity</span>
+    </div>
+    <p class="note">{{ d.at_capacity }} of the {{ d.at_capacity_of }} comparable sailing{{ '' if d.at_capacity_of == 1 else 's' }} the board reported on{% if d.at_capacity_unknown %}. {{ d.at_capacity_unknown }} had no reading{% endif %}.</p>
+    <p class="note">Loading to capacity is not the same as leaving someone behind — a
+      sailing can fill and still take everyone, which is the tightest kind of success and
+      the one nothing else can show you.</p>
+  </section>
+  {% endif %}
 
   <details id="curve-box">
     <summary class="btn btn-quiet">When did the queue build?</summary>
