@@ -176,7 +176,7 @@ def test_capture_reads_the_frames_it_just_took(conn, config, monkeypatch, tmp_pa
     later without losing the measurement."""
     from ferrycast import scheduler
 
-    read_calls = {"frames": 0}
+    read_calls = {}
 
     def fake_capture_once(conn, config):
         return []
@@ -186,15 +186,14 @@ def test_capture_reads_the_frames_it_just_took(conn, config, monkeypatch, tmp_pa
         unusable = skipped_no_calibration = failed = 0
         errors: list[str] = []
 
-    def fake_extract(conn, config, frames, **kw):
-        read_calls["frames"] = len(frames)
+    def fake_extract_pending(conn, config, *, max_reads):
+        read_calls["max_reads"] = max_reads
         return FakeStats()
 
     monkeypatch.setattr("ferrycast.capture.capture_once", fake_capture_once)
-    monkeypatch.setattr("ferrycast.lanes.extract_frames", fake_extract)
-    monkeypatch.setattr("ferrycast.lanes.pending_frames", lambda c, limit: [object(), object()])
+    monkeypatch.setattr("ferrycast.lanes.extract_pending", fake_extract_pending)
 
     detail = scheduler._capture(conn, config)
 
-    assert read_calls["frames"] == 2
+    assert read_calls["max_reads"] == scheduler.LANE_READS_PER_RUN
     assert "read 2" in detail
