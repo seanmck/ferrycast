@@ -55,6 +55,30 @@ FULL_NOTE_RE = re.compile(r"loading maximum number of vehicles", re.IGNORECASE)
 # bounded so a redesigned site cannot fill the volume one scrape at a time.
 RAW_LIMIT = 4000
 
+# The conditions page carries a "Departures" tab only for directions BC Ferries publishes a
+# board for, and it does not publish one for every direction it sails. Earls Cove → Saltery
+# Bay has never had one: the page renders the route title, the service notices and a ferry
+# tracking tab, and nothing else — no sailing times anywhere in the markup, at any hour.
+# (The separate "Departures & arrivals" page covers six major terminals; neither end of this
+# route is among them.)
+#
+# The tab's label stands as a line of its own in the page's visible text. The navigation's
+# "Departures & arrivals" link, which every page carries, does not — so an exact-line match
+# separates the two cases without keying on the markup this parser deliberately ignores.
+DEPARTURES_TAB = "Departures"
+
+
+def publishes_departures(html: str) -> bool:
+    """Whether this page offers a departures board at all.
+
+    The distinction this exists to draw is between "there is nothing here to read" and "we
+    could not read what is here". Both once recorded as `unparsed`, which meant a direction
+    BC Ferries simply does not publish looked exactly like the parser breaking — 738 rows of
+    alarm at five-minute intervals, each dragging 4KB of the same page furniture with it,
+    and no way to notice a genuine regression underneath.
+    """
+    return any(line.strip() == DEPARTURES_TAB for line in visible_text(html).splitlines())
+
 
 @dataclass
 class DeckSpaceRow:
@@ -362,9 +386,32 @@ def scrape_once(conn: sqlite3.Connection, config: Config) -> list[dict]:
 
             rows = parse_deck_space(result.text, expected_times(config, terminal.code, observed_at))
             if not rows:
-                # Keep the page itself. "Fetched fine, recognised nothing" is the failure
-                # that hides best — it looks identical to a quiet day — and diagnosing it
-                # without the markup meant a day of guessing from a screenshot.
+                if not publishes_departures(result.text):
+                    # Nothing was published to read. Recorded, because "we looked and there
+                    # was no board" is evidence and it is how we would notice BC Ferries
+                    # starting to publish one — but not as a failure, and without the raw
+                    # page: there is no format to diagnose.
+                    _record_problem(
+                        conn,
+                        config,
+                        terminal.code,
+                        observed_at,
+                        "not_published",
+                        "no departures board is published for this direction",
+                    )
+                    results.append(
+                        {
+                            "terminal": terminal.code,
+                            "ok": False,
+                            "skipped": True,
+                            "rows": 0,
+                            "error": "no departures board published",
+                        }
+                    )
+                    continue
+                # There was a board and we could not read it. Keep the page itself: this is
+                # the failure that hides best — it looks identical to a quiet day — and
+                # diagnosing it without the markup meant a day of guessing from a screenshot.
                 _record_problem(
                     conn,
                     config,

@@ -2,6 +2,7 @@ from ferrycast.deckspace import notice_says_full, parse_deck_space, scrape_once
 
 AVAILABLE_PAGE = """
 <html><body>
+  <ul><li><a href="#tabs-1">Departures</a></li></ul>
   <div class="sailing"><h3>12:30 pm</h3><span>45% Available</span><p>Island Sky</p></div>
   <div class="sailing"><h3>4:30 pm</h3><span>0% Available</span></div>
 </body></html>
@@ -9,12 +10,14 @@ AVAILABLE_PAGE = """
 
 FULL_PAGE = """
 <html><body>
+  <ul><li><a href="#tabs-1">Departures</a></li></ul>
   <div class="sailing"><h3>12:30 pm</h3><span>80% Full</span></div>
 </body></html>
 """
 
 CANCELLED_PAGE = """
 <html><body>
+  <ul><li><a href="#tabs-1">Departures</a></li></ul>
   <div class="sailing"><h3>8:30 am</h3><span>Cancelled</span></div>
   <div class="sailing"><h3>12:30 pm</h3><span>30% Available</span></div>
 </body></html>
@@ -76,6 +79,26 @@ def test_failed_scrape_is_logged_and_does_not_raise(conn, config, monkeypatch):
     assert "503" in rows[0]["error"]
 
 
+# A board is on offer — the tab is there — but nothing on it can be read. This is the
+# regression case: the site reshuffled, or the wording moved, and somebody must look.
+BROKEN_BOARD_PAGE = """
+<html><body>
+  <ul><li><a href="#tabs-1">Departures</a></li><li><a href="#tabs-2">Ferry tracking</a></li></ul>
+  <div id="tabs-1">nothing we recognise</div>
+</body></html>
+"""
+
+# The Earls Cove page, in miniature: a route title, a service notice, ferry tracking, and no
+# departures tab anywhere. BC Ferries publishes no board for this direction at all.
+NO_BOARD_PAGE = """
+<html><body>
+  <h3>Sunshine Coast (Earls Cove) to Powell River (Saltery Bay)</h3>
+  <ul><li><a href="#tabs-2">Ferry tracking</a></li></ul>
+  <nav><a href="/current-conditions/departures">Departures &amp; arrivals</a></nav>
+</body></html>
+"""
+
+
 def test_unparsed_page_is_distinguished_from_a_fetch_error(conn, config, monkeypatch):
     from ferrycast import deckspace
     from ferrycast.fetching import FetchResult
@@ -83,7 +106,7 @@ def test_unparsed_page_is_distinguished_from_a_fetch_error(conn, config, monkeyp
     monkeypatch.setattr(
         deckspace,
         "fetch",
-        lambda *a, **k: FetchResult(ok=True, text="<html>nothing useful</html>"),
+        lambda *a, **k: FetchResult(ok=True, text=BROKEN_BOARD_PAGE),
     )
     scrape_once(conn, config)
 
@@ -94,11 +117,41 @@ def test_unparsed_page_is_distinguished_from_a_fetch_error(conn, config, monkeyp
     assert statuses == {"unparsed"}
 
 
+def test_a_direction_with_no_board_is_not_a_parse_failure(conn, config, monkeypatch):
+    """BC Ferries publishes no departures board for Earls Cove -> Saltery Bay. Recording
+    that as `unparsed` made a permanent fact of the route look like a broken parser, at
+    five-minute intervals, and buried the alarm that would mean something."""
+    from ferrycast import deckspace
+    from ferrycast.fetching import FetchResult
+
+    monkeypatch.setattr(
+        deckspace, "fetch", lambda *a, **k: FetchResult(ok=True, text=NO_BOARD_PAGE)
+    )
+    results = scrape_once(conn, config)
+
+    rows = conn.execute("SELECT fetch_status, raw FROM deck_space").fetchall()
+    assert {row["fetch_status"] for row in rows} == {"not_published"}
+    # Nothing to diagnose, so nothing is kept — this page arrives 288 times a day.
+    assert all(row["raw"] is None for row in rows)
+    # And the scheduler must not report it among the failures.
+    assert all(r.get("skipped") for r in results)
+
+
+def test_the_navigation_link_is_not_mistaken_for_a_board(conn, config):
+    """Every page on the site links to "Departures & arrivals". Only a page that actually
+    offers the board carries "Departures" as a heading of its own."""
+    from ferrycast.deckspace import publishes_departures
+
+    assert not publishes_departures(NO_BOARD_PAGE)
+    assert publishes_departures(BROKEN_BOARD_PAGE)
+
+
 # Each terminal publishes its own departures, so the fixtures differ per URL. Serving one
 # page to both terminals used to "pass": the parser accepted any time it saw, so Earls Cove
 # happily recorded Saltery Bay's departures as its own.
 ERL_PAGE = """
 <html><body>
+  <ul><li><a href="#tabs-1">Departures</a></li></ul>
   <div class="sailing"><h3>9:30 am</h3><span>45% Available</span><p>Island Sky</p></div>
   <div class="sailing"><h3>1:30 pm</h3><span>0% Available</span></div>
 </body></html>

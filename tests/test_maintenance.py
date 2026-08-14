@@ -171,3 +171,36 @@ def test_export_respects_a_date_window(conn, config):
     add_observation(conn, config, "SLT", now_utc(), 9)
     recent = rows_for(conn, "frames", since=iso(now_utc() - timedelta(days=1)))
     assert [row["vehicle_count"] for row in recent] == [9]
+
+
+def _add_deck_rows(conn, config, statuses):
+    """One deck-space row per status, each at its own minute (they are keyed by time)."""
+    for i, status in enumerate(statuses):
+        conn.execute(
+            """INSERT INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm, fetch_status)
+               VALUES (?, 'SLT', ?, ?, '12:30', ?)""",
+            (
+                config.route.id,
+                iso(now_utc() - timedelta(minutes=i)),
+                date.today().isoformat(),
+                status,
+            ),
+        )
+    conn.commit()
+
+def test_an_unpublished_board_does_not_count_against_the_scrape_rate(conn, config):
+    """One end of this route publishes a departures board and the other does not, so half
+    of every scrape cycle has nothing to read. Counted as failures those rows pinned the
+    rate near 50% permanently — which is both wrong and useless, because a real parser
+    break could no longer move it."""
+    statuses = ["ok", "ok", "ok", "not_published", "not_published", "not_published"]
+    _add_deck_rows(conn, config, statuses)
+
+    assert health_report(conn, config).deckspace_success_rate == 1.0
+
+
+def test_a_genuine_parse_failure_still_shows(conn, config):
+    _add_deck_rows(conn, config, ["ok", "unparsed", "not_published"])
+
+    assert health_report(conn, config).deckspace_success_rate == 0.5
