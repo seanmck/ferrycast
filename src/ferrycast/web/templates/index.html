@@ -459,12 +459,19 @@
       background: var(--surface); border-left-color: var(--buoy); opacity: 1;
     }
 
-    .board-time { font-family: "Instrument Serif", Georgia, serif; font-size: 1.625rem;
-                  line-height: 1; font-variant-numeric: tabular-nums; }
+    .board-time { display: flex; flex-direction: column; gap: 0.3rem; }
+    .board-time .t { font-family: "Instrument Serif", Georgia, serif; font-size: 1.625rem;
+                     line-height: 1; font-variant-numeric: tabular-nums; }
+    /* What the row is doing today — the countdown, the day's-worst warning, the last
+       boat — under the hour it does it at, so the Usually column is never displaced by
+       it. Sized to fit "in 1 h 20 min" inside the time column without widening the grid. */
+    .board-mark { font-family: "IBM Plex Mono", monospace; font-size: 0.5625rem;
+                  letter-spacing: 0.08em; text-transform: uppercase; color: var(--label);
+                  white-space: nowrap; }
     .board-status { font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem;
                     letter-spacing: 0.06em; text-transform: uppercase; color: var(--label); }
-    .board-row.next .board-status  { color: var(--buoy); }
-    .board-row.worst .board-status { color: var(--late); }
+    .board-row.next .board-mark { color: var(--buoy); }
+    .board-row.worst .board-mark, .board-row.worst .board-status { color: var(--late); }
 
     .board-mix { display: flex; height: 10px; border-radius: 1px; overflow: hidden; }
     .board-mix span { display: block; min-width: 2px; }
@@ -622,8 +629,10 @@
         ~ ((' ' ~ row.tone) if row.tone else '')
         ~ (' on' if row.selected else '') %}
     <a class="{{ row_class }}" href="{{ row.href }}" aria-label="{{ row.summary }}">
-      <span class="board-time">{{ row.time }}</span>
-      <span class="board-status">{{ row.status }}</span>
+      <span class="board-time"><span class="t">{{ row.time }}</span>
+        {%- if row.marker %}<span class="board-mark">{{ row.marker }}</span>{% endif -%}
+      </span>
+      <span class="board-status">{{ row.outlook }}</span>
       {% if row.n %}
         <span class="board-mix">
           {% for key, count in row.counts.items() if count %}
