@@ -382,7 +382,14 @@ def read_frame(
     }
 
 
-def pending_frames(conn, limit: int, *, since: str | None = None, terminal: str | None = None):
+def pending_frames(
+    conn,
+    limit: int,
+    *,
+    since: str | None = None,
+    terminal: str | None = None,
+    terminals: list[str] | None = None,
+):
     """Frames with no geometric reading yet. Mirrors `vision.pending_frames`."""
     sql = """
         SELECT f.id, f.terminal, f.captured_at, f.path
@@ -397,22 +404,35 @@ def pending_frames(conn, limit: int, *, since: str | None = None, terminal: str 
     if terminal:
         sql += " AND f.terminal = ?"
         params.append(terminal)
+    if terminals is not None:
+        placeholders = ",".join("?" for _ in terminals)
+        sql += f" AND f.terminal IN ({placeholders})"
+        params.extend(terminals)
     sql += " ORDER BY f.captured_at LIMIT ?"
     params.append(limit)
     return list(conn.execute(sql, tuple(params)).fetchall())
 
 
-def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
+def extract_frames(
+    conn, config, frames, *, dry_run: bool = False, max_reads: int | None = None
+) -> LaneStats:
     """Read frames geometrically and store them as observations.
 
     These land in the same table as `vision`'s, under their own prompt version, so the two
     are directly comparable on identical frames and neither overwrites the other. Nothing
     here costs money, so unlike the vision path there is no budget to stop against.
+
+    `max_reads` caps actual reads (~19ms each), not frames considered: a skip writes no
+    observation and costs microseconds, so skipped frames must not eat the quota. Letting
+    them do exactly that is how extraction starved in production — the 40 oldest pending
+    frames were all unreadable, every run spent its whole budget re-skipping them, and no
+    new frame was ever reached.
     """
     from .timeutil import iso, now_utc
 
-    stats = LaneStats(considered=len(frames))
+    stats = LaneStats()
     if not frames or dry_run:
+        stats.considered = len(frames)
         return stats
 
     from .timeutil import local, parse_iso
@@ -420,8 +440,14 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
     config_dir = Path(config.source_path).parent
     cals: dict[str, LaneCalibration | None] = {}
     libraries: dict[str, BackgroundLibrary] = {}
+    # One json read per (terminal, hour) per run, not one per frame: a backlog sweep may
+    # consider thousands of frames, and `for_hour` goes to disk every call.
+    backgrounds: dict[tuple[str, int], Background | None] = {}
 
     for frame in frames:
+        if max_reads is not None and stats.read >= max_reads:
+            break
+        stats.considered += 1
         terminal = frame["terminal"]
         if terminal not in cals:
             cals[terminal] = load_for(config_dir, terminal)
@@ -435,7 +461,9 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
         # reads a bare floodlit compound at 04:00 as every lane occupied, so an hour with no
         # background yet is skipped rather than differenced against the wrong light.
         hour = local(parse_iso(frame["captured_at"]), config.tz).hour
-        background = libraries[terminal].for_hour(hour)
+        if (terminal, hour) not in backgrounds:
+            backgrounds[terminal, hour] = libraries[terminal].for_hour(hour)
+        background = backgrounds[terminal, hour]
         if background is None:
             stats.skipped_no_background += 1
             continue
@@ -479,6 +507,36 @@ def extract_frames(conn, config, frames, *, dry_run: bool = False) -> LaneStats:
             stats.unusable += 1
     conn.commit()
     return stats
+
+
+#: How many pending frames one `extract_pending` sweep may pull from the database. A bound
+#: on queue-scan work, not on reads — far above any real backlog's readable share, and it
+#: keeps a pathological queue (every frame skipped) from making a single run unbounded.
+PENDING_SCAN_LIMIT = 5000
+
+
+def extract_pending(conn, config, *, max_reads: int, dry_run: bool = False) -> LaneStats:
+    """Read up to `max_reads` of the oldest pending frames that can actually be read.
+
+    The queue discipline matters more than it looks. Frames from a terminal with no
+    calibration can never be read, and a skip writes no observation, so such frames stay
+    pending forever. Querying pending frames oldest-first with a hard LIMIT then handed
+    every run the same unreadable head — in production, forty Earls Cove frames blocked
+    every Saltery Bay frame for three days. So: only calibrated terminals are queried at
+    all, and the read cap is enforced by `extract_frames` against reads rather than against
+    frames considered, which lets no-background frames (a transient condition — backgrounds
+    build as history accumulates) wait in the queue without blocking anything behind them.
+    """
+    config_dir = Path(config.source_path).parent
+    calibrated = [
+        terminal.code
+        for terminal in config.route.terminals
+        if calibration_path(config_dir, terminal.code).exists()
+    ]
+    if not calibrated:
+        return LaneStats()
+    frames = pending_frames(conn, PENDING_SCAN_LIMIT, terminals=calibrated)
+    return extract_frames(conn, config, frames, dry_run=dry_run, max_reads=max_reads)
 
 
 # --- rolling backgrounds ----------------------------------------------------------------

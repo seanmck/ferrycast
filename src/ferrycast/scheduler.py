@@ -36,15 +36,16 @@ class Job:
     enabled: Callable[[Config], bool] = lambda config: True
 
 
-# How many frames one capture run may read geometrically. Two terminals produce two new
-# frames per run, so anything above that is backlog catch-up. At ~19ms a frame this ceiling
-# costs under a second, and it keeps a large unread archive from stalling a single run.
+# How many frames one capture run may actually read geometrically. Two terminals produce
+# two new frames per run, so anything above that is backlog catch-up. At ~19ms a frame this
+# ceiling costs under a second, and it keeps a large unread archive from stalling a single
+# run. It caps reads, not frames considered — see `lanes.extract_pending`.
 LANE_READS_PER_RUN = 40
 
 
 def _capture(conn, config: Config) -> str:
     from .capture import capture_once
-    from .lanes import extract_frames, pending_frames
+    from .lanes import extract_pending
 
     outcomes = capture_once(conn, config)
     ok = sum(1 for o in outcomes if o.ok)
@@ -63,7 +64,7 @@ def _capture(conn, config: Config) -> str:
     # Deliberately not limited to the frames just captured: a terminal that was calibrated
     # after collection began, or one whose backlog was never read, catches up here a few
     # frames at a time rather than needing a manual sweep.
-    read = extract_frames(conn, config, pending_frames(conn, limit=LANE_READS_PER_RUN))
+    read = extract_pending(conn, config, max_reads=LANE_READS_PER_RUN)
     if read.read:
         detail += f", read {read.read}"
         if read.unusable:

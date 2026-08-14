@@ -294,3 +294,122 @@ def test_an_hour_with_no_background_is_not_read_against_the_wrong_one(tmp_path, 
 
     (tmp_path / "backgrounds" / "SLT").mkdir(parents=True)
     assert BackgroundLibrary(tmp_path, "SLT").for_hour(4) is None
+
+
+# ------------------------------------------------------------- the scheduler's entry point
+
+
+def _install_calibration(config):
+    import shutil
+
+    cal_dir = Path(config.source_path).parent / "calibration"
+    cal_dir.mkdir(exist_ok=True)
+    shutil.copyfile(SLT_CAL, cal_dir / "SLT.json")
+
+
+def _install_background(config, cal, hour):
+    from ferrycast.lanes import MIN_BACKGROUND_SAMPLES, backgrounds_dir
+
+    root = backgrounds_dir(config.data_dir, "SLT")
+    root.mkdir(parents=True, exist_ok=True)
+    Image.open(io.BytesIO(_paint(cal))).convert("L").save(root / f"{hour:02d}.png")
+    (root / f"{hour:02d}.json").write_text(
+        json.dumps(
+            {
+                "terminal": "SLT",
+                "hour": hour,
+                "samples": MIN_BACKGROUND_SAMPLES,
+                "from": "x",
+                "to": "y",
+                "built_at": "z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _add_frame(conn, config, cal, terminal, local_hour, local_minute):
+    """A frame on disk and in the database, captured at a chosen local wall-clock time."""
+    from datetime import date, time
+
+    from ferrycast.timeutil import combine_local, iso, local
+
+    at = combine_local(date(2026, 8, 14), time(local_hour, local_minute), config.tz)
+    rel = f"{terminal}/{local_hour:02d}{local_minute:02d}.jpg"
+    path = Path(config.data_dir) / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_paint(cal))
+    conn.execute(
+        """INSERT INTO frames (route, terminal, captured_at, service_date, path, status)
+           VALUES (?, ?, ?, ?, ?, 'ok')""",
+        (config.route.id, terminal, iso(at), local(at, config.tz).date().isoformat(), rel),
+    )
+    conn.commit()
+
+
+def _geom_observations(conn):
+    from ferrycast.lanes import PROMPT_VERSION
+
+    return {
+        row["terminal"]: row["n"]
+        for row in conn.execute(
+            """SELECT f.terminal, COUNT(*) AS n FROM observations o
+                 JOIN frames f ON f.id = o.frame_id
+                WHERE o.prompt_version = ?
+                GROUP BY f.terminal""",
+            (PROMPT_VERSION,),
+        )
+    }
+
+
+def test_an_uncalibrated_backlog_cannot_starve_a_calibrated_terminal(conn, config, cal):
+    """The production failure this exists to prevent. Skipped frames write no observation,
+    so they stay pending; with the queue read oldest-first under a hard limit, forty
+    Earls Cove frames — a terminal with no lane grid to calibrate — occupied the head of
+    the queue and no Saltery Bay frame was read for three days."""
+    from ferrycast.lanes import extract_pending
+
+    _install_calibration(config)
+    _install_background(config, cal, 10)
+    for minute in range(0, 60, 10):  # six older ERL frames head the queue
+        _add_frame(conn, config, cal, "ERL", 9, minute)
+    _add_frame(conn, config, cal, "SLT", 10, 0)
+    _add_frame(conn, config, cal, "SLT", 10, 5)
+
+    stats = extract_pending(conn, config, max_reads=2)
+
+    assert stats.read == 2
+    # The uncalibrated terminal is never queried at all, not skipped one frame at a time.
+    assert stats.considered == 2
+    assert stats.skipped_no_calibration == 0
+    assert _geom_observations(conn) == {"SLT": 2}
+
+
+def test_frames_without_a_background_yet_do_not_eat_the_read_quota(conn, config, cal):
+    """No-background is transient — backgrounds build as history accumulates — so those
+    frames wait in the queue. Waiting must cost nothing: the cap is on reads, and a run
+    that skips five unreadable frames still reads everything it came for."""
+    from ferrycast.lanes import extract_pending
+
+    _install_calibration(config)
+    _install_background(config, cal, 10)
+    for minute in range(0, 50, 10):  # five older frames from an hour with no reference
+        _add_frame(conn, config, cal, "SLT", 4, minute)
+    for minute in (0, 5, 10):
+        _add_frame(conn, config, cal, "SLT", 10, minute)
+
+    stats = extract_pending(conn, config, max_reads=3)
+
+    assert stats.read == 3
+    assert stats.skipped_no_background == 5
+    assert _geom_observations(conn) == {"SLT": 3}
+
+
+def test_no_calibrated_terminal_means_no_queue_scan(conn, config, cal):
+    from ferrycast.lanes import extract_pending
+
+    _add_frame(conn, config, cal, "SLT", 10, 0)
+
+    stats = extract_pending(conn, config, max_reads=40)
+
+    assert (stats.considered, stats.read) == (0, 0)
