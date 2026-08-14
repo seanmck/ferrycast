@@ -125,7 +125,7 @@ def test_the_board_is_rendered_server_side(client, conn, config):
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
     assert body.count('<a class="board-row') == 3       # every sailing in the timetable
-    assert 'class="board-time">12:30<' in body
+    assert 'class="board-time"><span class="t">12:30</span>' in body
     assert ' on" href="/?origin=SLT&amp;service_date=2026-08-14&amp;time=12:30"' in body
 
 
@@ -201,6 +201,32 @@ def test_an_outlook_is_never_stated_off_a_thin_bucket(client, conn, config, frid
 
     assert "expect to wait" not in body
     assert "toss-up" not in body
+
+
+def test_a_departed_sailing_still_says_what_it_usually_does(client, conn, config, friday_lunchtime):
+    """"Sailed" in the Usually column told the reader what the dimming already does, and it
+    cost the row its outlook. The morning's history stays readable all day."""
+    for day in fridays(6):
+        seed_record(conn, config, day, "08:30", "boarded")
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "room most days" in body   # the 08:30 — gone by 13:00, still answered
+    assert ">sailed<" not in body     # the word is the styling's job now
+
+
+def test_the_worst_sailing_says_both_facts(client, conn, config, friday_lunchtime):
+    """"Worst of day" used to displace the outlook on exactly the row where the outlook
+    mattered most. The marker and the outlook have separate places now."""
+    for day in fridays(6):
+        seed_record(conn, config, day, "08:30", "boarded")
+        seed_record(conn, config, day, "12:30", "waited_2plus")
+        seed_record(conn, config, day, "16:30", "boarded")
+
+    body = client.get("/?origin=SLT&service_date=2026-08-21").text
+
+    assert "worst of day" in body
+    assert "expect to wait" in body
 
 
 def test_the_worst_sailing_of_the_day_is_named(client, conn, config, friday_lunchtime):

@@ -94,7 +94,7 @@ def _countdown(config: Config, service_date: date, depart_hhmm: str) -> str | No
     return "tomorrow" if days == 1 else f"in {days} days"
 
 
-# How the board says a made-it share out loud, in the status column the desktop layout has
+# How the board says a made-it share out loud, in the Usually column the desktop layout has
 # room for and the phone does not. Only ever applied to a row with a deep enough bucket
 # behind it: "expect to wait" off two sailings is an editorial, not a finding.
 OUTLOOK_ROOM = 0.70
@@ -235,8 +235,7 @@ def _board(
     for row in rows:
         departed = combine_local(service_date, parse_hhmm(row.depart_hhmm), config.tz) <= now
         # Only today has a next departure worth counting down to. On any other date the
-        # countdown is a number of hours nobody is acting on, and the outlook — what this
-        # sailing usually does — is the column's real job.
+        # countdown is a number of hours nobody is acting on.
         is_next = bool(
             is_today
             and next_out
@@ -244,20 +243,29 @@ def _board(
             and next_out.depart_hhmm == row.depart_hhmm
         )
 
+        # Two separate facts, in two separate places. The Usually column only ever says
+        # the outlook — what this sailing usually does — so a departed morning still shows
+        # its record. What the row is doing *today* (the countdown, worst of day, last
+        # boat) is a marker under the hour it does it at. A boat that has gone gets no
+        # marker at all: the rows above the "now" rule are already dimmed, and the word
+        # would restate the styling.
+        outlook = _outlook(row)
         if departed:
-            status, tone = "sailed", "past"
+            marker, tone = "", "past"
         elif is_next:
-            status, tone = (_countdown(config, service_date, row.depart_hhmm) or ""), "next"
+            marker, tone = (_countdown(config, service_date, row.depart_hhmm) or ""), "next"
         elif row.depart_hhmm == worst:
-            status, tone = "worst of day", "worst"
+            marker, tone = "worst of day", "worst"
         elif row.depart_hhmm == last_hhmm:
-            status, tone = "last boat", ""
+            marker, tone = "last boat", ""
         else:
-            status, tone = _outlook(row), ""
+            marker, tone = "", ""
 
         # The row's own sentence, for anyone who reaches it as a link rather than as a
         # line in a grid. The column headings are decoration to a screen reader — they
-        # label cells it is never told about — so each row has to say what it is.
+        # label cells it is never told about — so each row has to say what it is. Dimming
+        # is visual, so a boat that has gone says "sailed" here even though the board
+        # leaves it to the styling.
         if row.n:
             summary = (
                 f"{row.depart_hhmm}, {round(row.boarded_share * 100)}% got on across "
@@ -267,8 +275,12 @@ def _board(
                 summary += f", typically full by {row.arrive_by}"
         else:
             summary = f"{row.depart_hhmm}, no comparable history yet"
-        if status:
-            summary += f" — {status}"
+        if outlook:
+            summary += f" — {outlook}"
+        if departed:
+            summary += " — sailed"
+        elif marker:
+            summary += f" — {marker}"
 
         board.append(
             {
@@ -279,7 +291,8 @@ def _board(
                 "boarded_pct": round(row.boarded_share * 100),
                 "arrive_by": row.arrive_by,
                 "relaxed": row.relaxed,
-                "status": status,
+                "outlook": outlook,
+                "marker": marker,
                 "tone": tone,
                 "departed": departed,
                 "selected": row.depart_hhmm == selected_time,
