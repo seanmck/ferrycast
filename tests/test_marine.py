@@ -640,6 +640,28 @@ def test_no_shape_is_claimed_from_a_day_nobody_has_data_for(marine_client, marin
     assert "Easiest sailings" not in body
 
 
+def test_the_forecast_follows_the_sailings_on_the_board(marine_client, marine_conn, marine_config):
+    """Somebody opening the board came for a departure time. The shape of the day says which
+    rows to read first and stays above them; the forecast is what you read once you have a
+    row, so it sits under them rather than between the heading and the first sailing."""
+    from .test_query import fridays
+
+    for day in fridays(6):
+        seed_record(marine_conn, marine_config, day, "08:30", "boarded")
+        seed_record(marine_conn, marine_config, day, "12:30", "waited_2plus")
+        seed_record(marine_conn, marine_config, day, "16:30", "waited_2plus")
+    seed_forecast(marine_conn, marine_config, date(2026, 8, 21), "light", kt=15)
+
+    body = marine_client.get("/?origin=SLT&service_date=2026-08-21").text
+
+    shape = body.index("Easiest sailings")
+    first_row = body.index('class="board-row')
+    last_row = body.rindex('class="board-row')
+    forecast = body.index('class="strip strip-weather"')
+    assert shape < first_row
+    assert last_row < forecast
+
+
 # ---- The cue and the sheet on a phone -----------------------------------------------------
 #
 # The phone gets the forecast in two pieces: a line saying whether it is blowing, and a
@@ -738,6 +760,20 @@ def test_a_warning_reaches_the_cue_itself(marine_client, marine_conn, marine_con
 
     assert 'class="marine-flag">Warning' in body
     assert "Gale warning in effect" in body  # worded in full, in the sheet
+
+
+def test_the_cue_sits_below_the_answer_on_a_phone(marine_client, marine_conn, marine_config):
+    """One column, and the answer gets the top of it. The cue is context for a sailing you
+    have already been given, so it follows it rather than delaying it."""
+    from .test_query import fridays
+
+    for day in fridays(6):
+        seed_record(marine_conn, marine_config, day, "12:30", "boarded")
+    seed_forecast(marine_conn, marine_config, date(2026, 8, 21), "light", kt=15)
+
+    body = marine_client.get("/?origin=SLT&service_date=2026-08-21&time=12:30").text
+
+    assert body.index('class="hero"') < body.index('class="marine-cue')
 
 
 def test_a_marine_section_without_a_site_is_rejected(tmp_path):
