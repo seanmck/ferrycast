@@ -11,7 +11,7 @@ a third party.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -31,7 +31,9 @@ from ..marine import summary as marine_summary
 from ..query import (
     OUTCOME_LABELS,
     OUTCOME_LABELS_SHORT,
+    BoardWatch,
     arrival_curve,
+    board_watch,
     collection_status,
     comparable_report_bounds,
     day_board,
@@ -200,6 +202,53 @@ def _day_shape(rows) -> dict:
     return shape
 
 
+# How long a reading of BC Ferries' board stays worth believing. Two polls' worth of slack:
+# one missed scrape is a hiccup, two in a row means the eye is shut, and a shut eye must not
+# be read as "the vessel is still at the dock". Past that the board falls back to the clock,
+# which is wrong in the same way it was always wrong — but no longer wrong *and* unfalsifiable.
+def _watch_window(config: Config) -> timedelta:
+    return timedelta(minutes=2 * config.capture.interval_minutes)
+
+
+def _watch_for(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    service_date: date,
+    now: datetime,
+) -> BoardWatch | None:
+    """What the published board is saying about today, or None when nothing worth reading.
+
+    Only today: on any other date every sailing has long gone, the question the live board
+    answers does not arise, and the query would be two round trips spent on a certainty.
+
+    A stale reading is discarded rather than used, because the failure it causes is the
+    ugly one: a scraper that died at 09:30 would otherwise hold every sailing after it at
+    "not away yet" for the rest of the day, each one looking freshly observed.
+    """
+    if service_date != now.date():
+        return None
+    watch = board_watch(conn, config, origin=origin, target_date=service_date)
+    return watch if watch.is_fresh(now, _watch_window(config)) else None
+
+
+def _has_sailed(watch: BoardWatch | None, depart_hhmm: str) -> bool:
+    """Whether the vessel has actually gone, as opposed to merely being due.
+
+    With no live reading at all — a past date, a terminal with no conditions page, a scraper
+    that has fallen over — this is the clock's call again, and the caller has already made
+    it. Where there *is* a reading, only two things count as gone: a published departure
+    time, or the sailing having dropped off the board entirely, which is how a departure
+    that was never published finally settles.
+    """
+    if watch is None:
+        return True
+    if depart_hhmm in watch.departures:
+        return True
+    return depart_hhmm not in watch.listed
+
+
 def _board(
     conn: sqlite3.Connection,
     config: Config,
@@ -230,10 +279,17 @@ def _board(
     is_today = service_date == now.date()
     worst = _worst_of_day(rows)
     last_hhmm = rows[-1].depart_hhmm
+    watch = _watch_for(conn, config, origin=origin, service_date=service_date, now=now)
 
     board = []
     for row in rows:
-        departed = combine_local(service_date, parse_hhmm(row.depart_hhmm), config.tz) <= now
+        scheduled = combine_local(service_date, parse_hhmm(row.depart_hhmm), config.tz)
+        # Two different questions, and the board used to answer both with the clock. Where
+        # the row sits relative to "now" is a fact about the timetable, so it stays the
+        # clock's to answer. Whether the vessel has actually gone is a fact about the
+        # water, and only BC Ferries' board knows it.
+        past = scheduled <= now
+        sailed = past and _has_sailed(watch, row.depart_hhmm)
         # Only today has a next departure worth counting down to. On any other date the
         # countdown is a number of hours nobody is acting on.
         is_next = bool(
@@ -250,8 +306,13 @@ def _board(
         # marker at all: the rows above the "now" rule are already dimmed, and the word
         # would restate the styling.
         outlook = _outlook(row)
-        if departed:
+        if sailed:
             marker, tone = "", "past"
+        elif past:
+            # Its time has come and gone and the board still has not called it away. That
+            # is the one state worth spelling out, because it is the only one where a
+            # sailing above the "now" rule is still a sailing you might catch.
+            marker, tone = "not away yet", "holding"
         elif is_next:
             marker, tone = (_countdown(config, service_date, row.depart_hhmm) or ""), "next"
         elif row.depart_hhmm == worst:
@@ -277,7 +338,7 @@ def _board(
             summary = f"{row.depart_hhmm}, no comparable history yet"
         if outlook:
             summary += f" — {outlook}"
-        if departed:
+        if sailed:
             summary += " — sailed"
         elif marker:
             summary += f" — {marker}"
@@ -294,7 +355,10 @@ def _board(
                 "outlook": outlook,
                 "marker": marker,
                 "tone": tone,
-                "departed": departed,
+                # The clock's answer, and only the clock's: this places the "now" rule.
+                # Whether the vessel has actually gone is already in the tone, and the two
+                # part company for exactly as long as a late boat is still at the dock.
+                "past": past,
                 "selected": row.depart_hhmm == selected_time,
                 # `safe=":"` keeps the departure readable as 16:30 rather than 16%3A30.
                 # A colon is legal in a query string, and on this layout the row link is
@@ -319,10 +383,14 @@ def _now_index(board: list[dict]) -> int | None:
 
     None unless the day is genuinely part-run: before the first sailing the rule would sit
     at the top marking nothing, and after the last one there is no row left to sit above.
+
+    Placed off the clock and not off the water. A sailing running late sits above the rule
+    with its time behind us and its vessel still at the dock — which is the truth, and is
+    why the row says so rather than dimming.
     """
-    if not board or not board[0]["departed"]:
+    if not board or not board[0]["past"]:
         return None
-    return next((i for i, row in enumerate(board) if not row["departed"]), None)
+    return next((i for i, row in enumerate(board) if not row["past"]), None)
 
 
 # How long a browser may reuse the camera image. The page is server-rendered, so the URL

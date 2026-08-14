@@ -569,6 +569,81 @@ def upcoming_sailings(
     return found[:limit]
 
 
+@dataclass(frozen=True)
+class BoardWatch:
+    """What BC Ferries' own board is currently saying about one terminal's day.
+
+    Three separate things, because the board needs all three to tell "gone" from "late":
+    the sailings it has published a departure time for, the sailings it still lists at all,
+    and when we last managed to read it. A sailing it no longer lists is one it has stopped
+    making any claim about, which is not the same as one it says has left.
+    """
+
+    departures: dict[str, str] = field(default_factory=dict)
+    listed: frozenset[str] = frozenset()
+    observed_at: datetime | None = None
+
+    def is_fresh(self, now: datetime, within: timedelta) -> bool:
+        """Whether the last successful read is recent enough to be worth believing."""
+        return self.observed_at is not None and now - self.observed_at <= within
+
+
+def board_watch(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    route_id: str | None = None,
+) -> BoardWatch:
+    """The latest published state of one terminal's sailings, for the day board to read.
+
+    `_board_departure` answers this one sailing at a time, which is right for the detail
+    page and wrong for a ten-row board. One pass over the day costs two indexed queries.
+
+    The most recent reading wins per sailing: the board fills the departure in once the
+    vessel has gone and does not take it back, so a later scrape that omits it means the
+    sailing has scrolled off the page, not that it un-departed.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    key = (route.id, origin, target_date.isoformat())
+
+    # Bare `sailing_hhmm`/`departed_hhmm` alongside MAX(observed_at) is SQLite's documented
+    # "row that the max came from", not an arbitrary row from the group.
+    departures = {
+        row["sailing_hhmm"]: row["departed_hhmm"]
+        for row in conn.execute(
+            """SELECT sailing_hhmm, departed_hhmm, MAX(observed_at)
+                 FROM deck_space
+                WHERE route = ? AND terminal = ? AND service_date = ?
+                  AND sailing_hhmm IS NOT NULL AND departed_hhmm IS NOT NULL
+                  AND fetch_status = 'ok'
+                GROUP BY sailing_hhmm""",
+            key,
+        )
+    }
+
+    latest = conn.execute(
+        """SELECT MAX(observed_at) AS at FROM deck_space
+            WHERE route = ? AND terminal = ? AND service_date = ? AND fetch_status = 'ok'""",
+        key,
+    ).fetchone()
+    if latest is None or latest["at"] is None:
+        return BoardWatch(departures=departures)
+
+    listed = conn.execute(
+        """SELECT sailing_hhmm FROM deck_space
+            WHERE route = ? AND terminal = ? AND service_date = ?
+              AND observed_at = ? AND sailing_hhmm IS NOT NULL AND fetch_status = 'ok'""",
+        (*key, latest["at"]),
+    ).fetchall()
+    return BoardWatch(
+        departures=departures,
+        listed=frozenset(row["sailing_hhmm"] for row in listed),
+        observed_at=parse_iso(latest["at"]),
+    )
+
+
 def sailing_times(config: Config, origin: str, target_date: date) -> list[str]:
     blocks = load_schedule_cached(config.schedule_path)
     route = config.route

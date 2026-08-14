@@ -472,6 +472,11 @@
                     letter-spacing: 0.06em; text-transform: uppercase; color: var(--label); }
     .board-row.next .board-mark { color: var(--buoy); }
     .board-row.worst .board-mark, .board-row.worst .board-status { color: var(--late); }
+    /* Its hour has passed and the vessel has not. The row sits above the "now" rule with
+       the rest of the morning but keeps its full weight, because unlike them it is still
+       a boat you might catch. Cedar rather than the warning colour: late is not bad news
+       to somebody who is still in the queue for it. */
+    .board-row.holding .board-mark { color: var(--accent); }
 
     .board-mix { display: flex; height: 10px; border-radius: 1px; overflow: hidden; }
     .board-mix span { display: block; min-width: 2px; }
