@@ -46,6 +46,14 @@ MAX_QUEUE_HOURS = 12
 # One sailing does not need a hundred accounts, and the form is unauthenticated.
 MAX_REPORTS_PER_SAILING = 50
 
+# How the report reached us. The distinction that matters is `checkin`: the join time was
+# stamped while the person was standing in the queue rather than recalled an hour later.
+# It is the same claim either way — a time somebody says they arrived — so it does not get
+# its own column or outrank anything. It is recorded because an observed join time is
+# better evidence than a remembered one, and there is no way to tell them apart afterwards
+# if nobody writes it down now.
+REPORT_SOURCES = frozenset({"web", "checkin"})
+
 
 class ReportError(ValueError):
     """A report that cannot be stored as given. The message is shown to the submitter."""
@@ -109,6 +117,11 @@ def submit_report(
 
     if deck_fullness and deck_fullness not in DECK_FULLNESS:
         raise ReportError(f"unknown deck fullness {deck_fullness!r}")
+
+    # The web form carries this in a hidden field, so it is submitter-controlled like
+    # everything else here and gets checked like everything else here.
+    if source not in REPORT_SOURCES:
+        raise ReportError(f"unknown report source {source!r}")
 
     scheduled = combine_local(service_date, parse_hhmm(depart_hhmm), config.tz)
     reference = local(now or now_utc(), config.tz)

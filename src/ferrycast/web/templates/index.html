@@ -100,6 +100,31 @@
   .got-on { color: var(--o-boarded); }
   .left-behind { color: var(--o-waited_2plus); }
 
+  /* The check-in's own time. Same shape as `.arrive` but a step smaller: that one is the
+     advice this page exists to give, and this is a note about where you are. */
+  .joined { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .joined .time { font-family: "Instrument Serif", Georgia, serif; font-size: 2.125rem; line-height: 1; }
+  .joined .qual { font-size: 0.875rem; color: var(--muted); }
+
+  /* "How long have you been there?" — coarse on purpose. Somebody sitting in a car holds
+     this as a round number of minutes, not as a clock time, and a picker would make them do
+     the subtraction themselves for no more accuracy at the end of it. Erring long is safe:
+     it moves the reported arrival earlier, which only ever makes the advice more cautious. */
+  .chips { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.625rem; }
+  .chips button {
+    display: inline-block; width: auto; font-family: "IBM Plex Mono", monospace;
+    font-size: 0.8125rem; font-weight: 400; line-height: 1; padding: 0.6rem 0.7rem;
+    color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+  }
+  .chips button[aria-pressed="true"] {
+    background: var(--hull); color: var(--chart); border-color: var(--hull);
+  }
+  @media (prefers-color-scheme: dark) {
+    .chips button[aria-pressed="true"] { background: var(--chart); color: var(--hull); border-color: var(--chart); }
+  }
+  .checkin-actions { display: flex; flex-direction: column; gap: 0.625rem; margin-top: 0.875rem; }
+
   /* ==== The marine forecast on a phone =================================================
      The wide board has a strip across the top with room for the forecast in full. A phone
      header has no such room and already carries the answer the page is for, so the forecast
@@ -1351,12 +1376,15 @@
 
   {% if has_departed %}
     {% set rf = report_form %}
-    <details {% if report_error %}open{% endif %}>
-      <summary class="btn btn-quiet">Add what happened</summary>
+    <details id="report-details" {% if report_error %}open{% endif %}>
+      <summary class="btn btn-quiet" id="report-summary">Add what happened</summary>
       <form method="post" action="/report" class="report-form">
         <input type="hidden" name="origin" value="{{ origin }}">
         <input type="hidden" name="service_date" value="{{ service_date }}">
         <input type="hidden" name="time" value="{{ selected_time }}">
+        {# `checkin` when the join time below was stamped in the queue rather than
+           remembered here. Set by script; the server refuses any other value. #}
+        <input type="hidden" name="source" value="web" id="report-source">
 
         <div class="wide">
           <span class="label">Did you get on?</span>
@@ -1382,10 +1410,11 @@
           </select>
         </label>
 
-        <div class="row">
+        <div class="row row-tied">
           <label class="field">
             <span class="label">Joined the line</span>
-            <input type="time" name="joined" value="{{ rf.get('joined', '') }}">
+            <input type="time" name="joined" value="{{ rf.get('joined', '') }}" id="joined-input">
+            <span class="hint" id="joined-hint" hidden>From your check-in.</span>
           </label>
           {# Pre-filled from the departures board, which publishes the actual time — but the
              board only carries today's sailings. Report on last Friday and it is blank, and
@@ -1417,9 +1446,103 @@
       </form>
     </details>
   {% else %}
-    <p class="note">This sailing hasn't gone yet. Once it has, you can add when you joined the
-      line, when it left and whether you got on — deck space and the camera can tell whether
-      the vessel filled, but only a person in the queue knows who made it.</p>
+    {# The slot used to hold only the sentence below: an apology for having nothing here
+       until the boat has gone. A check-in is the thing that belongs in it, because the
+       moment worth recording — when you joined the line — happens now and not then.
+
+       Every state is rendered and script picks one. With script off, or where localStorage
+       throws (Safari's private mode does), the fallback note stays and the page is exactly
+       what it was. #}
+    <div id="checkin" hidden>
+      <div data-checkin="offer" hidden>
+        <p class="note">This sailing hasn't gone yet. Deck space and the camera can tell whether
+          the vessel filled — only someone in the queue knows who made it.</p>
+        <div class="checkin-actions">
+          <button type="button" class="btn btn-quiet" data-checkin-do="start">I'm in the line</button>
+        </div>
+        <p class="hint">Marks the time on this phone. Nothing is sent until the sailing has gone
+          and you say what happened.</p>
+      </div>
+
+      {# Asked once, straight after the tap, because almost nobody opens the app at the
+         instant they arrive. "Just now" is already correct, so this is a refinement that can
+         be ignored rather than a second step that has to be completed. #}
+      <div data-checkin="fresh" hidden>
+        <p class="note">You're in the line for the <strong>{{ selected_time }}</strong>, recorded
+          at <strong data-checkin-stamp></strong>.</p>
+        <p class="note"><strong>How long have you been there?</strong></p>
+        <div class="chips">
+          <button type="button" aria-pressed="true" data-checkin-back="0">Just now</button>
+          <button type="button" aria-pressed="false" data-checkin-back="5">5 min</button>
+          <button type="button" aria-pressed="false" data-checkin-back="10">10 min</button>
+          <button type="button" aria-pressed="false" data-checkin-back="20">20 min</button>
+          <button type="button" aria-pressed="false" data-checkin-do="exact">Earlier…</button>
+        </div>
+        <p class="hint">Roughly is fine. Nothing has been sent.</p>
+      </div>
+
+      <div data-checkin="standing" hidden>
+        <p class="note">You joined the line at</p>
+        <div class="joined">
+          <span class="time" data-checkin-joined></span>
+          <span class="qual" data-checkin-ahead></span>
+        </div>
+        <p class="note">We'll ask whether you got on once it has gone. Nothing has been sent.</p>
+        <div class="checkin-actions">
+          <button type="button" class="btn btn-quiet" data-checkin-do="missed">I didn't make it</button>
+        </div>
+      </div>
+
+      {# Knowable before the boat goes — staff walk the line and tell you. `submit_report`
+         refuses a sailing that has not departed, and rightly: it protects `departed_at` and
+         the aggregation behind it. So the outcome is held here and filed on the first visit
+         after the scheduled time, which is honest about what browser state can promise. #}
+      <div data-checkin="held" hidden>
+        <p class="note"><strong>Held.</strong> You joined at <strong data-checkin-joined></strong>
+          and didn't get on the {{ selected_time }}.</p>
+        <p class="note">Nothing has been sent yet — the record can't take a sailing that hasn't
+          departed. Open FerryCast again after {{ selected_time }} and it will be waiting to file.</p>
+        <div class="checkin-actions">
+          <button type="button" class="btn btn-quiet" data-checkin-do="undo">I did make it after all</button>
+        </div>
+      </div>
+
+      {# Shared by the two states that hold a time. The coarse answer is usually right, so
+         the exact field, the sailing and the discard live behind a disclosure. #}
+      <details data-checkin-edit hidden>
+        <summary class="btn btn-quiet">Correct or discard</summary>
+        <div class="report-form">
+          <label class="field">
+            <span class="label">Joined the line</span>
+            <input type="time" data-checkin-exact>
+          </label>
+          <label class="field">
+            <span class="label">Waiting for</span>
+            <select data-checkin-sailing>
+              {% for t in times %}
+                <option value="{{ t }}" {% if t == selected_time %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          {# You cannot have been waiting for this sailing since before the last one left —
+             you were waiting for that one, and missed it. Worth catching rather than filing
+             quietly: a carryover is the hardest thing here to observe and the most wanted. #}
+          <div data-checkin-carryover hidden>
+            <p class="note flag" data-checkin-carryover-text></p>
+            <div class="checkin-actions">
+              <button type="button" class="btn btn-quiet" data-checkin-do="previous"></button>
+            </div>
+          </div>
+          <div class="checkin-actions">
+            <button type="button" class="btn btn-quiet" data-checkin-do="discard">I'm not in the line</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <p class="note" id="checkin-fallback">This sailing hasn't gone yet. Once it has, you can add
+      when you joined the line, when it left and whether you got on — deck space and the camera
+      can tell whether the vessel filled, but only a person in the queue knows who made it.</p>
   {% endif %}
 </section>
 {% endif %}
@@ -1484,6 +1607,250 @@
 
     radios.forEach(radio => radio.addEventListener('change', sync));
     sync();
+  })();
+
+  // ---- The check-in ------------------------------------------------------------------
+  //
+  // Nothing here may be filed until the sailing has departed, which can be 90 minutes after
+  // somebody joined the queue — by which time the hour they arrived is a guess. This stamps
+  // it while they are still sitting in it.
+  //
+  // One localStorage key and nothing else: no account, no cookie, no row to collect. That
+  // is a claim about what a check-in *is* rather than a way of being cheap. An unresolved
+  // check-in says somebody was in a queue, not whether they got on, so it is evidence of
+  // nothing — and keeping it off the server means it can never be mistaken for some. Lose
+  // the phone and you have lost a pre-filled field, not a report.
+  //
+  // Runs after the block above, so the `boarded` radio it may set is seen by that sync().
+  (function () {
+    const KEY = 'ferrycast.checkin';
+    // A queue you stood in yesterday is not worth being prompted about, and the report can
+    // still be filed by hand from the date picker. Clears overnight.
+    const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+    const SAILING = {
+      origin: {{ origin | tojson }},
+      service_date: {{ service_date | tojson }},
+      depart_hhmm: {{ selected_time | tojson }}
+    };
+    const TIMES = ({{ times | tojson }} || []).slice().sort();
+    const DEPARTED = {{ has_departed | tojson }};
+    const SAVED = {{ report_saved | tojson }};
+    if (!SAILING.depart_hhmm) return;
+
+    // Safari's private mode throws on write rather than returning null, and a check-in is
+    // never worth breaking the page for. Where this fails the fallback note simply stays.
+    let store;
+    try {
+      window.localStorage.setItem(KEY + '.probe', '1');
+      window.localStorage.removeItem(KEY + '.probe');
+      store = window.localStorage;
+    } catch (err) { return; }
+
+    const read  = () => { try { return JSON.parse(store.getItem(KEY)); } catch (e) { return null; } };
+    const write = c  => { try { store.setItem(KEY, JSON.stringify(c)); } catch (e) {} };
+    const drop  = () => { try { store.removeItem(KEY); } catch (e) {} };
+
+    // The route's wall clock, not the phone's. This page is rendered server-side, so the
+    // hour and minute come straight off the string it arrived with — no timezone
+    // arithmetic anywhere, and a device set to the wrong clock or the wrong zone cannot
+    // skew the one number the whole feature exists to get right. An observed join time is
+    // only worth preferring over a remembered one if it was taken from a clock we trust.
+    const STAMP = {{ server_now | tojson }}.slice(11, 16);
+    const LOADED = Date.now();
+    const mins  = hhmm => { const p = hhmm.split(':'); return Number(p[0]) * 60 + Number(p[1]); };
+    const clock = m => { const w = ((m % 1440) + 1440) % 1440;
+                         return String(Math.floor(w / 60)).padStart(2, '0') + ':' +
+                                String(w % 60).padStart(2, '0'); };
+    // Minutes since the page was drawn, so a tab left open in the queue still stamps now.
+    const nowClock = () => clock(mins(STAMP) + Math.floor((Date.now() - LOADED) / 60000));
+
+    const mine = c => !!c && c.origin === SAILING.origin
+                          && c.service_date === SAILING.service_date
+                          && c.depart_hhmm === SAILING.depart_hhmm;
+
+    function current() {
+      const c = read();
+      if (!c || !c.joined_hhmm) return null;
+      if (!c.stamped_at || Date.now() - c.stamped_at > MAX_AGE_MS) { drop(); return null; }
+      return c;
+    }
+
+    const box = document.getElementById('checkin');
+    const held = current();
+
+    // A saved report ends the check-in's life. Cleared on the confirmation rather than on
+    // submit, so a report the server rejects still has its check-in to be filed from again.
+    if (SAVED) { if (mine(held)) drop(); return; }
+    if (DEPARTED) { prefill(held); return; }
+    if (!box) return;
+
+    box.hidden = false;
+    const fallback = document.getElementById('checkin-fallback');
+    if (fallback) fallback.remove();
+    const edit = box.querySelector('[data-checkin-edit]');
+
+    // ---- The report form, once the boat has gone ----
+    function prefill(c) {
+      if (!mine(c)) return;
+      const details = document.getElementById('report-details');
+      const joined  = document.getElementById('joined-input');
+      const summary = document.getElementById('report-summary');
+      if (!details || !joined) return;
+
+      // Never overwrite what somebody typed: a report the server rejected comes back
+      // through here with their own answers still in the form.
+      if (!joined.value) {
+        joined.value = c.joined_hhmm;
+        const hint = document.getElementById('joined-hint');
+        const source = document.getElementById('report-source');
+        if (hint) hint.hidden = false;
+        if (source) source.value = 'checkin';
+      }
+      if (c.boarded === false && !document.querySelector('input[name="boarded"]:checked')) {
+        const no = document.getElementById('boarded-no');
+        if (no) { no.checked = true; no.dispatchEvent(new Event('change', { bubbles: true })); }
+      }
+      if (summary) {
+        // The held branch already answered the first question, so ask the one still open:
+        // without it a report can only ever say `filled`, never waited_1 or waited_2plus.
+        summary.textContent = c.boarded === false
+          ? 'You missed the ' + SAILING.depart_hhmm + ' — how long did you wait?'
+          : 'Did you get on the ' + SAILING.depart_hhmm + '?';
+      }
+      details.open = true;
+    }
+
+    // ---- Before it sails ----
+    function show(state) {
+      box.querySelectorAll('[data-checkin]').forEach(el => {
+        el.hidden = el.dataset.checkin !== state;
+      });
+      // The exact time, the sailing and the discard belong to a check-in that exists.
+      if (edit && state === 'offer') { edit.hidden = true; edit.open = false; }
+    }
+
+    function render(c) {
+      if (!mine(c)) { show('offer'); return; }
+      const state = c.boarded === false ? 'held' : (c.settled ? 'standing' : 'fresh');
+      show(state);
+      if (edit && state !== 'fresh') edit.hidden = false;
+
+      box.querySelectorAll('[data-checkin-joined]').forEach(el => { el.textContent = c.joined_hhmm; });
+      const stamp = box.querySelector('[data-checkin-stamp]');
+      if (stamp) stamp.textContent = c.stamped_hhmm || c.joined_hhmm;
+
+      const ahead = box.querySelector('[data-checkin-ahead]');
+      if (ahead) {
+        const gap = mins(SAILING.depart_hhmm) - mins(c.joined_hhmm);
+        ahead.textContent = gap > 0
+          ? gap + ' min before the ' + SAILING.depart_hhmm
+          : 'for the ' + SAILING.depart_hhmm;
+      }
+
+      const exact = box.querySelector('[data-checkin-exact]');
+      if (exact) exact.value = c.joined_hhmm;
+      const picker = box.querySelector('[data-checkin-sailing]');
+      if (picker) picker.value = c.depart_hhmm;
+      box.querySelectorAll('[data-checkin-back]').forEach(b => {
+        b.setAttribute('aria-pressed', String(Number(b.dataset.checkinBack) === c.back));
+      });
+      carryover(c.joined_hhmm);
+    }
+
+    // The sailing before this one. Waiting since before it left means you were in line for
+    // *it* — which is a carryover, and worth saying out loud rather than filing quietly.
+    function previous() {
+      const earlier = TIMES.filter(t => mins(t) < mins(SAILING.depart_hhmm));
+      return earlier.length ? earlier[earlier.length - 1] : null;
+    }
+
+    function carryover(joined) {
+      const wrap = box.querySelector('[data-checkin-carryover]');
+      if (!wrap) return;
+      const prev = previous();
+      const crosses = !!prev && mins(joined) < mins(prev);
+      wrap.hidden = !crosses;
+      if (!crosses) return;
+      wrap.querySelector('[data-checkin-carryover-text]').textContent =
+        'That is before the ' + prev + ' left, so you were in the line for that one and '
+        + 'did not get on it.';
+      wrap.querySelector('[data-checkin-do="previous"]').textContent =
+        'This is about the ' + prev + ' instead';
+    }
+
+    function start() {
+      const at = nowClock();
+      write({
+        origin: SAILING.origin, service_date: SAILING.service_date,
+        depart_hhmm: SAILING.depart_hhmm,
+        joined_hhmm: at, stamped_hhmm: at, stamped_at: Date.now(),
+        back: 0, settled: false
+      });
+      render(current());
+    }
+
+    function setBack(back) {
+      const c = current();
+      if (!mine(c)) return;
+      c.back = back;
+      c.joined_hhmm = clock(mins(c.stamped_hhmm) - back);
+      c.settled = true;   // asked once, not on every visit
+      write(c);
+      render(c);
+    }
+
+    // Which sailing you are waiting for is a change of page as well as of record: the whole
+    // page above is about one departure.
+    function moveTo(target) {
+      const c = current();
+      if (!target || !mine(c)) return;
+      c.depart_hhmm = target;
+      c.settled = true;
+      write(c);
+      const params = new URLSearchParams(window.location.search);
+      params.set('origin', SAILING.origin);
+      params.set('service_date', SAILING.service_date);
+      params.set('time', target);
+      params.delete('reported');
+      window.location.search = params.toString();
+    }
+
+    box.addEventListener('click', event => {
+      const chip = event.target.closest('[data-checkin-back]');
+      if (chip) { setBack(Number(chip.dataset.checkinBack)); return; }
+      const button = event.target.closest('[data-checkin-do]');
+      if (!button) return;
+      const c = current();
+      switch (button.dataset.checkinDo) {
+        case 'start': start(); break;
+        case 'exact':
+          if (edit) { edit.hidden = false; edit.open = true;
+                      const f = edit.querySelector('[data-checkin-exact]'); if (f) f.focus(); }
+          break;
+        case 'missed':  if (mine(c)) { c.boarded = false; c.settled = true; write(c); render(c); } break;
+        case 'undo':    if (mine(c)) { delete c.boarded; write(c); render(c); } break;
+        case 'discard': drop(); render(null); break;
+        case 'previous': moveTo(previous()); break;
+      }
+    });
+
+    box.addEventListener('change', event => {
+      const c = current();
+      if (!mine(c)) return;
+      if (event.target.matches('[data-checkin-exact]')) {
+        if (!event.target.value) return;
+        c.joined_hhmm = event.target.value.slice(0, 5);
+        c.back = null;          // no chip describes this any more
+        c.settled = true;
+        write(c);
+        render(c);
+      } else if (event.target.matches('[data-checkin-sailing]')) {
+        moveTo(event.target.value);
+      }
+    });
+
+    render(held);
   })();
 
   // The arrival curve is the one thing fetched lazily: it is a "nice to know", and the

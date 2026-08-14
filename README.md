@@ -294,6 +294,56 @@ record. Nothing identifies the person filing it, and submitting **re-derives tha
 immediately** rather than waiting for the nightly aggregation — otherwise the page would go
 on contradicting what you just told it.
 
+#### Checking in from the line
+
+The form only appears once the sailing has departed, which can be 90 minutes after you
+joined the queue — by which time the hour you arrived is a guess. So the same card offers a
+**check-in** before the boat goes: one tap when you line up, and the join time is stamped
+while you are still sitting in it.
+
+It is **browser state and nothing else** — one `localStorage` key, no account, no cookie, no
+row on the server. That is a claim about what a check-in is rather than a way of being
+cheap. An unresolved check-in says somebody was in a queue, not whether they got on, so it
+is evidence of nothing; keeping it off the server means it can never be mistaken for some.
+Lose the phone and you have lost a pre-filled field, not a report. Nothing is sent until the
+sailing has gone and you say what happened, and the page says so before you tap.
+
+Almost nobody opens the app at the instant they arrive, so straight after the tap it asks
+**how long have you been there** — *just now / 5 / 10 / 20 min*, with the exact field one tap
+further on. Coarse on purpose: a person in a car holds this as a round number of minutes,
+and a picker would make them do the subtraction for no more accuracy at the end of it. The
+rounding is safe in the direction people actually err. Waits get overestimated, which moves
+the reported arrival *earlier*, which strengthens a turned-away bound and weakens a
+still-had-room one — both the cautious side, so a backdated time needs no flag marking it as
+estimated.
+
+The times themselves come off the clock the page was rendered with, not the device's. A
+phone in a ferry queue may be set to anything at all, and an observed join time is only
+worth preferring over a remembered one if the clock behind it is trusted.
+
+Two cases the card handles rather than storing quietly:
+
+- **"I didn't make it"**, tapped before the boat has gone — you usually know, because staff
+  walk the line and tell you. `submit_report` refuses a sailing that has not departed and
+  rightly so, since that guard protects `departed_at` and the aggregation behind it. So the
+  outcome is *held* on the phone and the form is waiting, pre-answered, the next time you
+  open FerryCast after the scheduled time. All it asks then is how long you waited — without
+  that a report can only ever say `filled`.
+- **Backdating past the previous departure.** Say you joined at 10:40 and the 11:00 has
+  already left, and you were in the line for *that* one and missed it. The card says so and
+  offers to move the check-in, because a carryover is the hardest thing here to observe and
+  the most worth having.
+
+An unresolved check-in is dropped after 24 hours: a queue you stood in yesterday is not
+worth being prompted about, and the report can still be filed by hand from the date picker.
+
+Every state ships hidden and script picks one, so with JavaScript off — or in a private
+window where `localStorage` throws — the card is exactly the page it always was. A resolved
+check-in files with `source = 'checkin'`, which needs no migration because the column was
+always there. It does not outrank anything: it is the same claim as a typed time, and it is
+recorded only because an observed join time cannot be told from a remembered one afterwards
+unless somebody writes the difference down at the time.
+
 A report outranks both automatic sources when the outcome is decided, since it is the only
 direct observation of the thing the app exists to answer. One person left behind sets the
 sailing to `filled` however many others got on: several people boarding is not evidence that

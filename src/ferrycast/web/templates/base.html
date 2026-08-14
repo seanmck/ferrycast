@@ -307,6 +307,26 @@
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
   .row .wide { grid-column: 1 / -1; }
 
+  /* A pair whose labels are different lengths. "Joined the line" wraps to two lines on a
+     narrow phone where "Ferry left" beside it does not, and the moment it does, the two
+     inputs stop sharing a baseline and the hints under them step apart.
+
+     Same argument as the date/sailing pair above: nothing about a side-by-side pair may be
+     left to size itself independently. Subgrid pins label, control and hint to shared rows
+     however the labels wrap; where it is missing, two lines are reserved for the label
+     outright, which costs one line of space and never steps. Opt-in rather than applied to
+     every .row, because the picker's row holds a full-width block and fields of a different
+     shape. */
+  .row-tied { align-items: start; }
+  .row-tied > .field { margin-bottom: 0; }
+  /* Two lines of the label's own type: 2 × the inherited 1.5 line-height. */
+  .row-tied > .field > .label { display: block; min-height: 3em; }
+  @supports (grid-template-rows: subgrid) {
+    .row-tied { grid-template-rows: auto auto auto; row-gap: 0; }
+    .row-tied > .field { display: grid; grid-row: span 3; grid-template-rows: subgrid; }
+    .row-tied > .field > .label { min-height: 0; }
+  }
+
   button, .btn {
     display: block; width: 100%; padding: 0.9rem 1rem; font: inherit; font-size: 0.9375rem;
     font-weight: 500; text-align: center; border: none; border-radius: var(--radius);
