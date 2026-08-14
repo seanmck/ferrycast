@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ferrycast.query import day_board, query_distribution
+from ferrycast.timeutil import iso
 from ferrycast.web.app import create_app
 
 from .test_query import fridays, seed_record
@@ -227,6 +228,109 @@ def test_the_worst_sailing_says_both_facts(client, conn, config, friday_lunchtim
 
     assert "worst of day" in body
     assert "expect to wait" in body
+
+
+# ---- Gone, or merely due? ---------------------------------------------------------------
+#
+# The board used to call a sailing "sailed" the moment its scheduled minute passed, which is
+# a claim about the water made from a wall clock. On a summer Friday at Saltery Bay the two
+# come apart routinely: the 09:25 is still loading at 09:32 with the compound full, and the
+# one thing a person in that queue needs to know is whether they have missed it.
+#
+# BC Ferries publishes the answer — "9:25 am Departed 9:56 am" — and the scraper has been
+# storing it in `deck_space.departed_hhmm` all along. These tests are about believing it.
+
+
+def seed_deck_space(conn, config, *, at, rows, terminal="SLT", day="2026-08-14"):
+    """One scrape of the conditions page: the sailings it listed and any departures on them.
+
+    `at` is local Vancouver time, as read off the page; `rows` maps sailing time to the
+    departure time published against it, or None where the board lists it without one.
+    """
+    observed = datetime.fromisoformat(f"{day}T{at}:00-07:00").astimezone(UTC)
+    for sailing_hhmm, departed_hhmm in rows.items():
+        conn.execute(
+            """INSERT INTO deck_space (route, terminal, observed_at, service_date,
+                   sailing_hhmm, departed_hhmm, percent_available, fetch_status)
+               VALUES (?, ?, ?, ?, ?, ?, 20, 'ok')""",
+            (config.route.id, terminal, iso(observed), day, sailing_hhmm, departed_hhmm),
+        )
+    conn.commit()
+
+
+def test_a_sailing_still_at_the_dock_is_not_called_sailed(client, conn, config, friday_lunchtime):
+    """The bug, in one row: 13:00, and the board still lists the 12:30 with no departure
+    against it. Its hour has passed; the vessel has not. Saying "sailed" here sends somebody
+    who could still make it home."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" in body
+    # Only the 08:30 has receded — the 12:30 keeps its full weight, because it is still
+    # a boat you might catch.
+    assert body.count("board-row past") == 1
+
+
+def test_a_published_departure_is_what_makes_a_sailing_sailed(
+    client, conn, config, friday_lunchtime
+):
+    """The same 12:30, with BC Ferries saying it left at 12:41. Now it has gone."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": "12:41", "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+    assert body.count("board-row past") == 2
+
+
+def test_a_sailing_the_board_has_dropped_has_gone(client, conn, config, friday_lunchtime):
+    """Not every departure gets a time published against it — some sailings simply scroll
+    off the page. Falling off the board is how those finally settle, or the morning would
+    sit at "not away yet" until midnight."""
+    seed_deck_space(conn, config, at="12:55", rows={"16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+    assert body.count("board-row past") == 2
+
+
+def test_a_stale_reading_is_not_evidence_of_anything(client, conn, config, friday_lunchtime):
+    """A scraper that fell over at 12:15 knows nothing about 13:00. Left believed, its last
+    reading would hold the 12:30 at "not away yet" for the rest of the day, looking every bit
+    as live as a fresh one — a wrong answer that cannot be told from a right one."""
+    seed_deck_space(conn, config, at="12:15", rows={"12:30": None, "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+    assert body.count("board-row past") == 2
+
+
+def test_the_now_rule_stays_on_the_clock(client, conn, config, friday_lunchtime):
+    """Where the day has got to is a fact about the time, so a late boat sits above the rule
+    with the rest of the afternoon behind it — and says why it is still there."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+    # The rows alone: "12:30" also appears in the date/time picker and in the panel beside
+    # the board, and either would answer an ordering question that was not asked of it.
+    rows = body[body.index('class="board-cols"') : body.index('class="board-foot"')]
+
+    assert "Now · 13:00" in body
+    assert rows.index("12:30") < rows.index("board-now") < rows.index("16:30")
+
+
+def test_yesterday_is_never_asked_of_the_live_board(client, conn, config, friday_lunchtime):
+    """Last Friday's sailings have all gone, whatever the conditions page says today. The
+    row is dimmed off the calendar, not off a scrape that could not be about it."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None}, day="2026-08-07")
+
+    body = client.get("/?origin=SLT&service_date=2026-08-07").text
+
+    assert "not away yet" not in body
+    assert body.count("board-row past") == 3
 
 
 def test_the_worst_sailing_of_the_day_is_named(client, conn, config, friday_lunchtime):
