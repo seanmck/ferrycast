@@ -135,6 +135,128 @@ def test_a_cancelled_sailing_is_recognised(conn, config):
     assert classify_from_deck_space(_series(conn, config, day, "12:30"), departure)[0] == "cancelled"
 
 
+def add_board_status(conn, config, terminal, service_date, hhmm, sightings, *, route=None):
+    """Departures-board scrapes with no percentage: (minutes_after_departure, status_text,
+    departed_hhmm) per sighting. Negative minutes are scrapes before the sailing left."""
+    departure = combine_local(service_date, parse_hhmm(hhmm), config.tz)
+    for minutes_after, status_text, departed in sightings:
+        conn.execute(
+            """INSERT OR IGNORE INTO deck_space
+                   (route, terminal, observed_at, service_date, sailing_hhmm,
+                    percent_available, status_text, departed_hhmm, fetch_status)
+               VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'ok')""",
+            (
+                route or config.route.id,
+                terminal,
+                iso(departure + timedelta(minutes=minutes_after)),
+                service_date.isoformat(),
+                hhmm,
+                status_text,
+                departed,
+            ),
+        )
+    conn.commit()
+
+
+# Route 7's board, verbatim: every sailing that ran gets a departed line, and only the
+# ones that loaded to capacity get the note beside it.
+DEPARTED = "Departed 12:33 pm Malaspina Sky ETA : Variable"
+DEPARTED_FULL = DEPARTED + " Peak travel. Loading maximum number of vehicles"
+
+
+def test_a_departed_sailing_the_board_never_called_full_boarded(conn, config):
+    """This route's board has never published a percentage, so for most sailings the
+    departed line and the absent note are the only free evidence there is."""
+    day = date(2026, 8, 14)
+    add_board_status(
+        conn, config, "SLT", day, "12:30",
+        [(-30, "Malaspina Sky Upcoming", None), (5, DEPARTED, "12:33"), (65, DEPARTED, "12:33")],
+    )
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+
+    outcome, filled_at, confidence = classify_from_deck_space(
+        _series(conn, config, day, "12:30"), departure
+    )
+
+    assert outcome == "boarded"
+    assert filled_at is None
+    # Below the percentage path's confidence: silence about the deck is not a reading of it.
+    assert confidence and confidence < 0.65
+
+
+def test_the_capacity_note_keeps_a_departed_sailing_out_of_boarded(conn, config):
+    day = date(2026, 8, 14)
+    add_board_status(
+        conn, config, "SLT", day, "12:30",
+        [(5, DEPARTED_FULL, "12:33"), (65, DEPARTED_FULL, "12:33")],
+    )
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+
+    outcome, _, _ = classify_from_deck_space(_series(conn, config, day, "12:30"), departure)
+
+    assert outcome != "boarded"  # `left_full` asserts the fill; nothing to add here
+
+
+def test_a_freshly_departed_board_is_not_yet_evidence_of_space(conn, config):
+    """The note rides the same row as the departed status. One scrape that caught the
+    departure a moment before the note landed must not become "had space"."""
+    day = date(2026, 8, 14)
+    add_board_status(conn, config, "SLT", day, "12:30", [(5, DEPARTED, "12:33")])
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+
+    outcome, _, _ = classify_from_deck_space(_series(conn, config, day, "12:30"), departure)
+
+    assert outcome == "unknown"
+
+
+def test_an_upcoming_sailing_stays_unknown(conn, config):
+    day = date(2026, 8, 14)
+    add_board_status(
+        conn, config, "SLT", day, "12:30",
+        [(-60, "Malaspina Sky Upcoming", None), (-30, "Malaspina Sky Upcoming", None)],
+    )
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+
+    assert classify_from_deck_space(_series(conn, config, day, "12:30"), departure)[0] == "unknown"
+
+
+def test_rows_stored_before_the_departed_column_still_classify(conn, config):
+    """History scraped before `departed_hhmm` existed carries the phrase in `status_text`
+    only. That history must reclassify on the next aggregate, not stay unknown forever."""
+    day = date(2026, 8, 14)
+    add_board_status(
+        conn, config, "SLT", day, "12:30",
+        [(5, DEPARTED, None), (65, DEPARTED, None)],
+    )
+    departure = combine_local(day, parse_hhmm("12:30"), config.tz)
+
+    assert classify_from_deck_space(_series(conn, config, day, "12:30"), departure)[0] == "boarded"
+
+
+def test_aggregation_records_a_departed_noteless_sailing_as_had_space(conn, config):
+    """End to end: the record the 05:35 and 07:25 could never earn before, because nothing
+    that watches them ever speaks — the board publishes no percentage, the compound is dark
+    on camera, and quiet sailings never get the capacity note."""
+    day = date(2026, 8, 14)
+    add_board_status(
+        conn, config, "SLT", day, "12:30",
+        [(5, DEPARTED, "12:33"), (65, DEPARTED, "12:33")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = conn.execute(
+        """SELECT r.outcome, r.method, r.filled, r.left_behind FROM sailings s
+             JOIN sailing_records r ON r.sailing_id = s.id
+            WHERE s.origin = 'SLT' AND s.depart_hhmm = '12:30'"""
+    ).fetchone()
+    assert row["outcome"] == "boarded"
+    assert row["method"] == "deck_space"
+    assert row["filled"] == 0
+    # The board cannot see the approach road, so it says nothing about the person axis.
+    assert row["left_behind"] is None
+
+
 # ------------------------------------------------------------------- end-to-end aggregation
 
 

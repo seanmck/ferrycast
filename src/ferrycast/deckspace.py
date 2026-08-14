@@ -192,6 +192,16 @@ def notice_says_full(status_text: str | None) -> bool:
     return bool(status_text and FULL_NOTE_RE.search(status_text))
 
 
+def status_says_departed(status_text: str | None) -> bool:
+    """Whether the board has marked this sailing as having left.
+
+    A fallback for rows stored before the `departed_hhmm` column existed: the phrase was
+    always in `status_text`, it just was not parsed out. New rows should be answered from
+    the column.
+    """
+    return bool(status_text and DEPARTED_RE.search(status_text))
+
+
 def _merge(first: DeckSpaceRow, second: DeckSpaceRow) -> DeckSpaceRow:
     """Combine two views of one sailing, preferring whichever actually said something."""
     return DeckSpaceRow(

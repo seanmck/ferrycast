@@ -34,7 +34,7 @@ from datetime import date, datetime, timedelta
 
 from .config import Config
 from .db import JobRun
-from .deckspace import notice_says_full
+from .deckspace import notice_says_full, status_says_departed
 from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
@@ -241,7 +241,8 @@ def _deck_space_series(
 ) -> list[sqlite3.Row]:
     return list(
         conn.execute(
-            """SELECT observed_at, percent_available, status_text FROM deck_space
+            """SELECT observed_at, percent_available, status_text, departed_hhmm
+                 FROM deck_space
                 WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
                   AND fetch_status = 'ok'
                 ORDER BY observed_at""",
@@ -271,7 +272,7 @@ def classify_from_deck_space(
     ):
         return "cancelled", None, 0.6
     if not readings:
-        return "unknown", None, None
+        return _classify_from_departures_board(series)
 
     before = [row for row in readings if parse_iso(row["observed_at"]) <= departure]
     if not before:
@@ -288,6 +289,50 @@ def classify_from_deck_space(
         return "unknown", None, None
     confidence = 0.65 if last_gap <= 20 else 0.5
     return "boarded", None, confidence
+
+
+#: How long the board must stay noteless after a departure first shows before its silence
+#: counts. The capacity note rides the same row as the departed status, so one scrape that
+#: caught "Departed" a moment before the note landed must not become "had space".
+DEPARTED_NOTE_WAIT = timedelta(minutes=15)
+
+
+def _row_departed(row: sqlite3.Row) -> bool:
+    """Whether this scrape saw the sailing marked departed.
+
+    The column where the parser has filled it in; the status text for rows stored before
+    the column existed — the phrase was always on the board, it just was not parsed out.
+    """
+    return bool(row["departed_hhmm"]) or status_says_departed(row["status_text"])
+
+
+def _classify_from_departures_board(
+    series: list[sqlite3.Row],
+) -> tuple[str, str | None, float | None]:
+    """On a board that never publishes a percentage, the departures column still speaks.
+
+    Route 7's conditions page has never once carried a deck-space figure — 2368 rows, zero
+    percentages — so the numeric path above classifies nothing there. What the board does
+    publish is "Departed h:mm" for every sailing that ran, and, beside the ones that loaded
+    to capacity, the "loading maximum number of vehicles" note. A sailing the operator
+    watched leave whose row never acquired the note is one that had room: `boarded`.
+
+    The note case returns nothing from here: it is `left_full`'s to assert (see
+    `compute_record`), and it carries no fill *time*, which is the other thing this
+    function exists to report. The silence case is guarded by `DEPARTED_NOTE_WAIT` and
+    priced below the percentage path's confidence — "they did not say full" is the
+    operator's habit read in reverse, not a measurement.
+    """
+    departed = [row for row in series if _row_departed(row)]
+    if not departed:
+        return "unknown", None, None
+    if any(notice_says_full(row["status_text"]) for row in series):
+        return "unknown", None, None
+    first_seen = min(parse_iso(row["observed_at"]) for row in departed)
+    watched_until = max(parse_iso(row["observed_at"]) for row in series)
+    if watched_until - first_seen < DEPARTED_NOTE_WAIT:
+        return "unknown", None, None
+    return "boarded", None, 0.55
 
 
 def _departure_from_frames(observations, grace_from) -> tuple[datetime | None, bool]:
@@ -646,9 +691,9 @@ def compute_record(
     if deck == "filled":
         filled = True
     elif deck == "boarded" and filled is None:
-        # Saying "had space" needs a reading near departure — `classify_from_deck_space`
-        # holds that bar — and it can only ever fill a gap, never overturn a fill somebody
-        # else witnessed.
+        # Saying "had space" needs either a reading near departure or a departed sailing
+        # the board stayed noteless about — `classify_from_deck_space` holds both bars —
+        # and it can only ever fill a gap, never overturn a fill somebody else witnessed.
         filled = False
     elif deck == "cancelled":
         cancelled = True
