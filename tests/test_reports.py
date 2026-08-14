@@ -152,6 +152,25 @@ def test_an_unknown_deck_fullness_is_refused(conn, config):
         file_report(conn, config, deck_fullness="quite-full-ish")
 
 
+def test_where_the_join_time_came_from_is_recorded(conn, config):
+    """A checked-in join time was observed; a typed one was remembered.
+
+    The same claim either way, so it gets no special weight — but they cannot be told apart
+    afterwards unless the difference is written down at the time.
+    """
+    board_says_departed(conn, config, "12:42")
+    file_report(conn, config, joined=time(11, 50), source="checkin")
+
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+    assert [row["source"] for row in rows] == ["checkin"]
+
+
+def test_an_unknown_report_source_is_refused(conn, config):
+    """The page carries this in a hidden field, so it is submitter-controlled like the rest."""
+    with pytest.raises(ReportError, match="unknown report source"):
+        file_report(conn, config, source="trust-me")
+
+
 def test_reports_are_capped_per_sailing(conn, config, monkeypatch):
     monkeypatch.setattr("ferrycast.reports.MAX_REPORTS_PER_SAILING", 2)
     file_report(conn, config)
@@ -410,6 +429,60 @@ def test_the_form_is_not_offered_for_a_sailing_that_has_not(client):
     body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
     assert "Add what happened" not in body
     assert "hasn't gone yet" in body
+
+
+def test_the_check_in_is_offered_while_the_sailing_is_still_to_come(client):
+    """The slot that used to hold only an apology for being empty."""
+    tz = client.app.state.config.tz
+    ahead = (now_utc().astimezone(tz).date() + timedelta(days=2)).isoformat()
+
+    body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
+
+    assert "I'm in the line" in body
+    assert "How long have you been there?" in body
+    # Script picks one of these; the server renders them all.
+    assert 'data-checkin="standing"' in body
+    assert 'data-checkin="held"' in body
+
+
+def test_the_page_without_script_is_the_page_it_always_was(client):
+    """Every check-in state ships hidden, and the old note is what a reader without script sees."""
+    tz = client.app.state.config.tz
+    ahead = (now_utc().astimezone(tz).date() + timedelta(days=2)).isoformat()
+
+    body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
+
+    assert '<div id="checkin" hidden>' in body
+    assert "hasn't gone yet" in body
+
+
+def test_the_page_carries_the_routes_clock_for_the_check_in(client):
+    """A join time is only worth preferring over a remembered one if the clock is trusted.
+
+    A phone in a ferry queue may be set to anything at all, so the stamp is read off the
+    time the server rendered with rather than off the device.
+    """
+    tz = client.app.state.config.tz
+    ahead = (now_utc().astimezone(tz).date() + timedelta(days=2)).isoformat()
+
+    body = client.get(f"/?origin=SLT&service_date={ahead}&time=12:30").text
+
+    stamped = NOW.astimezone(tz).isoformat(timespec="seconds")
+    assert stamped in body
+
+
+def test_a_checked_in_report_from_the_page_says_so(client, conn, config):
+    client.post("/report", data=_form(boarded="no", joined="11:50", source="checkin"))
+
+    rows = fetch_reports(conn, config.route.id, "SLT", SAILED.isoformat(), "12:30")
+    assert [row["source"] for row in rows] == ["checkin"]
+
+
+def test_a_made_up_source_is_refused_with_the_pages_own_message(client):
+    response = client.post("/report", data=_form(source="checkin-but-cooler"))
+
+    assert response.status_code == 400
+    assert "unknown report source" in response.text
 
 
 def test_posting_a_report_redirects_back_to_the_sailing(client):

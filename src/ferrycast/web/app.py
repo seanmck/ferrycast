@@ -625,6 +625,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "report_error": report_error,
                 "report_form": report_values or {},
                 "report_saved": report_saved,
+                # The route's now, for the check-in to stamp against. A phone in a ferry
+                # queue may have any clock at all, and a join time is only worth preferring
+                # over a remembered one if it was taken from a clock we trust. The page is
+                # rendered server-side anyway, so this costs a string.
+                "server_now": local(now_utc(), config.tz).isoformat(timespec="seconds"),
             },
             status_code=status_code,
         )
@@ -661,6 +666,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         departed: str = "",
         sailings_waited: str = "",
         deck_fullness: str = "",
+        source: str = "web",
     ) -> int:
         """Everything the two submission paths agree on, in one place."""
         try:
@@ -680,6 +686,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             departed=parse_clock(departed),
             sailings_waited=int(sailings_waited) if sailings_waited else None,
             deck_fullness=deck_fullness or None,
+            source=source,
         )
 
     @app.post("/report", response_class=HTMLResponse)
@@ -695,6 +702,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
         departed: str = Form(""),
         sailings_waited: str = Form(""),
         deck_fullness: str = Form(""),
+        # Set to `checkin` by the page when the join time came from a check-in rather than
+        # from memory. Untrusted like the rest of the form; `submit_report` checks it.
+        source: str = Form("web"),
         conn: sqlite3.Connection = Depends(get_conn),
         config: Config = Depends(get_config),
     ):
@@ -711,6 +721,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 departed=departed,
                 sailings_waited=sailings_waited,
                 deck_fullness=deck_fullness,
+                source=source,
             )
         except ReportError as exc:
             # Back to the same page with the form still filled in — a rejected report that
