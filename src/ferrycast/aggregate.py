@@ -39,6 +39,7 @@ from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
+from .vessels import departure_from_tracking
 from .vision import FULLNESS_LEVELS
 
 OUTCOMES = ("boarded", "waited_1", "waited_2plus", "filled", "cancelled", "unknown")
@@ -75,6 +76,10 @@ class SailingRecord:
     #: The two axes. None on either means no source was entitled to speak to it.
     filled: bool | None = None
     left_behind: bool | None = None
+    #: When the vessel actually left, and who saw it go. The board is to the minute; the
+    #: vessel tracker is good to about five, so the source travels with the timestamp.
+    departed_at: str | None = None
+    departed_source: str | None = None
 
 
 @dataclass
@@ -619,10 +624,27 @@ def compute_record(
         sailing_row["depart_hhmm"],
         config,
     )
-    if board_departure is not None:
-        left_at = board_departure
+    # The vessel tracker, for the direction the board does not cover. It ranks below the
+    # board — to the minute versus to about five — and above the camera, which on this route
+    # cannot see either berth. It witnesses the ship and nothing else, so it settles *when*
+    # a sailing went and never whether anyone got on.
+    departed_at = board_departure
+    departed_source = "board" if board_departure else None
+    if departed_at is None:
+        tracked = departure_from_tracking(
+            conn,
+            config,
+            origin=sailing_row["origin"],
+            departure=departure,
+            grace=timedelta(minutes=cfg.departure_grace_minutes),
+        )
+        if tracked is not None:
+            departed_at, departed_source = tracked, "tracking"
+
+    if departed_at is not None:
+        left_at = departed_at
         still_at_dock = False
-        settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), board_departure)
+        settle_from = max(departure + timedelta(minutes=cfg.settle_minutes), departed_at)
         after = [
             o for o in observations if o.at >= settle_from and o.vehicle_count is not None
         ]
@@ -775,6 +797,8 @@ def compute_record(
         left_behind=left_behind,
         queue_started_at=_first_occupied_at(before),
         cleared_at=_cleared_at(observations, settle_from),
+        departed_at=iso(departed_at) if departed_at else None,
+        departed_source=departed_source,
     )
 
 
@@ -785,8 +809,8 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
                 overload, cancelled, outcome, n_frames, confidence, queue_truncated,
                 deck_space_min, filled_at, method, peak_fullness, fullness_at_departure,
                 residual_fullness, queue_started_at, cleared_at, left_full,
-                filled, left_behind, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                filled, left_behind, departed_at, departed_source, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             record.sailing_id,
             record.peak_queue,
@@ -810,6 +834,8 @@ def store_record(conn: sqlite3.Connection, record: SailingRecord) -> None:
             None if record.left_full is None else int(record.left_full),
             None if record.filled is None else int(record.filled),
             None if record.left_behind is None else int(record.left_behind),
+            record.departed_at,
+            record.departed_source,
             iso(now_utc()),
         ),
     )
