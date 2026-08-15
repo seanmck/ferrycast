@@ -591,6 +591,41 @@ mapped to Sunday-like. When that bucket is too thin, the search widens in define
 over three sailings is never presented as though it were over thirty. Sample size and the
 underlying dates always travel with the answer.
 
+#### Knowing whether anyone uses it
+
+Optional, off unless a key is set, and **entirely server-side**. Set `FERRYCAST_POSTHOG_KEY`
+and the app reports to PostHog from the request it is already answering; leave it unset — the
+default, and what a fresh clone gets — and no middleware is installed, no cookie is set, and
+nothing about the app changes.
+
+No tag runs in the browser. That is the whole reason it is built this way: an analytics script
+is a blocking round trip to a CDN before the answer paints, on the phone with one bar that this
+page exists for, and it would cost the property stated above — the terminal camera is still the
+only third party *the visitor's browser* is asked to contact. The server contacts several (the
+deck-space page, the vessel tracker, two ECCC feeds), but it does that on its own schedule,
+off the request path, and PostHog now joins that list rather than the page's. A cookie holds one
+random opaque id — first-party, and the only one this app sets — so two visits from one phone
+count as one person and nothing else about them is knowable. Crawlers and link-preview fetchers
+are dropped before anything is recorded, and so is the container's own liveness probe, which
+would otherwise outnumber the people by a hundred to one.
+
+The events are few and named for the questions they answer:
+
+| Event | Asks |
+|---|---|
+| `$pageview` | who arrives, from where, which sailing they asked about — and `answered`, whether there was enough history to tell them anything |
+| `report_submitted` | the contribution loop: someone who was in the line filed what happened |
+| `report_rejected` | the form bounced somebody, and why |
+| `backfill_requested` | someone spent money filling a slot's history, and what it bought |
+| `ondemand_check` | someone asked the camera to look now |
+| `data_exported` | the datasets are read by somebody other than me |
+
+`answered` is the one worth watching. This app's failure mode is not a crash — it is a person
+arriving and being told nobody knows, which is invisible in traffic and looks like success in
+every uptime graph. Nothing here can change what the app says, and nothing here is allowed to
+break a page: a PostHog outage, a wrong key or a missing SDK all degrade to silence, the same
+way a dead camera degrades to an `error` frame rather than a failed job.
+
 ### All commands
 
 | Command | Purpose |

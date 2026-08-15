@@ -152,10 +152,18 @@ a minute — it creates the database on first tick — then check the deploy log
 | `FERRYCAST_ALLOW_BACKFILL` | optional | `true` enables the page's "read these frames" button. Off unless set. |
 | `FERRYCAST_BACKFILL_DAILY_FRAME_CAP` | optional | Frames the page may read per day (default 120). |
 | `FERRYCAST_ALLOW_CHECKS` | optional | `true` enables the live `POST /api/check` endpoint. Off unless set. |
+| `FERRYCAST_POSTHOG_KEY` | optional | PostHog project key (`phc_…`). Analytics is entirely off without it. |
+| `FERRYCAST_POSTHOG_HOST` | optional | `https://eu.i.posthog.com` for an EU project; defaults to US. |
+| `FERRYCAST_ANALYTICS` | optional | `off` stops reporting without removing the key. |
 | `PORT` | injected | Railway sets it; `ferrycast run` binds it automatically. |
 
 The `FERRYCAST_WEBCAM_*` overrides exist so you can keep camera URLs out of git entirely if
 you prefer — the committed config can leave them blank.
+
+`FERRYCAST_POSTHOG_KEY` is the only place the analytics key may go — `config/ferrycast.toml`
+is committed into the image, and the loader refuses an `api_key` written there. Set it and
+`ferrycast doctor` reports where it is sending; leave it unset and no middleware is installed,
+no cookie is set, and the app behaves as it did before analytics existed.
 
 Set `FERRYCAST_BASE_URL` once you know the domain. Railway terminates TLS in front of the
 container, so the app itself only ever sees `http` — it falls back to the `X-Forwarded-Proto`

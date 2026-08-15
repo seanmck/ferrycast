@@ -108,6 +108,16 @@ def cmd_doctor(args) -> int:
     else:
         print("warn  ANTHROPIC_API_KEY not set — extraction will fail (capture is unaffected)")
 
+    # Never a problem either way: analytics is optional, and an install that reports nowhere
+    # is a working install. Printed because "is it on" is otherwise invisible — no key means
+    # no middleware, no cookie and no sign on any page that it was ever meant to be there.
+    if config.analytics.configured:
+        print(f"ok    analytics: reporting to {config.analytics.host}")
+    elif config.analytics.api_key:
+        print("info  analytics: key set but disabled (FERRYCAST_ANALYTICS / [analytics] enabled)")
+    else:
+        print("info  analytics: off (no FERRYCAST_POSTHOG_KEY)")
+
     for terminal in config.route.terminals:
         if not terminal.webcam_url:
             problems.append(f"{terminal.code}: no webcam_url configured")

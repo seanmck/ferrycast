@@ -29,6 +29,13 @@ BASE_URL_ENV_VAR = "FERRYCAST_BASE_URL"
 ALLOW_BACKFILL_ENV_VAR = "FERRYCAST_ALLOW_BACKFILL"
 ALLOW_CHECKS_ENV_VAR = "FERRYCAST_ALLOW_CHECKS"
 BACKFILL_CAP_ENV_VAR = "FERRYCAST_BACKFILL_DAILY_FRAME_CAP"
+# Analytics. The project key is environment-only and never a config key: `config/ferrycast.toml`
+# is committed into the image (see the Dockerfile), and a fork that copied it would start
+# reporting somebody else's traffic into this project. The off switch is separate from the key
+# so it can be thrown without deleting the credential.
+POSTHOG_KEY_ENV_VAR = "FERRYCAST_POSTHOG_KEY"
+POSTHOG_HOST_ENV_VAR = "FERRYCAST_POSTHOG_HOST"
+ANALYTICS_ENV_VAR = "FERRYCAST_ANALYTICS"
 
 
 class ConfigError(Exception):
@@ -168,6 +175,33 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class AnalyticsConfig:
+    """Server-side PostHog: who reaches the app, and whether it answered them.
+
+    Deliberately server-side. A tag in the document would be a blocking round trip to a CDN
+    before the answer paints, on a phone with one bar at the side of Highway 101 — and the
+    only third party the browser is asked to contact is the terminal camera, which is lazy
+    and below the fold. Everything worth counting here (which sailing was asked about,
+    whether there was enough history to answer it, whether anyone filed a report) is visible
+    in the request the app is already serving, so the page phones nobody. The collectors'
+    own remotes are a separate matter: they run off the request path, and this joins them.
+
+    Off unless `api_key` is set, which only the environment can do.
+    """
+
+    # A kill switch that does not require deleting the key: `FERRYCAST_ANALYTICS=off`.
+    enabled: bool = True
+    host: str = "https://us.i.posthog.com"
+    # Environment-only — see POSTHOG_KEY_ENV_VAR. Present on the dataclass because the rest
+    # of the app should read one resolved object rather than reach for os.environ.
+    api_key: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.enabled and self.api_key)
+
+
+@dataclass(frozen=True)
 class AggregateConfig:
     vessel_capacity: int = 125
     lookback_minutes: int = 120
@@ -218,6 +252,7 @@ class Config:
     query: QueryConfig = field(default_factory=QueryConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     source_path: Path | None = None
 
     @property
@@ -411,6 +446,19 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
                 f"got {os.environ[BACKFILL_CAP_ENV_VAR]!r}"
             ) from exc
 
+    analytics_raw = dict(raw.get("analytics", {}))
+    if "api_key" in analytics_raw:
+        raise ConfigError(
+            "[analytics] api_key does not belong in the config file — this file is committed "
+            f"into the image. Set {POSTHOG_KEY_ENV_VAR} in the environment instead."
+        )
+    analytics = _dataclass_from(AnalyticsConfig, analytics_raw, "analytics")
+    analytics = replace(analytics, api_key=os.environ.get(POSTHOG_KEY_ENV_VAR, "").strip())
+    if os.environ.get(POSTHOG_HOST_ENV_VAR):
+        analytics = replace(analytics, host=os.environ[POSTHOG_HOST_ENV_VAR].strip())
+    if os.environ.get(ANALYTICS_ENV_VAR) is not None:
+        analytics = replace(analytics, enabled=_env_flag(ANALYTICS_ENV_VAR))
+
     return Config(
         timezone_name=app.get("timezone", "America/Vancouver"),
         data_dir=data_dir,
@@ -425,5 +473,6 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         query=_dataclass_from(QueryConfig, raw.get("query", {}), "query"),
         retention=_dataclass_from(RetentionConfig, raw.get("retention", {}), "retention"),
         web=web,
+        analytics=analytics,
         source_path=config_path,
     )

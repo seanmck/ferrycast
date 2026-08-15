@@ -152,6 +152,24 @@ backfill_daily_frame_cap = 120   # counts frames, not taps, so one slot cannot e
 # with no image, or with an http:// image on an https:// page. FERRYCAST_BASE_URL overrides.
 base_url = ""   # e.g. "https://ferrycast.example.com"
 
+[analytics]
+# Server-side PostHog, and off unless FERRYCAST_POSTHOG_KEY is set in the environment —
+# which is the only place the key may go, since this file is committed into the image.
+# Nothing is loaded, no middleware runs and no cookie is set without one.
+#
+# Server-side deliberately: no tag runs in the browser, so the terminal camera is still the
+# only third party a visitor's browser contacts, and the page still paints on one bar of
+# signal. (The server polls plenty — deck space, the vessel tracker, ECCC — but on its own
+# schedule, off the request path. PostHog joins that side of the line, not the page's.)
+# What it can see is the request it is already answering — which sailing was asked about,
+# whether there was enough history to answer it, whether anyone filed a report afterwards.
+# What it cannot see is clicks, scrolling, session replays or anybody's identity.
+#
+# `enabled` is a kill switch for a deploy that has a key it wants to stop using; the
+# environment override FERRYCAST_ANALYTICS=off does the same without a rebuild.
+enabled = true
+host    = "https://us.i.posthog.com"   # "https://eu.i.posthog.com" for an EU project
+
 [aggregate]
 # Malaspina Sky (BC Ferries code ISKY, built 2008) — the same vessel formerly named
 # Island Sky, renamed rather than replaced, so 125 was right all along. This number is the
