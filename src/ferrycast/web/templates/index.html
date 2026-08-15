@@ -1330,7 +1330,7 @@
   </details>
 {% endif %}
 
-{# ---- The terminal right now. Only ever the next sailing — see _live_webcam. ---- #}
+{# ---- The terminal right now. Only ever a sailing that has not left — see _live_webcam. ---- #}
 {% if webcam %}
 <section class="card cam-card">
   <p class="label">{{ webcam.terminal }} now</p>
@@ -1342,8 +1342,10 @@
          loading="lazy" decoding="async"
          onerror="this.closest('.cam-card').hidden = true">
   </figure>
-  <p class="note">Live from BC Ferries. You are seeing the compound — vehicles still queued
-    on the approach road may be out of frame.</p>
+  <p class="note">Live from BC Ferries.
+    {%- if webcam.holding %} The {{ selected_time }} has not been called away, so this line is
+    still waiting on it.{% endif %} You are seeing the compound — vehicles still queued on the
+    approach road may be out of frame.</p>
 </section>
 {% endif %}
 
