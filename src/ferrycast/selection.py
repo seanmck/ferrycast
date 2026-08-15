@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from .config import Config
+from .config import MAIN_CAMERA, Config
 from .schedule import load_schedule_cached, sailings_for_day
 from .timeutil import iso, now_utc, parse_iso
 
@@ -25,7 +25,7 @@ def _rows(conn: sqlite3.Connection, sql: str, params: tuple) -> list[sqlite3.Row
     return list(conn.execute(sql, params).fetchall())
 
 
-BASE_COLUMNS = "f.id, f.terminal, f.captured_at, f.path"
+BASE_COLUMNS = "f.id, f.terminal, f.camera, f.captured_at, f.path"
 
 
 def _unextracted_clause(prompt_version: str) -> tuple[str, list]:
@@ -46,13 +46,14 @@ def frames_between(
     end: datetime,
     *,
     only_unextracted: bool = True,
+    camera: str = MAIN_CAMERA,
 ) -> list[sqlite3.Row]:
     sql = f"""
         SELECT {BASE_COLUMNS} FROM frames f
-         WHERE f.terminal = ? AND f.status = 'ok' AND f.path IS NOT NULL
+         WHERE f.terminal = ? AND f.camera = ? AND f.status = 'ok' AND f.path IS NOT NULL
            AND f.captured_at >= ? AND f.captured_at <= ?
     """
-    params: list = [terminal, iso(start), iso(end)]
+    params: list = [terminal, camera, iso(start), iso(end)]
     if only_unextracted:
         clause, extra = _unextracted_clause(config.vision.prompt_version)
         sql += clause
@@ -136,18 +137,23 @@ def recent_frames(
     limit: int | None = None,
     only_unextracted: bool = False,
     at: datetime | None = None,
+    camera: str = MAIN_CAMERA,
 ) -> list[sqlite3.Row]:
-    """The newest frames at a terminal, newest first — the basis of an on-demand check."""
+    """The newest frames from one camera at a terminal, newest first.
+
+    Defaults to the terminal's own camera: this is what an on-demand check reads, and the
+    question it answers is about the compound, which only that camera can see.
+    """
     max_age = max_age_minutes or config.vision.on_demand_max_age_minutes
     limit = limit or config.vision.on_demand_max_frames
     cutoff = (at or now_utc()) - timedelta(minutes=max_age)
 
     sql = f"""
         SELECT {BASE_COLUMNS} FROM frames f
-         WHERE f.terminal = ? AND f.status = 'ok' AND f.path IS NOT NULL
+         WHERE f.terminal = ? AND f.camera = ? AND f.status = 'ok' AND f.path IS NOT NULL
            AND f.captured_at >= ?
     """
-    params: list = [terminal, iso(cutoff)]
+    params: list = [terminal, camera, iso(cutoff)]
     if only_unextracted:
         clause, extra = _unextracted_clause(config.vision.prompt_version)
         sql += clause

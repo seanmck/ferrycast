@@ -148,16 +148,23 @@ def _prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool) ->
 
     downsample_before = iso(now - timedelta(days=retention.downsample_after_days))
     candidates = conn.execute(
-        f"""SELECT id, path, terminal, captured_at FROM frames
+        f"""SELECT id, path, terminal, camera, captured_at FROM frames
              WHERE path IS NOT NULL AND captured_at < ? AND captured_at >= ?
                {extracted_only}
-             ORDER BY terminal, captured_at""",
+             ORDER BY terminal, camera, captured_at""",
         (downsample_before, delete_before, *guard_params),
     ).fetchall()
 
-    kept_per_hour: dict[tuple[str, str], int] = {}
+    # Keyed by camera as well as terminal: the quota is "keep this many views of this hour",
+    # and two cameras at one terminal are two records, not one recorded twice. Sharing a
+    # bucket would silently thin whichever camera sorted second down to nothing.
+    kept_per_hour: dict[tuple[str, str, str], int] = {}
     for row in candidates:
-        hour_key = (row["terminal"], parse_iso(row["captured_at"]).strftime("%Y-%m-%dT%H"))
+        hour_key = (
+            row["terminal"],
+            row["camera"],
+            parse_iso(row["captured_at"]).strftime("%Y-%m-%dT%H"),
+        )
         kept = kept_per_hour.get(hour_key, 0)
         if kept < retention.downsample_keep_per_hour:
             kept_per_hour[hour_key] = kept + 1

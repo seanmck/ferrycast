@@ -9,6 +9,12 @@ CREATE TABLE IF NOT EXISTS frames (
     id            INTEGER PRIMARY KEY,
     route         TEXT    NOT NULL,
     terminal      TEXT    NOT NULL,
+    -- Which of that terminal's cameras took it. 'main' is the one named by the terminal's
+    -- own `webcam_url`; anything else is an extra camera declared in config. A terminal can
+    -- have more than one view worth archiving and they answer different questions — Earls
+    -- Cove's own camera overlooks the marshalling lanes, while a highway camera down the
+    -- road sees the overflow that only happens once those lanes are full.
+    camera        TEXT    NOT NULL DEFAULT 'main',
     captured_at   TEXT    NOT NULL,          -- UTC ISO8601, second resolution
     service_date  TEXT    NOT NULL,          -- local YYYY-MM-DD
     path          TEXT,                      -- relative to data_dir; NULL once pruned
@@ -22,9 +28,14 @@ CREATE TABLE IF NOT EXISTS frames (
     -- a terminal serving two routes (Horseshoe Bay, if this ever grows) should yield one
     -- shared frame per capture rather than a duplicate image per route. `route` below
     -- records which route's capture run fetched it.
-    UNIQUE (terminal, captured_at)
+    --
+    -- `camera` is part of the key because two cameras at one terminal can and do land on
+    -- the same second: a replay feed timestamps on the quarter hour and a cron capture runs
+    -- whenever the cron runs. Without it the second one is silently dropped by the
+    -- INSERT OR IGNORE that every writer here uses.
+    UNIQUE (terminal, camera, captured_at)
 );
-CREATE INDEX IF NOT EXISTS idx_frames_terminal_time ON frames (terminal, captured_at);
+CREATE INDEX IF NOT EXISTS idx_frames_terminal_time ON frames (terminal, camera, captured_at);
 CREATE INDEX IF NOT EXISTS idx_frames_service_date  ON frames (service_date);
 CREATE INDEX IF NOT EXISTS idx_frames_route         ON frames (route, captured_at);
 

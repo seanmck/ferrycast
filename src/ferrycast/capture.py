@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .config import Config
+from .config import MAIN_CAMERA, Config
 from .db import JobRun
 from .fetching import FetchResult, fetch
 from .timeutil import iso, local, now_utc
@@ -35,6 +35,12 @@ class CaptureOutcome:
     path: Path | None = None
     error: str | None = None
     skipped: bool = False
+    camera: str = MAIN_CAMERA
+
+    @property
+    def label(self) -> str:
+        """How to name this camera to a human — the terminal alone where that is enough."""
+        return self.terminal if self.camera == MAIN_CAMERA else f"{self.terminal}/{self.camera}"
 
 
 def sniff_extension(content: bytes) -> str | None:
@@ -59,35 +65,54 @@ def image_dimensions(content: bytes) -> tuple[int | None, int | None]:
         return None, None
 
 
-def frame_path(config: Config, terminal: str, captured_at: datetime, ext: str) -> Path:
+def frame_path(
+    config: Config,
+    terminal: str,
+    captured_at: datetime,
+    ext: str,
+    camera: str = MAIN_CAMERA,
+) -> Path:
+    """Where one frame lives on disk.
+
+    The main camera keeps the layout it has always had, so an existing frame store needs no
+    migration and no rewriting of the paths already recorded against it. Extra cameras get
+    their own sibling tree, which keeps the disk as legible as the database.
+    """
     when = local(captured_at, config.tz)
+    stem = terminal if camera == MAIN_CAMERA else f"{terminal}_{camera}"
     return (
         config.frames_dir
-        / terminal
+        / stem
         / when.strftime("%Y")
         / when.strftime("%m")
         / when.strftime("%d")
-        / f"{terminal}_{when.strftime('%Y%m%dT%H%M%S')}.{ext}"
+        / f"{stem}_{when.strftime('%Y%m%dT%H%M%S')}.{ext}"
     )
 
 
 def _record_failure(
-    conn: sqlite3.Connection, config: Config, terminal: str, captured_at: datetime, error: str
+    conn: sqlite3.Connection,
+    config: Config,
+    terminal: str,
+    captured_at: datetime,
+    error: str,
+    camera: str = MAIN_CAMERA,
 ) -> CaptureOutcome:
     conn.execute(
         """INSERT OR IGNORE INTO frames
-               (route, terminal, captured_at, service_date, status, error)
-           VALUES (?, ?, ?, ?, 'error', ?)""",
+               (route, terminal, camera, captured_at, service_date, status, error)
+           VALUES (?, ?, ?, ?, ?, 'error', ?)""",
         (
             config.route.id,
             terminal,
+            camera,
             iso(captured_at),
             local(captured_at, config.tz).date().isoformat(),
             error,
         ),
     )
     conn.commit()
-    return CaptureOutcome(terminal=terminal, ok=False, error=error)
+    return CaptureOutcome(terminal=terminal, ok=False, error=error, camera=camera)
 
 
 def store_frame(
@@ -96,10 +121,11 @@ def store_frame(
     terminal: str,
     captured_at: datetime,
     result: FetchResult,
+    camera: str = MAIN_CAMERA,
 ) -> CaptureOutcome:
     if not result.ok or not result.content:
         return _record_failure(
-            conn, config, terminal, captured_at, result.error or "empty response"
+            conn, config, terminal, captured_at, result.error or "empty response", camera
         )
 
     ext = sniff_extension(result.content)
@@ -112,21 +138,23 @@ def store_frame(
             terminal,
             captured_at,
             f"response was not an image (content-type={result.content_type or 'unknown'})",
+            camera,
         )
 
-    path = frame_path(config, terminal, captured_at, ext)
+    path = frame_path(config, terminal, captured_at, ext, camera)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(result.content)
     width, height = image_dimensions(result.content)
 
     cur = conn.execute(
         """INSERT OR IGNORE INTO frames
-               (route, terminal, captured_at, service_date, path, sha256, bytes,
+               (route, terminal, camera, captured_at, service_date, path, sha256, bytes,
                 width, height, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok')""",
         (
             config.route.id,
             terminal,
+            camera,
             iso(captured_at),
             local(captured_at, config.tz).date().isoformat(),
             str(path.relative_to(config.data_dir)),
@@ -139,7 +167,9 @@ def store_frame(
     )
     conn.commit()
     frame_id = cur.lastrowid if cur.rowcount else None
-    return CaptureOutcome(terminal=terminal, ok=True, frame_id=frame_id, path=path)
+    return CaptureOutcome(
+        terminal=terminal, ok=True, frame_id=frame_id, path=path, camera=camera
+    )
 
 
 def capture_once(

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .config import Config
+from .config import MAIN_CAMERA, Config
 from .db import JobRun
 from .timeutil import iso, now_utc
 
@@ -331,16 +331,27 @@ def pending_frames(
     *,
     since: str | None = None,
     terminal: str | None = None,
+    camera: str | None = MAIN_CAMERA,
 ) -> list[sqlite3.Row]:
-    """Frames that have no observation at this prompt version yet."""
+    """Frames that have no observation at this prompt version yet.
+
+    Scoped to one camera, defaulting to the terminal's own, because this path costs money.
+    An extra camera archived for a different purpose — a highway view up the approach road,
+    say — would otherwise be posted to the model frame by frame and billed for, to answer a
+    question about a compound that is not in the picture. Pass `camera=None` to mean every
+    camera, deliberately.
+    """
     sql = """
-        SELECT f.id, f.terminal, f.captured_at, f.path
+        SELECT f.id, f.terminal, f.camera, f.captured_at, f.path
           FROM frames f
           LEFT JOIN observations o
             ON o.frame_id = f.id AND o.prompt_version = ?
          WHERE f.status = 'ok' AND f.path IS NOT NULL AND o.id IS NULL
     """
     params: list = [prompt_version]
+    if camera is not None:
+        sql += " AND f.camera = ?"
+        params.append(camera)
     if since:
         sql += " AND f.captured_at >= ?"
         params.append(since)

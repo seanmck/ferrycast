@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -140,6 +140,76 @@ def _add_vessel_tracking(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE sailing_records ADD COLUMN {column} TEXT")
 
 
+def _add_camera(conn: sqlite3.Connection) -> None:
+    """v9 -> v10: name the camera a frame came from, and key frames by it.
+
+    A terminal can have more than one camera worth archiving. Earls Cove is the case that
+    forced it: its own camera overlooks the marshalling lanes, and a DriveBC camera down
+    Highway 101 sees the queue that only exists once those lanes are full.
+
+    This is the one migration here that cannot be an ALTER — SQLite will not alter a table
+    constraint, and the constraint is the point, so `frames` has to be rebuilt. Two hazards
+    come with that and both are handled below rather than hoped away:
+
+    * `observations.frame_id` references `frames` with ON DELETE CASCADE. Dropping the old
+      table with foreign keys enforced would cascade every observation in the archive into
+      oblivion — the whole extracted record, gone, in a migration that reads like a rename.
+      Keys are therefore off for the rebuild and the caller's setting restored after.
+    * `PRAGMA foreign_keys` is silently a no-op inside a transaction, so the pragma is only
+      trustworthy on a committed connection. Hence the commit either side.
+    """
+    if _column_exists(conn, "frames", "camera"):
+        return
+
+    conn.commit()
+    enforced = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute(
+            """CREATE TABLE frames_rebuilt (
+                   id            INTEGER PRIMARY KEY,
+                   route         TEXT    NOT NULL,
+                   terminal      TEXT    NOT NULL,
+                   camera        TEXT    NOT NULL DEFAULT 'main',
+                   captured_at   TEXT    NOT NULL,
+                   service_date  TEXT    NOT NULL,
+                   path          TEXT,
+                   sha256        TEXT,
+                   bytes         INTEGER,
+                   width         INTEGER,
+                   height        INTEGER,
+                   status        TEXT    NOT NULL,
+                   error         TEXT,
+                   UNIQUE (terminal, camera, captured_at)
+               )"""
+        )
+        # `id` is carried across verbatim: observations reference it, and with foreign keys
+        # off nothing would complain if it were not.
+        conn.execute(
+            """INSERT INTO frames_rebuilt
+                   (id, route, terminal, camera, captured_at, service_date, path,
+                    sha256, bytes, width, height, status, error)
+               SELECT id, route, terminal, 'main', captured_at, service_date, path,
+                      sha256, bytes, width, height, status, error
+                 FROM frames"""
+        )
+        conn.execute("DROP TABLE frames")
+        conn.execute("ALTER TABLE frames_rebuilt RENAME TO frames")
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_frames_terminal_time
+                   ON frames (terminal, camera, captured_at)"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_frames_service_date ON frames (service_date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_frames_route ON frames (route, captured_at)"
+        )
+        conn.commit()
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {'ON' if enforced else 'OFF'}")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
@@ -150,6 +220,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     6: _add_left_full,
     7: _add_claim_axes,
     8: _add_vessel_tracking,
+    9: _add_camera,
 }
 
 
@@ -192,8 +263,6 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
         ).fetchone()[0]
         == 0
     )
-    conn.executescript(schema_sql())
-
     current = schema_version(conn)
     if current > SCHEMA_VERSION:
         raise SchemaTooNewError(
@@ -202,14 +271,24 @@ def init_db(db_path: str | Path) -> sqlite3.Connection:
         )
 
     if fresh:
+        conn.executescript(schema_sql())
         current = SCHEMA_VERSION
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    while current < SCHEMA_VERSION:
-        migration = MIGRATIONS.get(current)
-        if migration:
-            migration(conn)
-        current += 1
-        conn.execute(f"PRAGMA user_version = {current}")
+    else:
+        # Migrations first, then the schema script — not the other way round. schema.sql
+        # describes the shape as it is *now*, so it names columns an older database has not
+        # got yet, and SQLite resolves those names even in a statement guarded by IF NOT
+        # EXISTS. Running it first therefore fails on exactly the databases the migration
+        # exists to rescue, with a "no such column" that points at the new schema rather
+        # than at the ordering. A migration must create whatever it needs rather than expect
+        # schema.sql to have been past.
+        while current < SCHEMA_VERSION:
+            migration = MIGRATIONS.get(current)
+            if migration:
+                migration(conn)
+            current += 1
+            conn.execute(f"PRAGMA user_version = {current}")
+        conn.executescript(schema_sql())
 
     conn.commit()
     return conn
