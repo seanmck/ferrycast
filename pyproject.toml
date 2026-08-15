@@ -20,6 +20,11 @@ dependencies = [
     "jinja2>=3.1",
     "beautifulsoup4>=4.12",
     "pillow>=10.0",
+    # Server-side product analytics, and inert without a key in the environment. A hard
+    # dependency rather than an extra because the container installs this list and nothing
+    # else — but the import is still guarded, so an image built without it degrades to
+    # silence rather than failing to boot. See web/analytics.py.
+    "posthog>=7.0,<8",
 ]
 
 [project.optional-dependencies]

@@ -11,6 +11,7 @@ a third party.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
@@ -53,6 +54,7 @@ from ..reports import (
 from ..schedule import day_type, season
 from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
+from . import analytics
 from .preview import health_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
@@ -432,12 +434,26 @@ def _live_webcam(
 
 def create_app(config_path: str | None = None) -> FastAPI:
     config = load_config(config_path)
-    app = FastAPI(title="FerryCast", docs_url="/api/docs", redoc_url=None)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Analytics is queued on a background thread, so a process that exits without
+        # flushing loses the last few minutes of it. Nothing else here needs a shutdown:
+        # database connections are per-request and closed by their dependency.
+        app.state.analytics.shutdown()
+
+    app = FastAPI(
+        title="FerryCast", docs_url="/api/docs", redoc_url=None, lifespan=lifespan
+    )
     app.state.config = config
     # The theme's CSS is inline on every page, which keeps the document to one request but
     # costs about 23 KB uncompressed. Gzip takes that to under 7 KB — the difference
     # between the two on a single bar of signal is the whole <2s budget.
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    # Server-side only, and off unless a key is in the environment — see web/analytics.py
+    # for why the browser is never asked to phone PostHog.
+    app.state.analytics = analytics.install(app, config)
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
     def get_config() -> Config:
@@ -617,6 +633,25 @@ def create_app(config_path: str | None = None) -> FastAPI:
         # attributed to its own station rather than folded in beside the wind.
         shore = shore_summary(
             conn, config, terminal=chosen_origin, service_date=chosen_date
+        )
+
+        # What the pageview could not know until the page was built. `answered` is the one
+        # that matters: this app's failure mode is not a crash, it is a person arriving and
+        # being told nobody knows — and that is invisible in traffic alone.
+        analytics.visit(request).annotate(
+            origin=chosen_origin,
+            depart_hhmm=chosen_time or "",
+            service_date=chosen_date.isoformat(),
+            days_ahead=(chosen_date - today).days,
+            day_type=day_type(chosen_date),
+            season=season(chosen_date),
+            answered=bool(distribution and distribution["sufficient"]),
+            sample_size=distribution["n"] if distribution else 0,
+            match_level=distribution["match_level"] if distribution else "",
+            evidence=distribution["evidence"] if distribution else "unknown",
+            reports_shown=(reports or {}).get("n", 0),
+            has_departed=departed,
+            webcam_shown=bool(webcam),
         )
 
         return TEMPLATES.TemplateResponse(
@@ -805,6 +840,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 source=source,
             )
         except ReportError as exc:
+            # Counted, because a form that bounces people is the cheapest thing to lose
+            # evidence to: the reason, not what they typed, so the event says which field
+            # is confusing without recording anybody's crossing.
+            analytics.visit(request).capture(
+                "report_rejected", origin=origin, reason=str(exc), source=source
+            )
             # Back to the same page with the form still filled in — a rejected report that
             # loses what was typed is a report that never gets filed again.
             return _render_index(
@@ -824,6 +865,20 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 },
                 status_code=400,
             )
+
+        # The contribution loop, and the only event here that records a person doing
+        # something rather than reading something. What was reported, not who reported it.
+        analytics.visit(request).capture(
+            "report_submitted",
+            origin=origin,
+            depart_hhmm=time,
+            boarded=boarded == "yes",
+            sailings_waited=int(sailings_waited) if sailings_waited.isdigit() else None,
+            deck_fullness=deck_fullness or None,
+            # `checkin` means the join time came from the page's own clock rather than from
+            # memory — worth telling apart, since it is the more trustworthy of the two.
+            source=source,
+        )
 
         query = urlencode(
             {"origin": origin, "service_date": service_date, "time": time, "reported": "1"}
@@ -889,6 +944,19 @@ def create_app(config_path: str | None = None) -> FastAPI:
             )
             result = outcome.to_dict()
 
+        # One of the two taps that spends money, so it is worth being able to see how often
+        # it is taken and what it bought — the spend itself is capped in the code above,
+        # not here, because an analytics client that is allowed to fail cannot be a control.
+        analytics.visit(request).capture(
+            "backfill_requested",
+            origin=origin,
+            depart_hhmm=time,
+            capped=bool(result.get("capped")),
+            frames_read=result.get("frames_read"),
+            sailings_filled=result.get("filled"),
+            cost_usd=result.get("cost_usd"),
+        )
+
         return _render_index(
             request, conn, config, origin, service_date, time, fill_result=result
         )
@@ -911,6 +979,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/api/report")
     def api_report(
+        request: Request,
         origin: str,
         service_date: str,
         time: str,
@@ -936,7 +1005,19 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 deck_fullness=deck_fullness,
             )
         except ReportError as exc:
+            analytics.visit(request).capture(
+                "report_rejected", origin=origin, reason=str(exc), source="api"
+            )
             raise HTTPException(400, str(exc)) from exc
+        analytics.visit(request).capture(
+            "report_submitted",
+            origin=origin,
+            depart_hhmm=time,
+            boarded=boarded,
+            sailings_waited=int(sailings_waited) if sailings_waited.isdigit() else None,
+            deck_fullness=deck_fullness or None,
+            source="api",
+        )
         return {"id": report_id, **_reports_payload(conn, config, origin, service_date, time)}
 
     @app.get("/api/reports")
@@ -1036,6 +1117,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/api/check")
     def api_check(
+        request: Request,
         origin: str,
         service_date: str | None = None,
         time: str | None = None,
@@ -1076,13 +1158,20 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 f"daily on-demand cap of {config.web.on_demand_daily_cap} frames reached",
             )
 
-        return check_and_compare(
+        result = check_and_compare(
             conn,
             config,
             origin=origin,
             target_date=_parse_date(config, service_date) if service_date else None,
             depart_hhmm=time,
         )
+        # The other tap that spends money. Only the ones that got past both guards above
+        # are counted — a refusal is a 403 raised before this line, which is the honest
+        # place for it: nothing was read and nothing was spent.
+        analytics.visit(request).capture(
+            "ondemand_check", origin=origin, depart_hhmm=time or ""
+        )
+        return result
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon():
@@ -1115,6 +1204,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/export/{dataset}.{fmt}")
     def api_export(
+        request: Request,
         dataset: str,
         fmt: str,
         since: str | None = None,
@@ -1125,6 +1215,9 @@ def create_app(config_path: str | None = None) -> FastAPI:
             body = export(conn, dataset, fmt, since=since, until=until)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        # The datasets are the point of collecting any of this, so it is worth knowing they
+        # are read by somebody other than the person who built it.
+        analytics.visit(request).capture("data_exported", dataset=dataset, format=fmt)
         media = "text/csv" if fmt == "csv" else "application/json"
         return PlainTextResponse(
             body,
