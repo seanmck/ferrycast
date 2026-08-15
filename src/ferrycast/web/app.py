@@ -307,6 +307,8 @@ def _board(
     service_date: date,
     selected_time: str | None,
     next_out,
+    watch: BoardWatch | None,
+    tracker: TrackerWatch | None,
 ) -> tuple[list[dict], dict]:
     """The whole day's timetable, each sailing answered from its own history.
 
@@ -320,6 +322,12 @@ def _board(
     Returns the rows and the shape of the day they make, which the strip above the board
     states in a sentence. Both come off the one `day_board` call — the shape is a reading of
     the same rows, not a second query.
+
+    The live readings — the published board, and the tracker where the board is silent —
+    are handed in rather than taken here, because the camera panel asks the same question
+    of them and the page must not answer that question twice. A row marked "not away yet"
+    beside a camera that had decided the boat was gone would be two parts of one page
+    disagreeing.
     """
     rows = day_board(conn, config, origin=origin, target_date=service_date)
     if not rows:
@@ -329,21 +337,6 @@ def _board(
     is_today = service_date == now.date()
     worst = _worst_of_day(rows)
     last_hhmm = rows[-1].depart_hhmm
-    watch = _watch_for(conn, config, origin=origin, service_date=service_date, now=now)
-    # The tracker only gets a say where the board has none, but where it does have a say it
-    # is the only thing standing between a late boat and a row that claims it has gone.
-    tracker = (
-        None
-        if watch is not None
-        else _tracker_for(
-            conn,
-            config,
-            origin=origin,
-            service_date=service_date,
-            now=now,
-            times=[r.depart_hhmm for r in rows],
-        )
-    )
 
     board = []
     for row in rows:
@@ -464,14 +457,28 @@ WEBCAM_FRESHNESS_SECONDS = 60
 
 
 def _live_webcam(
-    config: Config, origin: str, service_date: date, depart_hhmm: str | None
+    config: Config,
+    origin: str,
+    service_date: date,
+    depart_hhmm: str | None,
+    watch: BoardWatch | None,
+    tracker: TrackerWatch | None,
 ) -> dict | None:
-    """The terminal camera, but only when the chosen sailing is the next one out.
+    """The terminal camera, but only when the chosen sailing is one you could still catch.
 
-    A live picture is an answer to "should I leave now", which is a question only the next
-    departure poses. Attached to a sailing next Tuesday it would be actively misleading —
-    the queue in the frame is not that sailing's queue, and a photograph is persuasive in a
-    way a caption cannot undo.
+    A live picture is an answer to "should I leave now", which is a question only a sailing
+    that has not left poses. Attached to a sailing next Tuesday it would be actively
+    misleading — the queue in the frame is not that sailing's queue, and a photograph is
+    persuasive in a way a caption cannot undo.
+
+    Which is why the clock alone cannot decide this. A boat running an hour behind has a
+    compound full of cars waiting on it *now*, and by the timetable it is already history;
+    holding the picture back until the next departure would withhold the frame from the one
+    sailing it is actually about. So the camera asks `_has_sailed`, exactly as the day
+    board's "not away yet" marker does: the next departure by the clock, or a sailing whose
+    hour has passed and whose vessel the published board — or, where that board is silent,
+    the tracker — still has at the dock. At Earls Cove, which has no conditions page, the
+    tracker is the only thing that can hold the picture where it belongs.
     """
     if not depart_hhmm:
         return None
@@ -479,11 +486,8 @@ def _live_webcam(
     if not terminal.webcam_url:
         return None
 
-    upcoming = upcoming_sailings(config, origin=origin, limit=1)
-    if not upcoming:
-        return None
-    next_out = upcoming[0]
-    if next_out.service_date != service_date or next_out.depart_hhmm != depart_hhmm:
+    holding = _holding_at_the_dock(config, service_date, depart_hhmm, watch, tracker)
+    if not holding and not _is_next_out(config, origin, service_date, depart_hhmm):
         return None
 
     separator = "&" if "?" in terminal.webcam_url else "?"
@@ -491,7 +495,41 @@ def _live_webcam(
     return {
         "url": f"{terminal.webcam_url}{separator}t={bucket}",
         "terminal": terminal.name,
+        # Whose queue this is. On the next departure the frame is the usual mix of people
+        # early for it; on a sailing that is late it is that sailing's own line, still
+        # standing there, and the caption says so rather than leaving the reader to assume
+        # they are looking at the boat after.
+        "holding": holding,
     }
+
+
+def _is_next_out(config: Config, origin: str, service_date: date, depart_hhmm: str) -> bool:
+    """Whether this is the first departure the timetable still has ahead of it."""
+    upcoming = upcoming_sailings(config, origin=origin, limit=1)
+    if not upcoming:
+        return False
+    next_out = upcoming[0]
+    return next_out.service_date == service_date and next_out.depart_hhmm == depart_hhmm
+
+
+def _holding_at_the_dock(
+    config: Config,
+    service_date: date,
+    depart_hhmm: str,
+    watch: BoardWatch | None,
+    tracker: TrackerWatch | None,
+) -> bool:
+    """Whether this sailing's hour has passed with the vessel still alongside.
+
+    The same test the day board's "not away yet" marker makes, on the same readings, so the
+    two cannot disagree. With neither source able to answer, `_has_sailed` says gone and a
+    page with no live evidence keeps the old, narrow rule — the camera is never shown on
+    the strength of a guess.
+    """
+    scheduled = combine_local(service_date, parse_hhmm(depart_hhmm), config.tz)
+    if scheduled > local(now_utc(), config.tz):
+        return False
+    return not _has_sailed(watch, depart_hhmm, tracker)
 
 
 # What an extra camera is there to answer, said for a reader rather than in the config's
@@ -715,11 +753,35 @@ def create_app(config_path: str | None = None) -> FastAPI:
                         ),
                     }
 
-        # The live camera, shown only for the sailing you could still catch — the next
-        # departure from this terminal. On any other sailing the picture answers a
-        # question nobody asked: a compound full of cars has nothing to do with a
-        # crossing three days out, and everything to do with being mistaken for it.
-        webcam = _live_webcam(config, chosen_origin, chosen_date, chosen_time)
+        # Who has actually left, read once and spent twice: the camera panel and the day
+        # board both have to tell a boat that has gone from one that is merely late, and
+        # they have to tell it the same way. The published board first; the tracker only
+        # where that board has nothing to say, which at Earls Cove is always.
+        clock_now = local(now_utc(), config.tz)
+        watch = _watch_for(
+            conn, config, origin=chosen_origin, service_date=chosen_date, now=clock_now
+        )
+        tracker = (
+            None
+            if watch is not None
+            else _tracker_for(
+                conn,
+                config,
+                origin=chosen_origin,
+                service_date=chosen_date,
+                now=clock_now,
+                # The same list `day_board` walks — it iterates `sailing_times` itself — so
+                # the tracker is asked about exactly the sailings the board shows.
+                times=times,
+            )
+        )
+
+        # The live camera, shown only for a sailing you could still catch — the next
+        # departure from this terminal, or one running late with its vessel still at the
+        # dock. On any other sailing the picture answers a question nobody asked: a
+        # compound full of cars has nothing to do with a crossing three days out, and
+        # everything to do with being mistaken for it.
+        webcam = _live_webcam(config, chosen_origin, chosen_date, chosen_time, watch, tracker)
 
         # The desktop board. Built for every render because it is the desktop layout's
         # navigation and its first paint has to carry the answer, same as the phone's —
@@ -731,6 +793,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
             service_date=chosen_date,
             selected_time=chosen_time,
             next_out=default,
+            watch=watch,
+            tracker=tracker,
         )
         today = local_date(now_utc(), config.tz)
 

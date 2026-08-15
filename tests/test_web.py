@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from ferrycast.timeutil import combine_local, parse_hhmm
 from ferrycast.web.app import _countdown, create_app
 
+from .test_day_board import seed_deck_space, seed_tracking
 from .test_query import PLAIN_FRIDAY, fridays, seed_record
 from .test_report_bounds import add_report
 
@@ -196,6 +197,88 @@ def test_the_camera_url_is_cache_busted_on_the_minute(client, at_ten_sharp):
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
     expected = int(datetime(2026, 8, 14, 17, 0, tzinfo=UTC).timestamp()) // 60
     assert f"https://example.invalid/slt.jpg?t={expected}" in body
+
+
+# The clock is not the whole rule. A boat running late is the case where "next departure"
+# and "the sailing you might still catch" come apart, and the people in the frame are that
+# late sailing's own line — so it keeps the camera until BC Ferries says it has gone.
+
+
+@pytest.fixture
+def at_one_o_clock(monkeypatch):
+    """13:00 on the same Friday: the 12:30's hour has passed, the 16:30 is the next out."""
+    when = datetime(2026, 8, 14, 20, 0, tzinfo=UTC)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: when)
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: when)
+
+
+def test_the_camera_stays_with_a_sailing_still_at_the_dock(
+    client, conn, config, at_one_o_clock
+):
+    """13:00, and the board still lists the 12:30 with no departure against it. Those cars
+    are waiting on that boat, and its page is where somebody deciding whether to drive down
+    is looking."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "https://example.invalid/slt.jpg" in body
+    assert "has not been called away" in body
+
+
+def test_the_camera_leaves_a_sailing_the_board_has_called_away(
+    client, conn, config, at_one_o_clock
+):
+    """The same 12:30, with BC Ferries saying it left at 12:41. The queue in the frame is
+    the 16:30's now, and the picture goes with it."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": "12:41", "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "example.invalid" not in body
+
+
+def test_a_late_sailing_needs_live_evidence_to_keep_the_camera(client, at_one_o_clock):
+    """With nothing read off the conditions page, "still at the dock" is a guess — and a
+    photograph offered on a guess is the one thing a caption cannot walk back."""
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
+
+    assert "example.invalid" not in body
+
+
+def test_the_next_sailing_keeps_its_camera_while_the_one_before_runs_late(
+    client, conn, config, at_one_o_clock
+):
+    """Both pages show the compound, because both are boats you could still catch. Only the
+    late one claims the line as its own."""
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14&time=16:30").text
+
+    assert "https://example.invalid/slt.jpg" in body
+    assert "has not been called away" not in body
+
+
+@pytest.fixture
+def at_ten_to_ten(monkeypatch):
+    """09:50: the Earls Cove 09:30 is overdue, and no conditions page exists to say so."""
+    when = datetime(2026, 8, 14, 16, 50, tzinfo=UTC)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: when)
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: when)
+
+
+def test_the_tracker_holds_the_camera_where_nothing_publishes_a_board(
+    client, conn, config, at_ten_to_ten
+):
+    """Earls Cove is the whole point of this: no board to read, the 09:30 twenty minutes
+    overdue, and the vessel still on the water inbound. That compound full of cars is the
+    09:30's queue, and its page is the one they are looking at."""
+    seed_tracking(conn, config, [("09:35", "Under Way", "E"), ("09:47", "Under Way", "SE")])
+
+    body = client.get("/?origin=ERL&service_date=2026-08-14&time=09:30").text
+
+    assert "https://example.invalid/erl.jpg" in body
+    assert "has not been called away" in body
 
 
 def test_api_query_returns_the_distribution(client, conn, config):
