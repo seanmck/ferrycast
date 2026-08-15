@@ -159,6 +159,40 @@ def cmd_doctor(args) -> int:
                 else:
                     print(f"warn  {terminal.code} deck space: page fetched but nothing parsed")
 
+        for camera in terminal.cameras:
+            label = f"{terminal.code}/{camera.id}"
+            if not camera.has_replay:
+                print(f"info  {label}: current image only, no replay window")
+                continue
+            if args.offline:
+                print(f"skip  {label} replay: {camera.replay_index_url}")
+                continue
+            # The index is the half worth checking. A frame URL can only be verified by
+            # fetching a frame, and the index says both that the feed is reachable and how
+            # much of it a sweep would have to collect.
+            result = fetch(
+                camera.replay_index_url,
+                user_agent=config.capture.user_agent,
+                timeout=config.capture.timeout_seconds,
+                max_retries=0,
+            )
+            if not result.ok or result.text is None:
+                problems.append(f"{label} replay index unreachable: {result.error}")
+                print(f"FAIL  {label} replay: {result.error}")
+                continue
+            from .replay import ReplayError, parse_index
+
+            try:
+                moments = parse_index(result.text, camera)
+            except ReplayError as exc:
+                problems.append(f"{label} replay index: {exc}")
+                print(f"FAIL  {label} replay: {exc}")
+            else:
+                span = ""
+                if moments:
+                    span = f", {moments[0]:%Y-%m-%d %H:%M} to {moments[-1]:%Y-%m-%d %H:%M} UTC"
+                print(f"ok    {label} replay: {len(moments)} frame(s) published{span}")
+
     if problems:
         print(f"\n{len(problems)} problem(s) need attention:")
         for problem in problems:
@@ -552,8 +586,11 @@ def cmd_lanes(args) -> int:
 
 
 def cmd_backgrounds(args) -> int:
-    """Rebuild the per-hour empty-compound references the lane reader differences against."""
-    from .lanes import build_backgrounds, load_for
+    """Rebuild the per-hour references every geometric reader differences against."""
+    from .config import MAIN_CAMERA
+    from .extent import load_for as load_extent
+    from .lanes import build_backgrounds
+    from .lanes import load_for as load_lanes
 
     config = _config(args)
     conn = _open(config)
@@ -561,16 +598,68 @@ def cmd_backgrounds(args) -> int:
     for terminal in config.route.terminals:
         if args.terminal and terminal.code != args.terminal:
             continue
-        if load_for(config_dir, terminal.code) is None:
-            print(f"skip  {terminal.code}: no lane calibration")
-            continue
-        stats = build_backgrounds(conn, config, terminal.code, days=args.days)
-        print(f"{terminal.code}: built {stats.built} hour(s), {stats.thin} too thin")
-        for hour in sorted(stats.per_hour):
-            n = stats.per_hour[hour]
-            mark = "" if n >= 8 else "  <- too few to trust"
-            print(f"    {hour:02d}:00  {n:4d} frame(s){mark}")
+        # Every camera at the terminal that has a calibration to be read against. A camera
+        # with none is skipped rather than given a reference nothing will ever use.
+        targets: list[tuple[str, object]] = [
+            (MAIN_CAMERA, load_lanes(config_dir, terminal.code))
+        ]
+        for camera in terminal.cameras:
+            if args.camera and camera.id != args.camera:
+                continue
+            loader = load_extent if camera.kind == "queue_extent" else load_lanes
+            targets.append((camera.id, loader(config_dir, terminal.code, camera.id)))
+        if args.camera:
+            targets = [t for t in targets if t[0] == args.camera]
+
+        for camera_id, calibration in targets:
+            label = (
+                terminal.code
+                if camera_id == MAIN_CAMERA
+                else f"{terminal.code}/{camera_id}"
+            )
+            if calibration is None:
+                print(f"skip  {label}: no calibration")
+                continue
+            stats = build_backgrounds(
+                conn, config, terminal.code, camera=camera_id, days=args.days
+            )
+            print(f"{label}: built {stats.built} hour(s), {stats.thin} too thin")
+            for hour in sorted(stats.per_hour):
+                n = stats.per_hour[hour]
+                mark = "" if n >= 8 else "  <- too few to trust"
+                print(f"    {hour:02d}:00  {n:4d} frame(s){mark}")
     return 0
+
+
+def cmd_replay(args) -> int:
+    """Collect whatever a camera's published replay window holds that the archive lacks."""
+    from .replay import sweep
+
+    config = _config(args)
+    conn = _open(config, create=True)
+    runs = sweep(
+        conn,
+        config,
+        terminals=[args.terminal] if args.terminal else None,
+        dry_run=args.dry_run,
+    )
+    if not runs:
+        print("no camera on this route publishes a replay window")
+        return 0
+    for stats in runs:
+        label = f"{stats.terminal}/{stats.camera}"
+        verb = "would fetch" if args.dry_run else "fetched"
+        print(
+            f"{label}: {stats.offered} offered, {stats.already_held} already held, "
+            f"{verb} {stats.missing if args.dry_run else stats.fetched}"
+            + (f", {stats.failed} failed" if stats.failed else "")
+        )
+        if stats.capped:
+            print(f"    {stats.capped} left for the next sweep (per-run cap)")
+        for error in stats.errors:
+            print(f"    {error}")
+    # A sweep with nothing to collect has succeeded. Only an outright error is a failure.
+    return 1 if any(s.errors or s.failed for s in runs) else 0
 
 
 def cmd_prune(args) -> int:
@@ -949,8 +1038,17 @@ def build_parser() -> argparse.ArgumentParser:
         "backgrounds", help="rebuild the per-hour empty-compound references (no API cost)"
     )
     bg.add_argument("--terminal", help="restrict to one terminal")
+    bg.add_argument("--camera", help="restrict to one camera at that terminal")
     bg.add_argument("--days", type=int, default=14, help="how far back to draw samples")
     bg.set_defaults(func=cmd_backgrounds)
+
+    replay_p = sub.add_parser(
+        "replay",
+        help="collect a camera's published replay window (daily is enough; it is retroactive)",
+    )
+    replay_p.add_argument("--terminal", help="restrict to one terminal")
+    replay_p.add_argument("--dry-run", action="store_true")
+    replay_p.set_defaults(func=cmd_replay)
 
     prune = sub.add_parser("prune", help="apply the frame retention policy")
     prune.add_argument("--dry-run", action="store_true")

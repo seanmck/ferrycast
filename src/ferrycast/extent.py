@@ -431,7 +431,9 @@ def _refusal(reason: str, lit: float) -> dict:
 
 
 def calibration_path(config_dir: str | Path, terminal: str, camera: str) -> Path:
-    return Path(config_dir) / "calibration" / f"{terminal}_{camera}.json"
+    from .lanes import calibration_stem
+
+    return Path(config_dir) / "calibration" / f"{calibration_stem(terminal, camera)}.json"
 
 
 def load_for(

@@ -15,6 +15,19 @@ PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
 # interval at 15 minutes or slower: be a polite scraper.
 */15 * * * *  ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
 
+# Cameras that publish a replay window — currently DriveBC 244, up the road from Earls Cove.
+# Deliberately NOT on the 15-minute line above. That feed publishes the last 24 hours of its
+# own stills, so one run a day collects every one of them at the camera's own cadence, and a
+# run that fails costs nothing as long as the next lands before the window rolls over. Twice
+# a day, so a single failure is not a lost day. It is still a schedule: miss the window and
+# the frames are gone as surely as any live capture.
+19 5,17 * * *  ferrycast replay >> /var/log/ferrycast/replay.log 2>&1
+
+# The per-hour references every geometric reader differences against, rebuilt from the
+# frames above. Cheap, and worth running daily so the reference follows the sun through the
+# year rather than being fitted once and quietly ageing.
+53 5 * * *    ferrycast backgrounds >> /var/log/ferrycast/backgrounds.log 2>&1
+
 # R4 — turn yesterday's readings into one record per sailing. Free: this runs on deck
 # space, so every sailing gets a record whether or not any frame was ever analysed.
 23 3 * * *    ferrycast aggregate --date yesterday >> /var/log/ferrycast/aggregate.log 2>&1

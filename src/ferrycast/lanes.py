@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
+from .config import MAIN_CAMERA
+
 #: A lane counts as occupied when this share of its visible pavement differs from the
 #: empty reference. Well clear of both the noise floor (~0.06 on a bare compound) and the
 #: level a single vehicle produces in the smallest lanes (~0.13).
@@ -278,16 +280,28 @@ def drift_px(frame: str | Path | bytes, cal: LaneCalibration, *, search: int = 6
     return offsets[len(offsets) // 2]
 
 
-def calibration_path(config_dir: str | Path, terminal: str) -> Path:
-    return Path(config_dir) / "calibration" / f"{terminal}.json"
+def calibration_stem(terminal: str, camera: str = MAIN_CAMERA) -> str:
+    """How a camera names its files. The main one is bare, so nothing existing moves."""
+    return terminal if camera == MAIN_CAMERA else f"{terminal}_{camera}"
 
 
-def background_path(config_dir: str | Path, terminal: str) -> Path:
-    return Path(config_dir) / "calibration" / f"{terminal}_background.jpg"
+def calibration_path(
+    config_dir: str | Path, terminal: str, camera: str = MAIN_CAMERA
+) -> Path:
+    return Path(config_dir) / "calibration" / f"{calibration_stem(terminal, camera)}.json"
 
 
-def load_for(config_dir: str | Path, terminal: str) -> LaneCalibration | None:
-    path = calibration_path(config_dir, terminal)
+def background_path(
+    config_dir: str | Path, terminal: str, camera: str = MAIN_CAMERA
+) -> Path:
+    stem = calibration_stem(terminal, camera)
+    return Path(config_dir) / "calibration" / f"{stem}_background.jpg"
+
+
+def load_for(
+    config_dir: str | Path, terminal: str, camera: str = MAIN_CAMERA
+) -> LaneCalibration | None:
+    path = calibration_path(config_dir, terminal, camera)
     return LaneCalibration.load(path) if path.exists() else None
 
 
@@ -390,15 +404,24 @@ def pending_frames(
     since: str | None = None,
     terminal: str | None = None,
     terminals: list[str] | None = None,
+    camera: str | None = MAIN_CAMERA,
 ):
-    """Frames with no geometric reading yet. Mirrors `vision.pending_frames`."""
+    """Frames with no geometric reading yet. Mirrors `vision.pending_frames`.
+
+    Scoped to the terminal's own camera. A lane calibration is fitted to one view, and a
+    frame from a different camera at the same terminal is not a harder version of the same
+    problem — it is a different scene, at a different size, with no lane grid in it at all.
+    """
     sql = """
-        SELECT f.id, f.terminal, f.captured_at, f.path
+        SELECT f.id, f.terminal, f.camera, f.captured_at, f.path
           FROM frames f
           LEFT JOIN observations o ON o.frame_id = f.id AND o.prompt_version = ?
          WHERE f.status = 'ok' AND f.path IS NOT NULL AND o.id IS NULL
     """
     params: list = [PROMPT_VERSION]
+    if camera is not None:
+        sql += " AND f.camera = ?"
+        params.append(camera)
     if since:
         sql += " AND f.captured_at >= ?"
         params.append(since)
@@ -578,8 +601,18 @@ class Background:
         return self.samples < MIN_BACKGROUND_SAMPLES
 
 
-def backgrounds_dir(data_dir: str | Path, terminal: str) -> Path:
-    return Path(data_dir) / "backgrounds" / terminal
+def backgrounds_dir(
+    data_dir: str | Path, terminal: str, camera: str = MAIN_CAMERA
+) -> Path:
+    """Where one camera's references live.
+
+    The main camera keeps the bare terminal directory it has always used, so an existing
+    library needs no rebuild. Anything else gets a sibling, because a reference is a picture
+    of one view: build it from two cameras' frames mixed together and the median is a picture
+    of nowhere.
+    """
+    stem = terminal if camera == MAIN_CAMERA else f"{terminal}_{camera}"
+    return Path(data_dir) / "backgrounds" / stem
 
 
 class BackgroundLibrary:
@@ -592,9 +625,12 @@ class BackgroundLibrary:
     deciding when the seasons change.
     """
 
-    def __init__(self, data_dir: str | Path, terminal: str) -> None:
-        self.root = backgrounds_dir(data_dir, terminal)
+    def __init__(
+        self, data_dir: str | Path, terminal: str, camera: str = MAIN_CAMERA
+    ) -> None:
+        self.root = backgrounds_dir(data_dir, terminal, camera)
         self.terminal = terminal
+        self.camera = camera
 
     def for_hour(self, hour: int) -> Background | None:
         meta = self.root / f"{hour:02d}.json"
@@ -659,19 +695,26 @@ def build_backgrounds(
     config,
     terminal: str,
     *,
+    camera: str = MAIN_CAMERA,
     days: int = BACKGROUND_WINDOW_DAYS,
     at: object | None = None,
 ) -> BackgroundStats:
-    """Rebuild this camera's per-hour references from recent frames."""
+    """Rebuild this camera's per-hour references from recent frames.
+
+    Scoped to one camera. Two cameras at a terminal see different scenes at possibly
+    different sizes, and a median taken across both is a reference for neither — the pixel
+    at (100, 100) is compound in one and treeline in the other.
+    """
     from .timeutil import iso, local, now_utc, parse_iso
 
     stats = BackgroundStats()
     since = (at or now_utc()) - timedelta(days=days)
     rows = conn.execute(
         """SELECT captured_at, path FROM frames
-            WHERE terminal = ? AND status = 'ok' AND path IS NOT NULL AND captured_at >= ?
+            WHERE terminal = ? AND camera = ? AND status = 'ok' AND path IS NOT NULL
+              AND captured_at >= ?
             ORDER BY captured_at""",
-        (terminal, iso(since)),
+        (terminal, camera, iso(since)),
     ).fetchall()
 
     by_hour: dict[int, list[Path]] = {}
@@ -682,7 +725,7 @@ def build_backgrounds(
         hour = local(parse_iso(row["captured_at"]), config.tz).hour
         by_hour.setdefault(hour, []).append(path)
 
-    out = backgrounds_dir(config.data_dir, terminal)
+    out = backgrounds_dir(config.data_dir, terminal, camera)
     out.mkdir(parents=True, exist_ok=True)
     for hour, paths in sorted(by_hour.items()):
         stats.per_hour[hour] = len(paths)

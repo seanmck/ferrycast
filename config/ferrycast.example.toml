@@ -75,6 +75,34 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   weather_site     = "s0000316"   # "Sunshine Coast - Gibsons to Earls Cove"
   weather_province = "BC"
 
+    # Optional. Extra cameras at this terminal, beyond the one `webcam_url` names — because
+    # one view does not answer everything. The terminal camera overlooks the marshalling
+    # lanes; a highway camera down the approach road sees the overflow, which only happens
+    # once those lanes are full and is therefore the more decisive of the two.
+    #
+    #   id                 names a directory and a calibration file, so keep it to letters,
+    #                      digits, dots, dashes and underscores. "main" is reserved for the
+    #                      camera `webcam_url` names.
+    #   kind               "lanes" to count occupancy across a marshalling grid, or
+    #                      "queue_extent" to measure how far back a queue reaches on a road.
+    #   image_url          the current still. Optional if a replay feed is set.
+    #   replay_index_url   optional, and worth hunting for: a feed that publishes an index of
+    #                      its recent stills makes the archive recoverable after the fact,
+    #                      which no ordinary webcam allows. Must answer with a JSON array of
+    #                      timestamps. Collect it with `ferrycast replay`.
+    #   replay_frame_url   where one archived still lives. Must contain {timestamp}.
+    #
+    # Set both replay keys or neither. A camera needs at least one of image_url and a replay
+    # feed, or nothing could ever be captured from it.
+    #
+    # [[route.terminals.cameras]]
+    # id                = "drivebc244"
+    # name              = "Hwy 101 at Egmont Road"
+    # kind              = "queue_extent"
+    # image_url         = "https://www.drivebc.ca/images/244.jpg"
+    # replay_index_url  = "https://www.drivebc.ca/api/webcams/244/replayTheDay/"
+    # replay_frame_url  = "https://www.drivebc.ca/images/replaytheday/244/{timestamp}.jpg"
+
   # Optional. The ECCC marine forecast for the water this route crosses — wind is the one
   # condition that cancels a sailing outright, and the only one FerryCast does not observe
   # for itself. Drop the section and the forecast is simply not collected or shown.

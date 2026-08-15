@@ -1,0 +1,334 @@
+"""More than one camera at a terminal.
+
+Two things are pinned here. The first is the migration, which rebuilds `frames` and so runs
+straight past a cascade that would take the entire extracted archive with it. The second is
+scoping: an extra camera is a different scene, and every consumer that was written when a
+terminal meant one camera has to keep meaning that unless it says otherwise. The expensive
+version of getting this wrong is the vision extractor, which would post highway frames to a
+paid model to answer a question about a compound that is not in the picture.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+from ferrycast.config import MAIN_CAMERA, ConfigError, load_config
+from ferrycast.db import SCHEMA_VERSION, init_db, schema_version
+
+from .conftest import CONFIG_TEMPLATE, SCHEDULE_TEMPLATE
+
+# The shape `frames` had at v9, before cameras were nameable.
+FRAMES_V9 = """
+CREATE TABLE frames (
+    id            INTEGER PRIMARY KEY,
+    route         TEXT    NOT NULL,
+    terminal      TEXT    NOT NULL,
+    captured_at   TEXT    NOT NULL,
+    service_date  TEXT    NOT NULL,
+    path          TEXT,
+    sha256        TEXT,
+    bytes         INTEGER,
+    width         INTEGER,
+    height        INTEGER,
+    status        TEXT    NOT NULL,
+    error         TEXT,
+    UNIQUE (terminal, captured_at)
+)
+"""
+
+
+def _v9_database(path):
+    """A database at v9 holding one frame and one observation extracted from it."""
+    conn = init_db(path)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DROP TABLE frames")
+    conn.executescript(FRAMES_V9)
+    conn.execute(
+        """INSERT INTO frames (id, route, terminal, captured_at, service_date, path, status)
+           VALUES (7, 'route7', 'SLT', '2026-08-14T20:00:01Z', '2026-08-14', 'a.jpg', 'ok')"""
+    )
+    conn.execute(
+        """INSERT INTO observations (frame_id, prompt_version, model, fullness, usable,
+                                     created_at)
+           VALUES (7, 'v2', 'test', 'heavy', 1, '2026-08-14T20:05:00Z')"""
+    )
+    conn.execute("PRAGMA user_version = 9")
+    conn.commit()
+    conn.close()
+
+
+def test_the_migration_does_not_cascade_the_archive_away(tmp_path):
+    """`observations.frame_id` references frames ON DELETE CASCADE, so rebuilding the table
+    with foreign keys enforced would delete every extracted observation there has ever been —
+    in a migration whose diff reads like a rename."""
+    path = tmp_path / "v9.db"
+    _v9_database(path)
+
+    conn = init_db(path)
+
+    assert schema_version(conn) == SCHEMA_VERSION
+    assert conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 1
+    # And still attached to the frame it was extracted from, by the same id.
+    row = conn.execute(
+        "SELECT f.terminal, f.camera, o.fullness FROM observations o "
+        "JOIN frames f ON f.id = o.frame_id"
+    ).fetchone()
+    assert (row["terminal"], row["camera"], row["fullness"]) == ("SLT", MAIN_CAMERA, "heavy")
+    conn.close()
+
+
+def test_frames_already_archived_become_the_main_camera(tmp_path):
+    path = tmp_path / "v9.db"
+    _v9_database(path)
+    conn = init_db(path)
+    cameras = [row["camera"] for row in conn.execute("SELECT camera FROM frames")]
+    assert cameras == [MAIN_CAMERA]
+    conn.close()
+
+
+def test_the_migration_restores_foreign_key_enforcement(tmp_path):
+    """Leaving keys off would silently disarm every cascade in the database for the life of
+    the process, which is a far worse bug than the one the migration was written to avoid."""
+    path = tmp_path / "v9.db"
+    _v9_database(path)
+    conn = init_db(path)
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    conn.close()
+
+
+def test_running_the_migration_twice_changes_nothing(tmp_path):
+    path = tmp_path / "v9.db"
+    _v9_database(path)
+    init_db(path).close()
+    conn = init_db(path)
+    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0] == 1
+    conn.close()
+
+
+def test_two_cameras_can_hold_the_same_terminal_and_moment(conn, config):
+    """The reason `camera` is in the key rather than merely in a column. A replay feed stamps
+    on the quarter hour and a cron capture runs whenever cron runs; sooner or later they land
+    on the same second, and the INSERT OR IGNORE every writer here uses would drop one."""
+    for camera in (MAIN_CAMERA, "drivebc244"):
+        conn.execute(
+            """INSERT OR IGNORE INTO frames
+                   (route, terminal, camera, captured_at, service_date, path, status)
+               VALUES ('route7', 'ERL', ?, '2026-08-14T20:00:01Z', '2026-08-14', ?, 'ok')""",
+            (camera, f"{camera}.jpg"),
+        )
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM frames").fetchone()[0] == 2
+
+
+def test_one_camera_still_cannot_hold_the_same_moment_twice(conn):
+    conn.execute(
+        """INSERT INTO frames (route, terminal, camera, captured_at, service_date, status)
+           VALUES ('route7', 'ERL', 'drivebc244', '2026-08-14T20:00:01Z', '2026-08-14', 'ok')"""
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """INSERT INTO frames (route, terminal, camera, captured_at, service_date, status)
+               VALUES ('route7', 'ERL', 'drivebc244', '2026-08-14T20:00:01Z', '2026-08-14',
+                       'ok')"""
+        )
+
+
+# --- scoping -----------------------------------------------------------------------------
+
+
+def _frame(conn, terminal, camera, minute, config=None):
+    if config is not None:
+        # Only the background builder looks at the file; it skips rows whose frame has been
+        # pruned off disk, so a row without one would be counted as no sample at all.
+        path = config.data_dir / f"{terminal}_{camera}_{minute}.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    conn.execute(
+        """INSERT INTO frames (route, terminal, camera, captured_at, service_date, path, status)
+           VALUES ('route7', ?, ?, ?, '2026-08-14', ?, 'ok')""",
+        (
+            terminal,
+            camera,
+            f"2026-08-14T20:{minute:02d}:01Z",
+            f"{terminal}_{camera}_{minute}.jpg",
+        ),
+    )
+    conn.commit()
+
+
+def test_an_extra_camera_is_never_sent_to_the_paid_extractor_by_default(conn):
+    """The expensive mistake. A highway camera archived to measure an overflow would
+    otherwise be posted frame by frame to a model, and billed for, to be asked about a
+    compound it cannot see."""
+    from ferrycast.vision import pending_frames
+
+    _frame(conn, "ERL", MAIN_CAMERA, 0)
+    _frame(conn, "ERL", "drivebc244", 15)
+
+    assert [r["camera"] for r in pending_frames(conn, "v1", 10)] == [MAIN_CAMERA]
+    # Reachable, but only by asking for it.
+    assert len(pending_frames(conn, "v1", 10, camera=None)) == 2
+    assert [r["camera"] for r in pending_frames(conn, "v1", 10, camera="drivebc244")] == [
+        "drivebc244"
+    ]
+
+
+def test_an_extra_camera_is_not_read_as_a_lane_grid_by_default(conn):
+    from ferrycast.lanes import pending_frames
+
+    _frame(conn, "ERL", MAIN_CAMERA, 0)
+    _frame(conn, "ERL", "drivebc244", 15)
+    assert [r["camera"] for r in pending_frames(conn, 10)] == [MAIN_CAMERA]
+
+
+def test_an_on_demand_check_reads_the_terminal_camera_not_the_highway_one(conn, config):
+    """"How is the queue where I'm standing" is a question about the compound, and only the
+    terminal's own camera is looking at it."""
+    from datetime import datetime
+
+    from ferrycast.selection import recent_frames
+    from ferrycast.timeutil import UTC
+
+    _frame(conn, "ERL", MAIN_CAMERA, 0)
+    _frame(conn, "ERL", "drivebc244", 15)
+    at = datetime(2026, 8, 14, 20, 30, tzinfo=UTC)
+    rows = recent_frames(conn, config, "ERL", max_age_minutes=120, limit=10, at=at)
+    assert [r["camera"] for r in rows] == [MAIN_CAMERA]
+
+
+def test_backgrounds_are_built_per_camera_not_per_terminal(conn, config):
+    """A reference is a picture of one view. Median two cameras together and the result is a
+    picture of nowhere — the pixel at (100, 100) is compound in one and treeline in the
+    other."""
+    from ferrycast.lanes import backgrounds_dir, build_backgrounds
+
+    assert backgrounds_dir(config.data_dir, "ERL") != backgrounds_dir(
+        config.data_dir, "ERL", "drivebc244"
+    )
+    # The main camera keeps the bare directory it has always used, so no library moves.
+    assert backgrounds_dir(config.data_dir, "ERL").name == "ERL"
+
+    _frame(conn, "ERL", MAIN_CAMERA, 0, config)
+    _frame(conn, "ERL", "drivebc244", 15, config)
+    # Neither bucket has enough samples to build; what matters is that they are counted
+    # separately rather than pooled into one bucket of two.
+    main = build_backgrounds(conn, config, "ERL", at=_when())
+    extra = build_backgrounds(conn, config, "ERL", camera="drivebc244", at=_when())
+    assert sum(main.per_hour.values()) == 1
+    assert sum(extra.per_hour.values()) == 1
+
+
+def _when():
+    from datetime import datetime
+
+    from ferrycast.timeutil import UTC
+
+    return datetime(2026, 8, 14, 21, 0, tzinfo=UTC)
+
+
+def test_frames_from_different_cameras_do_not_share_a_path(config):
+    from datetime import datetime
+
+    from ferrycast.capture import frame_path
+    from ferrycast.timeutil import UTC
+
+    at = datetime(2026, 8, 14, 20, 0, 1, tzinfo=UTC)
+    main = frame_path(config, "ERL", at, "jpg")
+    extra = frame_path(config, "ERL", at, "jpg", "drivebc244")
+    assert main != extra
+    # The main camera's layout is unchanged, so an existing frame store needs no migration.
+    assert main.parent.parts[-4] == "ERL"
+    assert extra.parent.parts[-4] == "ERL_drivebc244"
+
+
+# --- configuration -----------------------------------------------------------------------
+
+
+# Cameras hang off the terminal above them, so this is spliced into ERL's entry rather
+# than appended — appended, it would read as a third terminal on a two-terminal route.
+ERL_ANCHOR = '  outbound_bearing = "W"\n'
+
+CAMERA_BLOCK = """
+  [[route.terminals.cameras]]
+  id = "drivebc244"
+  kind = "queue_extent"
+  image_url = "https://example.invalid/244.jpg"
+  replay_index_url = "https://example.invalid/244/replay/"
+  replay_frame_url = "https://example.invalid/244/{timestamp}.jpg"
+"""
+
+
+def _config_with_camera(tmp_path, block: str):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "schedule.toml").write_text(SCHEDULE_TEMPLATE)
+    assert CONFIG_TEMPLATE.count(ERL_ANCHOR) == 1
+    (config_dir / "ferrycast.toml").write_text(
+        CONFIG_TEMPLATE.replace(ERL_ANCHOR, ERL_ANCHOR + block)
+    )
+    return load_config(config_dir / "ferrycast.toml")
+
+
+def test_a_camera_with_a_replay_feed_is_declared_as_having_one(tmp_path):
+    config = _config_with_camera(tmp_path, CAMERA_BLOCK)
+    erl = config.route.terminal("ERL")
+    camera = erl.camera("drivebc244")
+    assert camera.has_replay
+    assert erl.replay_cameras == (camera,)
+    assert config.route.terminal("SLT").replay_cameras == ()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ('id = "drivebc244"', "declares camera"),          # the same id twice
+        ('id = "main"', "reserved"),
+        ('id = "../escape"', "names a directory"),
+        ('kind = "guesswork"', "must be one of"),
+    ],
+)
+def test_a_camera_that_could_not_work_is_refused_at_load(tmp_path, mutation, message):
+    key = mutation.split(" =")[0]
+    block = CAMERA_BLOCK
+    if key == "id" and "drivebc244" in mutation:
+        block = CAMERA_BLOCK + """
+  [[route.terminals.cameras]]
+  id = "drivebc244"
+  image_url = "https://example.invalid/again.jpg"
+"""
+    else:
+        block = block.replace(f'  {key} = ', "  # ", 1) + f"  {mutation}\n"
+    with pytest.raises(ConfigError, match=message):
+        _config_with_camera(tmp_path, block)
+
+
+def test_half_a_replay_feed_is_refused(tmp_path):
+    """An index of timestamps is no use without the address to fetch one from."""
+    block = CAMERA_BLOCK.replace(
+        '  replay_frame_url = "https://example.invalid/244/{timestamp}.jpg"\n', ""
+    )
+    with pytest.raises(ConfigError, match="or neither"):
+        _config_with_camera(tmp_path, block)
+
+
+def test_a_replay_url_with_no_timestamp_in_it_is_refused(tmp_path):
+    """Otherwise every archived frame is fetched from the same address, and the archive fills
+    with ninety-six copies of one moment."""
+    block = CAMERA_BLOCK.replace("{timestamp}", "latest")
+    with pytest.raises(ConfigError, match="timestamp"):
+        _config_with_camera(tmp_path, block)
+
+
+def test_a_camera_with_nothing_to_fetch_is_refused(tmp_path):
+    block = CAMERA_BLOCK
+    for line in (
+        '  image_url = "https://example.invalid/244.jpg"\n',
+        '  replay_index_url = "https://example.invalid/244/replay/"\n',
+        '  replay_frame_url = "https://example.invalid/244/{timestamp}.jpg"\n',
+    ):
+        block = block.replace(line, "")
+    with pytest.raises(ConfigError, match="nothing could ever be captured"):
+        _config_with_camera(tmp_path, block)

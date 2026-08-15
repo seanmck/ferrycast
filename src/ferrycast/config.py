@@ -7,6 +7,7 @@ layout) is configuration rather than code, so it can be corrected without a rele
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,48 @@ class ConfigError(Exception):
     """Raised when configuration is missing or internally inconsistent."""
 
 
+#: The camera named by a terminal's own `webcam_url`. Every frame captured before cameras
+#: were nameable is this one, and the migration backfills it accordingly.
+MAIN_CAMERA = "main"
+
+#: Which reader understands a camera's view. `lanes` counts occupancy across a marshalling
+#: grid; `queue_extent` measures how far back a queue reaches along a road.
+CAMERA_KINDS = ("lanes", "queue_extent")
+
+
+@dataclass(frozen=True)
+class Camera:
+    """An extra camera at a terminal, beyond the one its `webcam_url` names.
+
+    Extra cameras exist because one view does not answer everything. Earls Cove's own camera
+    overlooks the marshalling lanes; a highway camera down the road sees the overflow, which
+    only happens once those lanes are full and is therefore the more decisive of the two.
+
+    `replay_index_url` is the unusual field and the reason this is worth configuring rather
+    than hardcoding. Most camera feeds publish only the current image, so a frame not taken
+    is gone — but some publish a rolling window of recent stills, which makes the archive
+    recoverable after the fact and turns capture from a job that must never miss into one
+    that merely has to run before the window rolls over.
+    """
+
+    id: str
+    name: str = ""
+    kind: str = "queue_extent"
+    #: The current still. Optional: a camera archived only from its replay window needs none.
+    image_url: str = ""
+    #: Returns a JSON array of timestamps, newest window first or last — order is not relied
+    #: on. Leave blank and this camera has no retrievable history.
+    replay_index_url: str = ""
+    #: Template for one archived still. Must contain `{timestamp}`, filled from the index.
+    replay_frame_url: str = ""
+    #: How to read an index timestamp. The default matches DriveBC's `20260814200001`.
+    replay_timestamp_format: str = "%Y%m%d%H%M%S"
+
+    @property
+    def has_replay(self) -> bool:
+        return bool(self.replay_index_url and self.replay_frame_url)
+
+
 @dataclass(frozen=True)
 class Terminal:
     code: str
@@ -60,10 +103,22 @@ class Terminal:
     # just left. Left empty, no departure is ever inferred from tracking for this terminal:
     # a wrong bearing would attribute the other direction's sailing to this one.
     outbound_bearing: str = ""
+    # Extra cameras at this terminal, beyond the one `webcam_url` names.
+    cameras: tuple[Camera, ...] = ()
 
     @property
     def configured_for_capture(self) -> bool:
         return bool(self.webcam_url)
+
+    def camera(self, camera_id: str) -> Camera:
+        for cam in self.cameras:
+            if cam.id == camera_id:
+                return cam
+        raise ConfigError(f"terminal {self.code!r} has no camera {camera_id!r}")
+
+    @property
+    def replay_cameras(self) -> tuple[Camera, ...]:
+        return tuple(cam for cam in self.cameras if cam.has_replay)
 
     @property
     def configured_for_weather(self) -> bool:
@@ -262,6 +317,75 @@ def _dataclass_from(cls, raw: dict, section: str):
     return cls(**coerced)
 
 
+def _parse_cameras(terminal_code: str, entries: list) -> tuple[Camera, ...]:
+    cameras: list[Camera] = []
+    seen: set[str] = set()
+    for entry in entries:
+        camera_id = str(entry.get("id", "")).strip()
+        if not camera_id:
+            raise ConfigError(f"a camera on terminal {terminal_code!r} is missing `id`")
+        # The id names a directory under the frame store and a calibration file, so it has
+        # to survive being a path segment. Rejecting the awkward ones here beats discovering
+        # them when a capture writes somewhere unintended.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", camera_id):
+            raise ConfigError(
+                f"camera id {camera_id!r} on terminal {terminal_code!r} must be letters, "
+                "digits, dots, dashes or underscores — it names a directory and a file"
+            )
+        if camera_id == MAIN_CAMERA:
+            raise ConfigError(
+                f"camera id {MAIN_CAMERA!r} on terminal {terminal_code!r} is reserved for "
+                "the camera named by that terminal's `webcam_url`; give this one its own id"
+            )
+        if camera_id in seen:
+            raise ConfigError(
+                f"terminal {terminal_code!r} declares camera {camera_id!r} twice"
+            )
+        seen.add(camera_id)
+
+        kind = str(entry.get("kind", "queue_extent")).strip()
+        if kind not in CAMERA_KINDS:
+            raise ConfigError(
+                f"camera {camera_id!r} on terminal {terminal_code!r} has kind {kind!r}; "
+                f"it must be one of {', '.join(CAMERA_KINDS)}"
+            )
+
+        index_url = entry.get("replay_index_url", "")
+        frame_url = entry.get("replay_frame_url", "")
+        if bool(index_url) != bool(frame_url):
+            raise ConfigError(
+                f"camera {camera_id!r} on terminal {terminal_code!r} needs both "
+                "`replay_index_url` and `replay_frame_url`, or neither — an index of "
+                "timestamps is no use without the address to fetch one from"
+            )
+        if frame_url and "{timestamp}" not in frame_url:
+            raise ConfigError(
+                f"camera {camera_id!r} on terminal {terminal_code!r} has a "
+                "`replay_frame_url` with no `{timestamp}` in it, so every archived frame "
+                "would be fetched from the same address"
+            )
+        if not index_url and not entry.get("image_url"):
+            raise ConfigError(
+                f"camera {camera_id!r} on terminal {terminal_code!r} has neither an "
+                "`image_url` nor a replay feed, so nothing could ever be captured from it"
+            )
+
+        cameras.append(
+            Camera(
+                id=camera_id,
+                name=entry.get("name", ""),
+                kind=kind,
+                image_url=entry.get("image_url", ""),
+                replay_index_url=index_url,
+                replay_frame_url=frame_url,
+                replay_timestamp_format=entry.get(
+                    "replay_timestamp_format", "%Y%m%d%H%M%S"
+                ),
+            )
+        )
+    return tuple(cameras)
+
+
 def _parse_route(raw: dict) -> Route:
     terminals_raw = raw.get("terminals") or []
     if len(terminals_raw) != 2:
@@ -287,6 +411,7 @@ def _parse_route(raw: dict) -> Route:
                 weather_site=entry.get("weather_site", ""),
                 weather_province=entry.get("weather_province", ""),
                 outbound_bearing=str(entry.get("outbound_bearing", "")).strip().upper(),
+                cameras=_parse_cameras(code, entry.get("cameras") or []),
             )
         )
         bearing = str(entry.get("outbound_bearing", "")).strip().upper()

@@ -90,6 +90,30 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   weather_site     = "s0000316"
   weather_province = "BC"
 
+    # A second camera at this terminal, and the only evidence the homeward direction has.
+    # BC Ferries publishes no departures board for ERL-SLT, so nothing free says whether a
+    # sailing filled — but when the compound fills the queue backs out onto Highway 101, and
+    # DriveBC's camera 244 is 0.7-0.9 km down that road. A queue standing there is proof the
+    # terminal has already run out of room.
+    #
+    # ⚠️  The old `images.drivebc.ca/bchighwaycam/...` addresses now return a "no longer
+    #     available" placeholder PNG under HTTP 200 — a silent trap. These are the current
+    #     ones. The trailing slash on the API paths is required; without it you get a 301.
+    #
+    # Unusually, this feed publishes its recent past as well as its present: replayTheDay
+    # lists the last 24 hours of stills at the camera's own 15-minute cadence. That makes
+    # the archive recoverable after the fact, so `ferrycast replay` needs only to run daily
+    # — see the note in src/ferrycast/replay.py for why that is not the same as it being
+    # optional. There is no equivalent near Saltery Bay; the nearest camera (245, Loubert
+    # Road) is ~7 km away, so this is an Earls Cove arrangement only.
+    [[route.terminals.cameras]]
+    id                = "drivebc244"
+    name              = "Hwy 101 at Egmont Road"
+    kind              = "queue_extent"
+    image_url         = "https://www.drivebc.ca/images/244.jpg"
+    replay_index_url  = "https://www.drivebc.ca/api/webcams/244/replayTheDay/"
+    replay_frame_url  = "https://www.drivebc.ca/images/replaytheday/244/{timestamp}.jpg"
+
 
   # The ECCC marine forecast for the water this crossing makes. Wind is the one condition
   # that cancels a sailing outright, and the only one FerryCast does not observe for itself.
