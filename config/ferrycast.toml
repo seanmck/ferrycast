@@ -41,10 +41,26 @@ schedule_path  = "schedule.toml"    # relative to this file
 id   = "route7"
 name = "Saltery Bay – Earls Cove"
 
+# BC Ferries' live vessel tracker for this route. It is the ONLY source of a departure time
+# for Earls Cove, which publishes no departures board at all — the route's conditions page
+# for that direction carries a ferry-tracking tab and nothing else. Both directions embed
+# this same page, so one URL covers the route.
+#
+# It sees the ship and never the deck or the compound: it can say a sailing went and roughly
+# when, and nothing about whether it filled or left anyone behind. Blank is safe — the
+# tracker is simply not polled.
+vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.html"
+
   [[route.terminals]]
   code           = "SLT"
   name           = "Saltery Bay"
   destination    = "ERL"
+  # Which way the vessel points once it has left here. Saltery Bay lies west-northwest of
+  # Earls Cove, so a ship leaving Saltery Bay runs east. This is what lets the vessel tracker
+  # tell the two directions apart: it reports "In Port" without ever naming the port, so the
+  # heading once moving is the only thing that says which terminal was just left. Leave it
+  # blank and no departure is inferred from tracking for this terminal.
+  outbound_bearing = "E"
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_SLT.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
   # Set true ONLY if this camera actually shows the berth — look at a frame first. When
@@ -60,6 +76,9 @@ name = "Saltery Bay – Earls Cove"
   code           = "ERL"
   name           = "Earls Cove"
   destination    = "SLT"
+  # Leaving Earls Cove the crossing runs west-northwest toward Saltery Bay. This terminal has
+  # no departures board of any kind, so tracking is its only source of a departure time.
+  outbound_bearing = "W"
   # cam2, lowercase. Not cam1_ERL.jpg — that was inferred from Saltery Bay and 404s.
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam2_erl.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"

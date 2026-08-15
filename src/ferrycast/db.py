@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -105,6 +105,41 @@ def _add_claim_axes(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE sailing_records ADD COLUMN {column} INTEGER")
 
 
+def _add_vessel_tracking(conn: sqlite3.Connection) -> None:
+    """v8 -> v9: the vessel tracker, and the departure it establishes.
+
+    BC Ferries publishes a departures board for one end of this route and none at all for
+    the other, so the homeward direction had no source of a departure time — and without
+    one, a residual queue can only be read against the timetable, which counts vehicles
+    still boarding a late sailing as vehicles left behind.
+
+    The tracker sees the ship and never the deck or the compound, so it settles when a
+    sailing went and nothing about whether anyone got on.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS vessel_positions (
+               id           INTEGER PRIMARY KEY,
+               route        TEXT NOT NULL,
+               vessel       TEXT,
+               status       TEXT,
+               heading      TEXT,
+               speed_knots  REAL,
+               reported_at  TEXT,
+               observed_at  TEXT NOT NULL,
+               fetch_status TEXT NOT NULL DEFAULT 'ok',
+               error        TEXT,
+               UNIQUE (route, vessel, reported_at)
+           )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_vessel_positions_lookup
+               ON vessel_positions (route, reported_at)"""
+    )
+    for column in ("departed_at", "departed_source"):
+        if not _column_exists(conn, "sailing_records", column):
+            conn.execute(f"ALTER TABLE sailing_records ADD COLUMN {column} TEXT")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
@@ -114,6 +149,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: _add_record_fullness,
     6: _add_left_full,
     7: _add_claim_axes,
+    8: _add_vessel_tracking,
 }
 
 

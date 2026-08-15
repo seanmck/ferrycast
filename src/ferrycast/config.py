@@ -54,6 +54,12 @@ class Terminal:
     # feed's path, so a site code without one cannot be fetched.
     weather_site: str = ""
     weather_province: str = ""
+    # Which way a vessel points once it has left this terminal — "W" leaving Earls Cove,
+    # "E" leaving Saltery Bay. Needed because the vessel tracker never names the port a ship
+    # is docked at, so its heading once moving is the only thing that says which terminal it
+    # just left. Left empty, no departure is ever inferred from tracking for this terminal:
+    # a wrong bearing would attribute the other direction's sailing to this one.
+    outbound_bearing: str = ""
 
     @property
     def configured_for_capture(self) -> bool:
@@ -87,6 +93,10 @@ class Route:
     # Optional: without it the marine forecast is simply not collected or shown. A route
     # whose operator never cancels for weather has no use for it.
     marine: MarineArea | None = None
+    # The operator's live vessel tracker for this route. Optional, and only worth setting
+    # where a terminal has no departures board of its own — it is the sole source of a
+    # departure time for such a direction, and it can say nothing else.
+    vessel_tracking_url: str = ""
 
     def terminal(self, code: str) -> Terminal:
         for t in self.terminals:
@@ -276,8 +286,15 @@ def _parse_route(raw: dict) -> Route:
                 camera_sees_berth=bool(entry.get("camera_sees_berth", False)),
                 weather_site=entry.get("weather_site", ""),
                 weather_province=entry.get("weather_province", ""),
+                outbound_bearing=str(entry.get("outbound_bearing", "")).strip().upper(),
             )
         )
+        bearing = str(entry.get("outbound_bearing", "")).strip().upper()
+        if bearing and (set(bearing) - set("NESW") or not bearing):
+            raise ConfigError(
+                f"terminal {code!r} has outbound_bearing {entry['outbound_bearing']!r}; "
+                "it must be a compass point such as N, W or NW"
+            )
         if bool(entry.get("weather_site")) != bool(entry.get("weather_province")):
             raise ConfigError(
                 f"terminal {code!r} needs both `weather_site` and `weather_province`, or "
@@ -304,6 +321,7 @@ def _parse_route(raw: dict) -> Route:
         name=raw.get("name", raw.get("id", "route")),
         terminals=tuple(terminals),
         marine=marine,
+        vessel_tracking_url=raw.get("vessel_tracking_url", ""),
     )
 
 

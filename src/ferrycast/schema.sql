@@ -130,6 +130,13 @@ CREATE TABLE IF NOT EXISTS sailing_records (
     -- cleared is what makes it worth having.
     left_full             INTEGER,
     method             TEXT,                 -- frames:<prompt_version> | deck_space | import:<source>
+    -- When the vessel actually left (UTC), and who saw it go. A scheduled time is not a
+    -- departure: 30 minutes late is routine here, and reading a residual queue against the
+    -- timetable rather than the real departure counts vehicles that are still boarding as
+    -- vehicles left behind. `board` is to the minute; `tracking` is the vessel feed and is
+    -- good to about five, which is why the source travels with the timestamp.
+    departed_at        TEXT,
+    departed_source    TEXT,                 -- board | tracking
     computed_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_records_outcome ON sailing_records (outcome);
@@ -241,3 +248,30 @@ CREATE TABLE IF NOT EXISTS job_runs (
     detail      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job_time ON job_runs (job, started_at);
+
+-- Live vessel positions, for the direction that has no departures board. BC Ferries
+-- publishes a board for Saltery Bay and none at all for Earls Cove, but both directions'
+-- conditions pages embed the same vessel tracker — so this is the only source of a
+-- departure time for the homeward leg.
+--
+-- It sees the ship and never the deck or the compound, so nothing here speaks to whether a
+-- sailing filled or left anyone behind. It answers "did it go, and when".
+--
+-- Keyed on the feed's own timestamp rather than ours: the page refreshes every 30 seconds
+-- but the position behind it updates about every five minutes, so polling on the capture
+-- cadence re-reads the same instant repeatedly.
+CREATE TABLE IF NOT EXISTS vessel_positions (
+    id           INTEGER PRIMARY KEY,
+    route        TEXT NOT NULL,
+    vessel       TEXT,
+    status       TEXT,        -- In Port | Under Way
+    heading      TEXT,        -- compass point; the feed never names the port a ship is in
+    speed_knots  REAL,
+    reported_at  TEXT,        -- the feed's own "Last Update", as UTC
+    observed_at  TEXT NOT NULL,
+    fetch_status TEXT NOT NULL DEFAULT 'ok',
+    error        TEXT,
+    UNIQUE (route, vessel, reported_at)
+);
+CREATE INDEX IF NOT EXISTS idx_vessel_positions_lookup
+    ON vessel_positions (route, reported_at);

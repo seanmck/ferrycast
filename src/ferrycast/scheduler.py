@@ -111,6 +111,23 @@ def _scrape(conn, config: Config) -> str:
     return detail
 
 
+def _vessels(conn, config: Config) -> str:
+    """Poll the vessel tracker. Free, and the only departure source for one direction.
+
+    Worth running even while Earls Cove has no lane calibration: the feed keeps no history
+    at all, so a reading not taken now is unrecoverable, and it is the half of that
+    terminal's pipeline that cannot be backfilled later.
+    """
+    from .vessels import refresh
+
+    result = refresh(conn, config)
+    if result.get("skipped"):
+        return "no tracker configured"
+    if not result["ok"]:
+        return f"no reading: {result.get('error')}"
+    return f"{result['rows']} new reading(s) from {result['vessels']} vessel(s)"
+
+
 def _marine(conn, config: Config) -> str:
     from .marine import refresh
 
@@ -171,6 +188,15 @@ JOBS: tuple[Job, ...] = (
         _scrape,
         enabled=lambda c: any(t.deck_space_url for t in c.route.terminals),
     ),
+    # On the capture cadence, because a departure is an event rather than a level: the
+    # position behind the feed updates about every five minutes, and the in-port window at
+    # these terminals is shorter than a sailing's headway by an order of magnitude.
+    Job(
+        "vessels",
+        timedelta(minutes=5),
+        _vessels,
+        enabled=lambda c: bool(c.route.vessel_tracking_url),
+    ),
     # ECCC issues marine forecasts roughly every six hours and amends between. Three hours
     # catches an amendment well before anyone plans around it, and costs a handful of small
     # directory listings — there is no "latest" path to ask for, so each run walks back
@@ -203,7 +229,7 @@ def jobs_for(config: Config) -> list[Job]:
     for job in JOBS:
         if not job.enabled(config):
             continue
-        if job.name in ("capture", "deckspace"):
+        if job.name in ("capture", "deckspace", "vessels"):
             job = Job(job.name, interval, job.run, job.enabled)
         active.append(job)
     return active
