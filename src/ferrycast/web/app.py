@@ -432,6 +432,11 @@ def _live_webcam(
     }
 
 
+# What an extra camera is there to answer, said for a reader rather than in the config's
+# vocabulary. An unknown kind falls through as itself, which is honest and rare.
+CAMERA_KINDS = {"lanes": "lane occupancy", "queue_extent": "overflow"}
+
+
 def _terminal_capabilities(config: Config) -> list[dict]:
     """Which sources actually speak at each terminal, for the explainer page.
 
@@ -461,6 +466,17 @@ def _terminal_capabilities(config: Config) -> list[dict]:
                 # is known — without it the feed cannot tell the two directions apart.
                 "tracking": bool(config.route.vessel_tracking_url and terminal.outbound_bearing),
                 "weather": terminal.configured_for_weather,
+                # A terminal can have more than one view, and the second one is often the
+                # decisive one: the marshalling camera sees the lanes, the highway camera
+                # sees the overflow that only begins once those lanes are full. Listing them
+                # is the difference between "the camera" and what is actually watching.
+                "extra_cameras": [
+                    {
+                        "name": camera.name or camera.id,
+                        "reads": CAMERA_KINDS.get(camera.kind, camera.kind),
+                    }
+                    for camera in terminal.cameras
+                ],
             }
         )
     return capabilities

@@ -86,7 +86,9 @@
       what that lane looks like empty: free, on every capture, and unable to report a lane it
       cannot see. Where they have not, a vision model can be asked how full the compound is on
       a five-level band — that one costs money, so it runs when somebody asks rather than
-      nightly.</p>
+      nightly. A terminal can have more than one view, and the second is often the decisive
+      one: the terminal camera watches the marshalling lanes, while a highway camera down the
+      approach road sees the overflow that only starts once those lanes are full.</p>
   </div>
 
   <div class="source">
@@ -129,6 +131,11 @@
         {{ cap("Camera sees the berth", terminal.sees_berth, "yes", "no") }}
         {{ cap("Departures from tracking", terminal.tracking, "yes", "no") }}
         {{ cap("Shore forecast", terminal.weather, "yes", "no") }}
+        {# Any second view at this terminal, named and told apart by what it is there to
+           answer. A terminal with only its own camera lists nothing extra. #}
+        {% for camera in terminal.extra_cameras %}
+          {{ cap(camera.name, true, camera.reads, "") }}
+        {% endfor %}
       </ul>
     </div>
   {% endfor %}

@@ -834,3 +834,32 @@ def test_the_public_pages_do_not_offer_the_pipeline_dashboard(client):
         assert 'href="/health"' not in client.get(path).text
 
     assert client.get("/health").status_code == 200
+
+
+def test_how_it_works_names_a_terminal_s_second_camera(tmp_path):
+    """One terminal, two views: the marshalling camera and the highway camera that sees the
+    overflow. A page claiming to say what this install can see has to name both."""
+    from ferrycast.db import init_db
+
+    from .test_cameras import _config_with_camera
+
+    config = _config_with_camera(
+        tmp_path,
+        """
+  [[route.terminals.cameras]]
+  id = "drivebc244"
+  name = "Hwy 101 at Egmont Road"
+  kind = "queue_extent"
+  image_url = "https://example.invalid/244.jpg"
+""",
+    )
+    init_db(config.db_path).close()
+
+    app = create_app(str(config.source_path))
+    with TestClient(app) as camera_client:
+        body = camera_client.get("/how-it-works").text
+
+    assert "Hwy 101 at Egmont Road" in body
+    # Said as what it answers, not as the config's word for it.
+    assert "overflow" in body
+    assert "queue_extent" not in body
