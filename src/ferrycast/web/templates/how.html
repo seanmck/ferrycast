@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}FerryCast — how it works{% endblock %}
+{% block masthead %}How it works{% endblock %}
+{% block strapline %}{{ route.name }}{% endblock %}
+
+{% block style %}
+  .lede { font-family: "Instrument Serif", Georgia, serif; font-size: 1.75rem;
+          line-height: 1.15; margin: 0.35rem 0 0; }
+
+  /* Each source gets a mono label and a paragraph, separated by air rather than by rules:
+     five hairlines in one card reads as a table of contents, which this is not. */
+  .source + .source { margin-top: 1.125rem; }
+  .source .note { margin-top: 0.3rem; }
+
+  /* What one terminal has. A definition row per capability, narrow enough to sit two-up on
+     anything wider than a phone and to stack on one. */
+  .caps { list-style: none; margin: 0.625rem 0 0; padding: 0; }
+  .caps li { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+             padding: 0.3rem 0; border-bottom: 1px solid var(--line); font-size: 0.875rem; }
+  .caps li:last-child { border-bottom: 0; }
+  .caps .what { color: var(--muted); }
+  .caps .state { font-family: "IBM Plex Mono", monospace; font-size: 0.75rem;
+                 letter-spacing: 0.08em; text-transform: uppercase; text-align: right; }
+  .caps .on  { color: var(--o-boarded); }
+  .caps .off { color: var(--label); }
+
+  /* The outcome vocabulary: the dot and the words the board uses, then what it takes to
+     say it. The evidence line is the point of the section — a word without its warrant
+     would just be a glossary. */
+  .terms { list-style: none; margin: 0; padding: 0; }
+  .terms li + li { margin-top: 0.875rem; }
+  .terms .term { display: flex; align-items: center; gap: 0.7rem; font-size: 0.9375rem; }
+  .terms .note { margin-top: 0.2rem; padding-left: 1.4rem; }
+  .terms .needs { font-family: "IBM Plex Mono", monospace; font-size: 0.6875rem;
+                  letter-spacing: 0.12em; text-transform: uppercase; color: var(--label);
+                  display: block; padding-left: 1.4rem; margin-top: 0.25rem; }
+
+  /* The widening ladder, in the order it is actually walked. Numbered by the list itself,
+     in mono, because the order is the whole meaning. */
+  .ladder { margin: 0.625rem 0 0; padding-left: 1.6rem; }
+  .ladder li { font-size: 0.875rem; line-height: 1.55; color: var(--muted); padding: 0.2rem 0; }
+  .ladder li::marker { font-family: "IBM Plex Mono", monospace; font-size: 0.75rem;
+                       color: var(--label); }
+
+  .limits { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+  .limits li { font-size: 0.875rem; line-height: 1.55; color: var(--muted); padding: 0.25rem 0; }
+  .limits strong { font-weight: 500; color: var(--ink); }
+{% endblock %}
+
+{% block content %}
+
+<div class="hero">
+  <p class="label">The short version</p>
+  <p class="lede">A record, not a forecast.</p>
+  <p class="note">The front page asks what a sailing did on days like the one you picked. It
+    answers by finding comparable sailings that have already happened and showing what became
+    of them — nothing is predicted, and no model is asked to guess about your sailing.
+    Similarity search is the whole method.</p>
+</div>
+
+<section class="card">
+  <p class="label">Where the record comes from</p>
+  <p class="note">Nobody publishes whether a sailing ran out of room. Five sources each know
+    part of it, and none of them knows all of it.</p>
+
+  <div class="source" style="margin-top: 1.125rem">
+    <p class="label">The departures board</p>
+    <p class="note">The operator's own conditions page, read on a schedule. Where a board
+      carries a deck-space percentage, the first reading at zero is the minute the vessel ran
+      out of room. Plenty of boards carry no percentage at all — including this route's — and
+      those still publish the time each sailing actually left, and a note beside the ones that
+      loaded to the maximum number of vehicles. Both are read.</p>
+  </div>
+
+  <div class="source">
+    <p class="label">The vessel tracker</p>
+    <p class="note">The ship's own position and heading. It can say a sailing went, and
+      roughly when, and nothing else — it never sees the deck or the compound. For a terminal
+      whose page carries no board it is the only source of a departure time at all.</p>
+  </div>
+
+  <div class="source">
+    <p class="label">The terminal camera</p>
+    <p class="note">A still frame every {{ capture.interval_minutes }} minutes, archived.
+      Where a camera's lanes have been calibrated, every frame is read geometrically against
+      what that lane looks like empty: free, on every capture, and unable to report a lane it
+      cannot see. Where they have not, a vision model can be asked how full the compound is on
+      a five-level band — that one costs money, so it runs when somebody asks rather than
+      nightly.</p>
+  </div>
+
+  <div class="source">
+    <p class="label">People in the line</p>
+    <p class="note">A check-in from the queue, or a report afterwards. This is the only
+      evidence that says outright whether somebody got on; every other source is inferring it
+      from the outside.</p>
+  </div>
+
+  <div class="source">
+    <p class="label">The forecasts</p>
+    <p class="note">Marine and shore forecasts from Environment Canada, shown beside the
+      sailings. They never feed an outcome. Wind is the one condition that cancels a crossing
+      outright and the only one FerryCast cannot observe for itself.</p>
+  </div>
+</section>
+
+<section class="card">
+  <p class="label">What this install can actually see</p>
+  <p class="note">The two ends of a crossing are not alike, and neither are their cameras.
+    This is read from the running configuration rather than written here, so it cannot
+    describe a deployment other than this one.</p>
+
+  {# One row per capability, worded so the "off" state reads as a fact rather than a fault:
+     a camera that cannot see the berth is a camera pointed at the queue instead. #}
+  {% macro cap(what, on, yes, no) -%}
+    <li>
+      <span class="what">{{ what }}</span>
+      <span class="state {{ 'on' if on else 'off' }}">{{ yes if on else no }}</span>
+    </li>
+  {%- endmacro %}
+
+  {% for terminal in terminals %}
+    <div class="source" style="margin-top: 1.125rem">
+      <p class="label">{{ terminal.name }}</p>
+      <ul class="caps">
+        {{ cap("Conditions page", terminal.board, "scraped", "not configured") }}
+        {{ cap("Camera", terminal.camera, "archiving", "not configured") }}
+        {{ cap("Lane reading", terminal.calibrated, "calibrated", "not calibrated") }}
+        {{ cap("Camera sees the berth", terminal.sees_berth, "yes", "no") }}
+        {{ cap("Departures from tracking", terminal.tracking, "yes", "no") }}
+        {{ cap("Shore forecast", terminal.weather, "yes", "no") }}
+      </ul>
+    </div>
+  {% endfor %}
+
+  <p class="note">A camera pointed up the approach road can watch a queue without ever seeing
+    a vessel, which is why "no ferry in any frame" only counts as a cancellation where the
+    berth is in shot. How much of this is actually arriving is on
+    <a href="/health">pipeline health</a>.</p>
+</section>
+
+<section class="card">
+  <p class="label">How a sailing gets its word</p>
+  <p class="note">Six words, and each one is a different claim. They are kept apart on
+    purpose: blurring "filled up" into "waited a sailing" would assert something none of the
+    evidence can support.</p>
+
+  <ul class="terms" style="margin-top: 1.125rem">
+    <li>
+      <span class="term"><span class="dot seg-boarded"></span>Space the whole time</span>
+      <p class="note">Room right up to departure, or a compound the camera watched empty.</p>
+      <span class="needs">any source</span>
+    </li>
+    <li>
+      <span class="term"><span class="dot seg-filled"></span>Filled up before departure</span>
+      <p class="note">Ran out of room, and often the minute it did. How many were left behind
+        is not known — deck space describes the vessel, not the road outside it.</p>
+      <span class="needs">deck space · the board's own note · a report</span>
+    </li>
+    <li>
+      <span class="term"><span class="dot seg-waited_1"></span>Waited 1 sailing</span>
+      <p class="note">Overloaded, and what was left over fits the next boat.</p>
+      <span class="needs">camera frames</span>
+    </li>
+    <li>
+      <span class="term"><span class="dot seg-waited_2plus"></span>Waited 2+ sailings</span>
+      <p class="note">What was left over is more than one vessel can carry.</p>
+      <span class="needs">camera frames</span>
+    </li>
+    <li>
+      <span class="term"><span class="dot seg-cancelled"></span>Cancelled</span>
+      <p class="note">The feed said so, or no vessel ever appeared at a camera that can see
+        the berth.</p>
+      <span class="needs">the feed · camera frames</span>
+    </li>
+    <li>
+      <span class="term"><span class="dot seg-unknown"></span>No usable record</span>
+      <p class="note">Not enough evidence to say. Never quietly dropped: the answer tells you
+        how many records it had to leave out.</p>
+      <span class="needs">—</span>
+    </li>
+  </ul>
+</section>
+
+<section class="card">
+  <p class="label">Which past sailings count</p>
+  <p class="note">Comparable means the same sailing on the same kind of day. The search starts
+    tight and widens a rung at a time, stopping as soon as it has
+    {{ query.min_sample }} sailings to answer from:</p>
+  <ol class="ladder">
+    <li>the same time (±{{ query.time_tolerance_minutes }} min), day type and season</li>
+    <li>the same time and day type, any season</li>
+    <li>the same day type, ±{{ query.relaxed_time_tolerance_minutes }} min</li>
+    <li>days outside a long weekend as well, which behave differently</li>
+    <li>similar day types — a Saturday standing in for a Sunday</li>
+  </ol>
+  <p class="note">Every widening is said out loud on the answer, so a distribution never looks
+    tighter than the search that produced it. Only the {{ query.max_samples }} most recent
+    matches count: without a cap, a sailing from two timetables and another vessel ago would
+    weigh as much as last week's.</p>
+</section>
+
+<section class="card flag">
+  <p class="label" style="color: var(--accent)">What it can't tell you</p>
+  <ul class="limits">
+    <li><strong>Deck space is not the queue.</strong> It measures room aboard the vessel, and
+      says nothing about the vehicles still standing on the approach road — which is the
+      number a traveller actually wants.</li>
+    <li><strong>A fullness band is not a count.</strong> Vehicles were counted until measuring
+      against hand-read frames showed the counts were both unstable and the wrong unit: an RV
+      and a hatchback are not interchangeable. How full the compound is holds up; how many
+      cars are in it does not.</li>
+    <li><strong>A join time is not an arrive-by time.</strong> "Everyone who got on had joined
+      by 11:15" is a fact about those people, not a target — whether it worked depended on how
+      many were ahead of them.</li>
+    <li><strong>A share is a history, not a promise.</strong> Below {{ query.min_sample }}
+      comparable sailings the page says the sample is thin and declines to characterise it.</li>
+    <li><strong>Silence is not an empty compound.</strong> A dark frame is marked unusable
+      rather than read as a queue that cleared.</li>
+  </ul>
+</section>
+
+<p class="note"><a href="/">← Day like today</a> · <a href="/health">Pipeline health</a></p>
+{% endblock %}

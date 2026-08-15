@@ -76,6 +76,19 @@ def index_preview(request: Request, config: Config) -> Preview:
     )
 
 
+def how_preview(request: Request, config: Config) -> Preview:
+    return Preview(
+        title="FerryCast — how it works",
+        description=(
+            "Where the answer comes from: the departures board, the vessel tracker, the "
+            "terminal camera and the people in the line — and what none of them can say."
+        ),
+        url=absolute(request, config, "/how-it-works"),
+        image=absolute(request, config, IMAGE_PATH),
+        image_alt=IMAGE_ALT,
+    )
+
+
 def health_preview(request: Request, config: Config) -> Preview:
     return Preview(
         title="FerryCast — pipeline health",
