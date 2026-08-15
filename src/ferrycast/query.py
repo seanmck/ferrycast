@@ -56,16 +56,21 @@ OUTCOME_LABELS_SHORT = {
 
 # What the evidence behind an outcome can and cannot support, shown alongside the answer.
 EVIDENCE_NOTES = {
+    # Deliberately does not say "deck space". That is the column's name, not this route's
+    # evidence: route 7's conditions page has never carried a percentage, so what was
+    # actually read is the departures board and the operator's capacity note. Both describe
+    # the deck, which is the half of the claim that matters here and the half the wording
+    # has to be honest about.
     "deck_space": (
-        "From published deck space: it shows when the vessel ran out of room, not how many "
-        "vehicles were still queued outside the terminal."
+        "From what BC Ferries publishes for the sailing: it describes the deck, not how "
+        "many vehicles were still queued outside the terminal."
     ),
     "frames": "From terminal camera frames, which count vehicles waiting outside the terminal.",
     "report": (
         "Reported by people who were in the line: the only evidence that says outright "
         "whether someone got on."
     ),
-    "mixed": "More than one kind of evidence — camera frames, deck space or first-hand reports.",
+    "mixed": "More than one kind of evidence — camera frames, the board, or first-hand reports.",
     "import": "Manually imported records.",
 }
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from . import __version__
 from .config import Config, ConfigError, load_config
 from .db import connect, init_db
+from .export import DATASETS as EXPORT_DATASETS
 
 
 def _config(args) -> Config:
@@ -909,7 +910,9 @@ def build_parser() -> argparse.ArgumentParser:
     nxt.set_defaults(func=cmd_next)
 
     exporter = sub.add_parser("export", help="export raw observations")
-    exporter.add_argument("dataset", choices=["frames", "sailings", "deck_space"])
+    # Kept in step with `export.DATASETS` — the web route and the export layer have always
+    # served `reports`, and only this list stopped the CLI from reaching it.
+    exporter.add_argument("dataset", choices=sorted(EXPORT_DATASETS))
     exporter.add_argument("--format", choices=["csv", "json"], default="csv")
     exporter.add_argument("--since")
     exporter.add_argument("--until")

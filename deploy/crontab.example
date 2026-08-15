@@ -9,19 +9,54 @@ FERRYCAST_CONFIG=/srv/ferrycast/config/ferrycast.toml
 ANTHROPIC_API_KEY=sk-ant-...
 PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
 
-# R1 + R2 — archive a frame from each camera and scrape deck space, every 15 minutes.
-# Neither costs money. Capture is here because it is the one irreversible step: extraction
-# can always be run later, but a frame not taken at 14:15 is gone for good. Keep the
-# interval at 15 minutes or slower: be a polite scraper.
-*/15 * * * *  ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
+# ---------------------------------------------------------------------------------------
+# THE SHORT VERSION. One line runs every collector at its own cadence — capture (with the
+# geometric read inside it), deck space, the vessel tracker, both forecasts, backgrounds,
+# aggregation and retention. Due-ness lives in the `job_runs` table, so a tick that fires
+# late or twice does not double-run anything, and this is the only way to poll the vessel
+# tracker from cron: it is the one collector with no command of its own.
+#
+# */5 * * * *   ferrycast schedule --once >> /var/log/ferrycast/ferrycast.log 2>&1
+#
+# Everything below is the same pipeline spelled out job by job, for a deployment that wants
+# separate logs and separate failure domains. Use one or the other, not both.
+# ---------------------------------------------------------------------------------------
+
+# R1 + R2 — archive a frame from each camera and scrape deck space and the departures board.
+# Neither costs money. Capture is here because it is the one irreversible step: reading can
+# always be done later, but a frame not taken at 14:15 is gone for good. Five minutes is a
+# courtesy rate, not a technical floor — the camera publishes a new JPEG every minute, so
+# this takes one frame in five of what it already generates. Do not go faster.
+*/5 * * * *   ferrycast capture >> /var/log/ferrycast/capture.log 2>&1; ferrycast scrape >> /var/log/ferrycast/scrape.log 2>&1
+
+# Read the frames just captured, geometrically. No API call — about 19ms a frame — so this
+# runs on every cycle rather than being deferred like the paid path. It also catches up on a
+# backlog a few frames at a time, which is what fills in a terminal calibrated after
+# collection started. Under `ferrycast run` this happens inside the capture job; on cron it
+# needs its own line.
+*/5 * * * *   ferrycast lanes >> /var/log/ferrycast/lanes.log 2>&1
+
+# The per-hour empty-compound references the line above differences against. Daily, because
+# it only has to keep pace with the sun: a two-week trailing median moves about four degrees
+# of solar declination in a day.
+11 3 * * *    ferrycast backgrounds >> /var/log/ferrycast/backgrounds.log 2>&1
+
+# The ECCC forecasts — the water this route crosses, and the compound you wait in. Both are
+# reissued a few times a day and amended between, and there is no "latest" path to ask for,
+# so each run walks back through hours until it finds one. Drop these two lines if you have
+# configured neither.
+7 */3 * * *   ferrycast marine >> /var/log/ferrycast/weather.log 2>&1; ferrycast shore >> /var/log/ferrycast/weather.log 2>&1
 
 # R4 — turn yesterday's readings into one record per sailing. Free: this runs on deck
-# space, so every sailing gets a record whether or not any frame was ever analysed.
+# space and lane geometry, so every sailing gets a record whether or not any frame was ever
+# read by the model.
 23 3 * * *    ferrycast aggregate --date yesterday >> /var/log/ferrycast/aggregate.log 2>&1
 
-# Retention. Frames aged past `thin_unextracted_after_days` and still unread are thinned
-# down to the ones an extraction would actually use, so the archive stays bounded (roughly
-# 2.8 GB/year rather than 5.7) without losing the ability to analyse any sailing.
+# Retention plus the weekly digest. Frames aged past `thin_unextracted_after_days` and still
+# unread are thinned down to the ones an extraction would actually use, so the archive stays
+# bounded (roughly 2.8 GB/year rather than 5.7) without losing the ability to analyse any
+# sailing. `health --strict` exits non-zero when something is wrong, so cron's MAILTO only
+# reaches you when there is a problem to read about.
 41 4 * * 0    ferrycast prune >> /var/log/ferrycast/prune.log 2>&1
 47 4 * * 0    ferrycast health --window 7 --strict
 
@@ -30,19 +65,15 @@ PATH=/srv/ferrycast/.venv/bin:/usr/local/bin:/usr/bin:/bin
 #     ferrycast extract --essential --for-date 2026-07-04  # ~$0.09, analyse one past day
 #
 # ---------------------------------------------------------------------------------------
-# OPTIONAL: analyse every day automatically (~$2.65/month).
+# OPTIONAL: have the model read every day automatically (~$2.65/month).
 #
-# Deck space says when the vessel ran out of room, not how many vehicles were still queued
-# outside the terminal — so it cannot tell a one-sailing wait from a three-sailing one.
-# Only the cameras can. Uncomment to build that finer record continuously:
+# Geometry already reads any calibrated terminal for nothing, so this buys two things it
+# cannot give: a reading at a terminal with no calibration, and a judgement on the awkward
+# frames — fog, glare, snow, roadworks — where a model looking at the scene is worth paying
+# for. Uncomment to build that record continuously:
 #
 # 17 2 * * *   ferrycast extract --essential --for-date yesterday >> /var/log/ferrycast/extract.log 2>&1
 # ---------------------------------------------------------------------------------------
-
-# Retention plus the weekly digest. `health --strict` exits non-zero when something is
-# wrong, so cron's MAILTO only reaches you when there is a problem to read about.
-41 4 * * 0    ferrycast prune >> /var/log/ferrycast/prune.log 2>&1
-47 4 * * 0    ferrycast health --window 7 --strict
 
 # After changing the prompt (bump `prompt_version` in the config), re-extract the backlog
 # by hand rather than on a schedule:

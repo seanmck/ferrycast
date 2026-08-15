@@ -87,7 +87,7 @@ def on_cream(im: Image.Image) -> Image.Image:
     return plate.convert("RGB")
 
 
-def save(im: Image.Image, name: str, colors: int | None = None) -> None:
+def save(im: Image.Image, name: str, colors: int | None = None, out: Path | None = None) -> None:
     """Write a PNG, palettised where the artwork is flat enough to take it.
 
     The master is a render, so its flat fields carry a little noise; left as truecolour it
@@ -97,7 +97,7 @@ def save(im: Image.Image, name: str, colors: int | None = None) -> None:
     """
     if colors:
         im = im.quantize(colors=colors, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
-    path = OUT / name
+    path = (out or OUT) / name
     im.save(path, optimize=True)
     print(f"{name:22} {im.size[0]:>4}x{im.size[1]:<5} {path.stat().st_size / 1024:6.1f} KB")
 
@@ -132,3 +132,15 @@ card = Image.new("RGBA", (1200, 630), (*CHART, 255))
 fit = lockup.resize((round(520 * lockup.width / lockup.height), 520), Image.LANCZOS)
 card.alpha_composite(fit, ((1200 - fit.width) // 2, (630 - fit.height) // 2))
 save(card.convert("RGB"), "og.png", colors=128)
+
+# The README, which is read on both of GitHub's grounds. Same problem as the social card and
+# the same answer: `Ferry` is near-black navy and disappears on the dark side, so the lockup
+# gets the cream it is drawn for. It has to be *in the image* — GitHub strips style
+# attributes out of README HTML, so no amount of markup can put a ground behind a
+# transparent PNG. This one is repo furniture rather than something the app serves, so it is
+# written beside the master instead of into web/static/, and stays out of the wheel.
+readme = scaled(lockup, 640)
+pad = round(0.07 * max(readme.size))
+plate = Image.new("RGBA", (readme.width + 2 * pad, readme.height + 2 * pad), (*CHART, 255))
+plate.alpha_composite(readme, (pad, pad))
+save(plate.convert("RGB"), "logo-readme.png", colors=128, out=HERE)
