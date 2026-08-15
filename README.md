@@ -365,7 +365,7 @@ established by somebody who was in the queue.
 |---|---|
 | `/` | The whole day at once, then one sailing in full — see below |
 | `/how-it-works` | Where the answer comes from, what each outcome word claims, how comparable sailings are chosen, and what none of the evidence can say. Linked from the bottom of `/` |
-| `/health` | Pipeline health — uptime, season coverage, a 14-day capture strip, spend against budget |
+| `/health` | Pipeline health — uptime, season coverage, a 14-day capture strip, spend against budget. **Not linked from either public page**: capture failures and spend are the operator's business, so it answers at its URL and nowhere else |
 
 Picking a direction and a date gets you every sailing on it: what each usually does, which
 are the easiest, and where the hard stretch of the day is. Picking one of them gets the
@@ -394,6 +394,9 @@ The explainer reads its thresholds and its per-terminal capabilities from the ru
 config rather than restating them in prose, so it cannot describe an install other than
 this one — which camera is lane-calibrated and which is not is exactly the thing a reader
 is owed.
+
+`/health` is unlinked rather than protected. On a public deployment where the spend figure
+is nobody else's business, put it behind auth at the proxy.
 
 All three pages are styled with the **Deep Water** theme (hull navy and chart cream, cedar and buoy
 accents, Instrument Serif for times and IBM Plex Mono for every number), and follow the

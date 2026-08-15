@@ -824,3 +824,13 @@ def test_how_it_works_says_which_camera_is_lane_read(conn, config):
 def test_the_index_offers_the_explainer_at_the_bottom(client):
     body = client.get("/").text
     assert '<a href="/how-it-works">How it works</a>' in body
+
+
+def test_the_public_pages_do_not_offer_the_pipeline_dashboard(client):
+    """Capture failures and spend against budget are the operator's business, not a
+    traveller's. `/health` still answers at its URL — it is simply not linked from the pages
+    someone reaches while looking for a ferry."""
+    for path in ["/", "/how-it-works"]:
+        assert 'href="/health"' not in client.get(path).text
+
+    assert client.get("/health").status_code == 200
