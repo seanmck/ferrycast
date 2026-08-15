@@ -458,6 +458,7 @@ def classify_from_bands(
     departure_seen: bool,
     still_at_dock: bool = False,
     berth_visible: bool = False,
+    empty_when_it_left: bool = False,
 ) -> tuple[str, bool, bool, int | None]:
     """Return (outcome, overload, cancelled, carryover) from fullness bands alone.
 
@@ -473,6 +474,13 @@ def classify_from_bands(
     What the band does support is the clear, and it supports it well: across four sailings a
     packed compound went to bare asphalt in a single frame every time. That transition is the
     whole outcome, and it is the one thing measured here that was never ambiguous.
+
+    The clear also decides *whose* queue a residual is, which is what `empty_when_it_left` is
+    for. A band after departure only means somebody was left behind if the compound never went
+    bare in between; if it did, the vessel took everyone and the vehicles in shot belong to the
+    next sailing. The count path gets this free from `residual_threshold` — a handful of early
+    arrivals sits under the floor — while a band has no floor to hide behind, because "light"
+    is a positive reading rather than a noisy one.
     """
     if residual_fullness is None or fullness_at_departure is None:
         return "unknown", False, False, None
@@ -489,6 +497,20 @@ def classify_from_bands(
         if not berth_visible:
             return "unknown", False, False, None
         return "cancelled", False, True, None
+
+    if empty_when_it_left:
+        # A compound bare when the vessel left took everyone standing in it, so whatever is in
+        # shot afterwards is the next sailing's queue forming and not a residual. Without this
+        # the band path claimed both axes off a single reading: on 2026-08-15 the first sailing
+        # of the day emptied seven minutes before departure, two lanes filled again thirteen
+        # minutes after it, and the record read "ran out of room, left vehicles behind" — of
+        # the emptiest crossing on the timetable, with no board notice anywhere near it.
+        #
+        # This sits below the `departure_seen` check on purpose. "The compound emptied" is only
+        # evidence that a sailing carried it away if something saw a sailing; where nothing
+        # did, an empty compound is equally consistent with a cancellation nobody queued for,
+        # and that stays the branch above's call.
+        return "boarded", False, False, 0
 
     return "filled", True, False, None
 
@@ -657,6 +679,29 @@ def compute_record(
     departure_seen = left_at is not None or deck_min is not None
     berth_visible = config.route.terminal(sailing_row["origin"]).camera_sees_berth
 
+    # Whether the compound had gone bare by the time the residual reading starts. Deliberately
+    # not `fullness_at_departure`, which stops at the *scheduled* time: a sailing leaving 30
+    # minutes late is routine here, and reading the inference off the timetable rather than off
+    # the ship is the whole bug this guards. On 2026-08-15 the 05:35's line cleared at 05:28,
+    # the tarmac stayed bare through the departure, and the two lanes that appeared at 05:48
+    # were the 07:25's queue beginning to form — billed to the sailing that already took
+    # everyone. `settle_from` follows the ship, so the same reading survives a late departure:
+    # a compound bare at 05:35 that fills again by 06:05 and strands thirty vehicles ends on a
+    # heavy band, not an empty one, and is still an overload.
+    #
+    # Bounded at `settle_from` rather than at the departure itself because the compound empties
+    # *while* the vessel loads and the last car can board on the minute it goes: on 2026-08-14
+    # the board stamped "Departed 5:34 am" and the tarmac read bare at 05:34:25, twenty-five
+    # seconds later. A bound on the departure would have called that sailing an overload over
+    # one frame's cadence. This window ends exactly where `banded_after` begins, so every band
+    # belongs to the run-up or to the residual and none to both.
+    banded_before_settle = [
+        o for o in observations if o.fullness is not None and grace_from <= o.at <= settle_from
+    ]
+    empty_when_it_left = (
+        bool(banded_before_settle) and banded_before_settle[-1].fullness == "empty"
+    )
+
     # Bands are preferred where they exist. A count is the older contract and the weaker
     # measurement — it survives only so that frames read under prompt v1 keep their meaning.
     if banded_before or banded_after:
@@ -666,6 +711,7 @@ def compute_record(
             departure_seen=departure_seen,
             still_at_dock=still_at_dock,
             berth_visible=berth_visible,
+            empty_when_it_left=empty_when_it_left,
         )
         used = banded_before + banded_after
     else:
