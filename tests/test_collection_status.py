@@ -229,3 +229,35 @@ def test_another_route_does_not_leak_in(conn, config):
     result = status(conn, config)
     assert result["recorded"] == 1
     assert [r["service_date"] for r in result["recent"]] == ["2026-08-11"]
+
+
+def test_a_timed_departure_is_listed_even_with_no_outcome(conn, config):
+    """Nothing at Earls Cove can witness the compound, so every sailing there is `unknown`
+    however well the collector runs. Requiring an outcome to appear left this panel blank
+    forever at the one terminal it most needed to speak for — reporting the healthy case as
+    the broken one, which is the exact confusion it exists to prevent."""
+    seed_record(conn, config, TARGET, TIME, "unknown", origin="ERL")
+    _record_departure(conn, config, TARGET, TIME, "13:13", "tracking", origin="ERL")
+
+    result = status(conn, config, origin="ERL")
+
+    assert [r["depart_hhmm"] for r in result["recent"]] == [TIME]
+    row = result["recent"][0]
+    assert row["departed_local"] == "13:13"
+    assert row["minutes_late"] == 43
+    assert row["outcome"] == "unknown"
+    # The weaker claim is counted apart from the outcomes, not folded in with them.
+    assert result["timed"] == 1
+    assert result["recorded"] == 0
+    assert result["unknown"] == 1
+
+
+def test_an_untimed_sailing_with_no_outcome_stays_out_of_the_list(conn, config):
+    """The exclusion still holds where genuinely nothing was learned."""
+    seed_record(conn, config, TARGET, TIME, "unknown", origin="ERL")
+
+    result = status(conn, config, origin="ERL")
+
+    assert result["recent"] == []
+    assert result["timed"] == 0
+    assert result["unknown"] == 1

@@ -944,7 +944,7 @@ actual dataset and cost almost nothing to keep forever.
 
 ```bash
 pip install -e ".[dev]"
-pytest        # 588 tests
+pytest        # 590 tests
 ruff check src tests
 ```
 
