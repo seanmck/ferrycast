@@ -134,6 +134,82 @@ def test_drift_is_small_on_the_frames_the_calibration_was_fitted_against(cal):
     assert drift_px(SLT_BG, cal) < MAX_DRIFT_PX
 
 
+# --- Earls Cove: a camera that sees only part of its compound ----------------------------
+
+ERL_CAL = REPO / "config" / "calibration" / "ERL.json"
+ERL_BG = REPO / "config" / "calibration" / "ERL_background.jpg"
+
+erl_only = pytest.mark.skipif(
+    not (ERL_CAL.exists() and ERL_BG.exists()), reason="Earls Cove calibration not present"
+)
+
+
+@pytest.fixture
+def erl():
+    return LaneCalibration.load(ERL_CAL)
+
+
+@erl_only
+def test_earls_cove_covers_the_two_lanes_whose_paint_can_be_fitted(erl):
+    """Four lanes are in frame and two are fittable. Three and a slice of two lie under
+    trees, cones and the vehicles themselves, and a boundary guessed to ten pixels would
+    put vehicles in the wrong lane rather than admit it could not tell."""
+    assert erl.terminal == "ERL"
+    assert erl.lanes == [4, 5]
+    assert erl.image_size == (320, 240)
+
+
+@erl_only
+def test_earls_cove_does_not_claim_to_see_the_whole_compound(erl):
+    assert erl.covers_compound is False
+
+
+@erl_only
+def test_a_partly_seen_compound_never_reports_empty(erl):
+    """The failure this flag exists to stop. This camera faces away from the dock down the
+    tail ends of the lanes, and arriving traffic queues in a lane that is not fitted — on
+    2026-08-15 at 14:57, five vehicles stood in frame with both calibrated lanes clear.
+    Reported as "empty" that is a confident all-clear for a compound nobody can see."""
+    bare = _paint(erl)
+    shares = occupancy(bare, bare, erl)
+
+    assert occupied_lanes(shares) == []
+    assert fullness_from_lanes(shares, erl) is None      # not "empty"
+
+
+@erl_only
+def test_a_saltery_bay_style_camera_still_reports_empty(cal):
+    """The distinction is per calibration, not a global softening. Where the lanes account
+    for the whole compound, bare pavement really is an empty compound."""
+    bare = _paint(cal)
+    assert cal.covers_compound is True
+    assert fullness_from_lanes(occupancy(bare, bare, cal), cal) == "empty"
+
+
+@erl_only
+def test_occupancy_at_the_far_end_is_the_trustworthy_direction(erl):
+    """Bare pavement says nothing, but a vehicle says a lot: these lanes are the last
+    pavement to fill, so anything standing here has everything ahead of it already taken."""
+    bare = _paint(erl)
+    one = fullness_from_lanes(occupancy(_paint(erl, occupied=[5]), bare, erl), erl)
+    both = fullness_from_lanes(occupancy(_paint(erl, occupied=[4, 5]), bare, erl), erl)
+
+    assert one == "heavy"
+    assert both == "overflowing"
+
+
+@erl_only
+def test_a_clear_reading_carries_its_own_caveat(erl):
+    reading = read_frame(ERL_BG, ERL_BG, erl)
+    assert reading["fullness"] is None
+    assert "says nothing about how full the rest of it is" in reading["notes"]
+
+
+@erl_only
+def test_earls_cove_drift_is_small_on_the_frame_it_was_fitted_against(erl):
+    assert drift_px(ERL_BG, erl) < MAX_DRIFT_PX
+
+
 @pytest.mark.skipif(not SLT_BG.exists(), reason="background reference not present")
 def test_a_moved_camera_is_detected_rather_than_mislabelled(cal):
     """A knock or a maintenance visit re-aims the camera and every lane number shifts. Silent

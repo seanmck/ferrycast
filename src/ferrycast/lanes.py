@@ -72,6 +72,17 @@ class LaneCalibration:
     y_ref: float
     mobius: tuple[float, float, float]
     fitted_from: str = ""
+    #: Whether the calibrated lanes account for the whole compound.
+    #:
+    #: True at Saltery Bay, where the camera looks across the apron and what is not in a
+    #: calibrated lane is not in the compound. False at Earls Cove, where it looks *away*
+    #: from the dock along four lanes, only two of which have paint clear enough to fit —
+    #: so most of the compound, and the lane the arriving queue actually forms in, are out
+    #: of frame. The distinction decides whether bare pavement means "empty" or means
+    #: nothing at all, and getting that wrong is the false all-clear this module exists to
+    #: prevent. Defaults True so a calibration that has not thought about it behaves as
+    #: before; set it false deliberately.
+    covers_compound: bool = True
 
     @property
     def lanes(self) -> list[int]:
@@ -109,6 +120,7 @@ class LaneCalibration:
             y_ref=float(raw["y_ref"]),
             mobius=tuple(raw["mobius"]),
             fitted_from=raw.get("fitted_from", ""),
+            covers_compound=bool(raw.get("covers_compound", True)),
         )
 
 
@@ -208,17 +220,30 @@ def occupied_lanes(shares: dict[int, float], *, cutoff: float = OCCUPIED_SHARE) 
     return sorted(lane for lane, share in shares.items() if share > cutoff)
 
 
-def fullness_from_lanes(shares: dict[int, float], cal: LaneCalibration) -> str:
+def fullness_from_lanes(shares: dict[int, float], cal: LaneCalibration) -> str | None:
     """Map per-lane occupancy onto the band vocabulary the archive already speaks.
 
     Deliberately weighted by lane count rather than by area. A compound with two of ten lanes
     in use has eight lanes of room whether or not those two happen to be the ones nearest the
     camera, and it is the room that decides whether the next arrival gets on.
+
+    Where the calibration does not cover the whole compound the scale is one-sided, and
+    returns None rather than "empty" for bare lanes. Earls Cove is why: the camera faces away
+    from the dock down the tail ends of the lanes, which are the last pavement to fill, and
+    the queue arriving forms in a lane that is not fitted. Clear pavement there is consistent
+    with a compound anywhere from bare to nearly full — measured on a real afternoon queue,
+    five vehicles stood in shot while both calibrated lanes read clear. Occupancy still means
+    something, and means it strongly: vehicles at the far end are only there once everything
+    ahead of them is taken.
     """
     lanes = cal.lanes
+    used = len(occupied_lanes(shares))
+    if not cal.covers_compound:
+        if not lanes or used == 0:
+            return None
+        return "overflowing" if used == len(lanes) else "heavy"
     if not lanes:
         return "empty"
-    used = len(occupied_lanes(shares))
     if used == 0:
         return "empty"
     share = used / len(lanes)
@@ -402,6 +427,17 @@ def read_frame(
 
     shares = occupancy(frame, background, cal)
     occupied = occupied_lanes(shares)
+    if occupied:
+        notes = f"lanes {occupied} of {cal.lanes} occupied"
+        if not cal.covers_compound:
+            notes += " — the far end of the compound, so everything ahead of them is taken"
+    elif cal.covers_compound:
+        notes = "compound clear"
+    else:
+        notes = (
+            f"lanes {cal.lanes} clear, but they are the far end of a compound this camera "
+            "only partly sees — says nothing about how full the rest of it is"
+        )
     return {
         "compound_visible": True,
         "fullness": fullness_from_lanes(shares, cal),
@@ -411,7 +447,7 @@ def read_frame(
         # Deterministic given the calibration, so the only real uncertainty is whether the
         # calibration still holds. Scale confidence by how well the paint lines up.
         "confidence": round(max(0.5, 1.0 - drift / MAX_DRIFT_PX * 0.5), 3),
-        "notes": f"lanes {occupied} of {cal.lanes} occupied" if occupied else "compound clear",
+        "notes": notes,
         "drift_px": round(drift, 2),
         "illumination_ratio": round(lit, 3),
         "lane_shares": {str(k): round(v, 3) for k, v in sorted(shares.items())},
