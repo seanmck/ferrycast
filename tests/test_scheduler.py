@@ -76,6 +76,49 @@ def test_capture_is_skipped_when_archiving_is_turned_off(config):
     assert "capture" not in {job.name for job in jobs_for(off)}
 
 
+def _with_replay_camera(config):
+    from dataclasses import replace
+
+    from ferrycast.config import Camera
+
+    camera = Camera(
+        id="drivebc244",
+        kind="queue_extent",
+        image_url="https://example.invalid/244.jpg",
+        replay_index_url="https://example.invalid/244/replay/",
+        replay_frame_url="https://example.invalid/244/{timestamp}.jpg",
+    )
+    return replace(
+        config,
+        routes=tuple(
+            replace(
+                r,
+                terminals=tuple(
+                    replace(t, cameras=(camera,)) if t.code == "ERL" else t
+                    for t in r.terminals
+                ),
+            )
+            for r in config.routes
+        ),
+    )
+
+
+def test_a_camera_with_a_replay_window_is_swept_by_the_scheduler(config):
+    """The container's start command is `ferrycast run`, so a collector this scheduler does
+    not know about does not run in production at all — however carefully it is written, and
+    whatever the crontab example says."""
+    assert "replay" not in {job.name for job in jobs_for(config)}
+    assert "replay" in {job.name for job in jobs_for(_with_replay_camera(config))}
+
+
+def test_the_replay_sweep_keeps_its_own_cadence(config):
+    """Not the capture interval. The window is retroactive and a day wide, so sweeping it
+    every five minutes would refetch nothing and ask for the index 288 times a day."""
+    jobs = {job.name: job.interval for job in jobs_for(_with_replay_camera(config))}
+    assert jobs["replay"] == timedelta(hours=12)
+    assert jobs["replay"] != jobs["capture"]
+
+
 def test_scraping_still_runs_without_any_camera(conn, config):
     """Deck space is the historical record; it must not depend on the cameras."""
     from dataclasses import replace

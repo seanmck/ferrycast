@@ -78,9 +78,14 @@ def _backgrounds(conn, config: Config) -> str:
     Daily, because it only has to keep pace with the sun. A two-week trailing window moves
     about four degrees of solar declination in a day, so a reference built this morning is
     still describing this month's light and this month's shadows.
+
+    Every calibrated camera, not every calibrated terminal. A terminal can have more than
+    one, they see different scenes, and a reference built from both mixed together describes
+    neither — so each gets its own.
     """
+    from .config import MAIN_CAMERA
     from .db import JobRun
-    from .lanes import build_backgrounds, load_for
+    from .lanes import build_backgrounds, cameras_with_calibration
 
     config_dir = Path(config.source_path).parent
     parts = []
@@ -88,15 +93,19 @@ def _backgrounds(conn, config: Config) -> str:
     # perpetually overdue and re-fires on every tick — which is what `prune` used to do.
     with JobRun(conn, "backgrounds") as run:
         for terminal in config.route.terminals:
-            if load_for(config_dir, terminal.code) is None:
-                continue
-            run.attempted += 1
-            stats = build_backgrounds(conn, config, terminal.code)
-            parts.append(f"{terminal.code} {stats.built} hour(s)")
-            if stats.thin:
-                parts[-1] += f", {stats.thin} too thin"
-            run.succeeded += 1
-    return ", ".join(parts) or "no calibrated terminals"
+            for camera in cameras_with_calibration(config_dir, terminal):
+                run.attempted += 1
+                stats = build_backgrounds(conn, config, terminal.code, camera=camera)
+                label = (
+                    terminal.code
+                    if camera == MAIN_CAMERA
+                    else f"{terminal.code}/{camera}"
+                )
+                parts.append(f"{label} {stats.built} hour(s)")
+                if stats.thin:
+                    parts[-1] += f", {stats.thin} too thin"
+                run.succeeded += 1
+    return ", ".join(parts) or "no calibrated cameras"
 
 
 def _scrape(conn, config: Config) -> str:
@@ -126,6 +135,35 @@ def _vessels(conn, config: Config) -> str:
     if not result["ok"]:
         return f"no reading: {result.get('error')}"
     return f"{result['rows']} new reading(s) from {result['vessels']} vessel(s)"
+
+
+def _replay(conn, config: Config) -> str:
+    """Collect the published replay window of any camera that has one.
+
+    Twice a day rather than on the capture cadence, because this feed is retroactive: it
+    publishes the last twenty-four hours of its own stills, so one run recovers all of them
+    and a run that fails costs nothing as long as the next lands before the window rolls
+    over. Twice, so a single failure is not a lost day.
+
+    It has to be here rather than only in the crontab. The container's start command is
+    `ferrycast run`, so a collector this scheduler does not know about does not run in
+    production at all — which is what happened: the sweep shipped as a CLI command and a
+    crontab line, and the deployment uses neither.
+    """
+    from .replay import sweep
+
+    runs = sweep(conn, config)
+    if not runs:
+        return "no camera publishes a replay window"
+    fetched = sum(s.fetched for s in runs)
+    failed = sum(s.failed for s in runs)
+    detail = f"{fetched} frame(s) from {len(runs)} camera(s)"
+    if failed:
+        detail += f", {failed} failed"
+    errors = [e for s in runs for e in s.errors]
+    if errors:
+        detail += " — " + "; ".join(errors[:2])
+    return detail
 
 
 def _marine(conn, config: Config) -> str:
@@ -215,6 +253,15 @@ JOBS: tuple[Job, ...] = (
         timedelta(hours=3),
         _shore,
         enabled=lambda c: any(t.configured_for_weather for t in c.route.terminals),
+    ),
+    # Retroactive, so it does not need the capture cadence — see `_replay`. Enabled by the
+    # presence of a replay feed rather than by any terminal setting, because a camera that
+    # publishes one is the only kind this job has anything to do.
+    Job(
+        "replay",
+        timedelta(hours=12),
+        _replay,
+        enabled=lambda c: any(t.replay_cameras for t in c.route.terminals),
     ),
     Job("backgrounds", timedelta(hours=12), _backgrounds),
     Job("aggregate", timedelta(hours=1), _aggregate),
