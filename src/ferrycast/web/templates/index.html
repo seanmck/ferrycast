@@ -1085,7 +1085,9 @@
     {% elif c and c.unknown %}
       <p class="note">{{ c.unknown }} equivalent sailing{{ '' if c.unknown == 1 else 's' }} seen
         so far, none with a usable record yet — normal until a sailing runs its full course
-        while the collector is up.</p>
+        while the collector is up.{% if c.timed %} {{ c.timed }} had
+        {{ 'its' if c.timed == 1 else 'their' }} departure timed, which says the sailing ran
+        and when, but nothing about whether anyone was left behind.{% endif %}</p>
     {% else %}
       <p class="note flag">Nothing recorded for this sailing yet. If the collector has been
         running for more than a few days, check <a href="/health">pipeline health</a>.</p>

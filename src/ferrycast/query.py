@@ -1092,10 +1092,18 @@ def collection_status(
         if abs(_hhmm_to_minutes(row["depart_hhmm"]) - target_minutes) <= tolerance
     ]
 
-    # `unknown` is excluded from the list but counted: a sailing the collector was not
-    # running for is a real gap, and hiding it entirely would overstate coverage.
+    # A sailing with no outcome is still counted: the collector not running for it is a real
+    # gap, and hiding it entirely would overstate coverage.
     unknown = sum(1 for row in equivalent if row["outcome"] == "unknown")
-    listed = [row for row in equivalent if row["outcome"] != "unknown"][:limit]
+    # ...but it is listed if anything at all was learned about it, and a timed departure
+    # counts. Requiring an outcome to appear here made this panel blank at Earls Cove
+    # forever: nothing there can ever witness the compound, so every sailing is `unknown`
+    # however well the collector is working — and a panel whose entire purpose is telling a
+    # young dataset from a broken one was reporting the healthy case as the broken one.
+    timed = sum(1 for row in equivalent if row["departed_at"])
+    listed = [
+        row for row in equivalent if row["outcome"] != "unknown" or row["departed_at"]
+    ][:limit]
     departures = _reported_departures(conn, route.id, origin, listed)
 
     recent = []
@@ -1140,6 +1148,11 @@ def collection_status(
         "recent": recent,
         "recorded": len(equivalent) - unknown,
         "unknown": unknown,
+        # Sailings whose departure was timed, whether or not anything witnessed the queue.
+        # Kept apart from `recorded` because it is a weaker claim — the ship went, and at
+        # this minute — but it is the only claim available at all in one direction, and
+        # reporting it as nothing collected reads as a dead collector.
+        "timed": timed,
         "since": min((row["service_date"] for row in equivalent), default=None),
         "depart_hhmm": depart_hhmm,
         "tolerance_minutes": tolerance,
