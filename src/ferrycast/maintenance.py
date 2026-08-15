@@ -239,9 +239,14 @@ def health_report(
     )
     rate = actual / expected if expected else 0.0
 
+    # A direction BC Ferries publishes no board for is not a scrape that went wrong, so it
+    # is out of the denominator entirely. Counted, it held this rate near 50% forever —
+    # permanently "unhealthy", and permanently unable to show a real parser break as a
+    # change in anything.
     deck_total = (
         conn.execute(
-            "SELECT COUNT(*) FROM deck_space WHERE observed_at >= ?", (since,)
+            "SELECT COUNT(*) FROM deck_space WHERE observed_at >= ? AND fetch_status != ?",
+            (since, "not_published"),
         ).fetchone()[0]
         or 0
     )
