@@ -3,7 +3,7 @@
 BC Ferries publishes a departures board for Saltery Bay and none at all for Earls Cove (see
 `deckspace.publishes_departures`), so the homeward direction has no source of a departure
 time. It does publish a live vessel tracker, and both directions' conditions pages embed the
-same one: a small page carrying each vessel's status (`In Port` / `Under Way`), compass
+same one: a small page carrying each vessel's status (`Stopped` / `Under Way`), compass
 heading, speed and the feed's own timestamp, refreshed every 30 seconds.
 
 What that supports and what it does not is worth stating plainly, because the gap is the
@@ -21,9 +21,12 @@ whole reason this module is small:
 The feed keeps no history — thirty-second refresh, no archive — so a reading not polled is
 gone for good, exactly like a frame.
 
-Which terminal a vessel is docked at is **not** published: the status column says `In Port`
-without naming the port. Direction therefore comes from the heading once it is moving, which
-is why `Terminal.outbound_bearing` is configuration rather than something inferred here.
+Which terminal a vessel is stopped at is **not** published: the status says it is stopped and
+never where. Direction therefore comes from the heading once it is moving, which is why
+`Terminal.outbound_bearing` is configuration rather than anything inferred here.
+
+The status wording is per-route — `Stopped` here, `In Port` on the Tsawwassen runs — so it is
+matched against a set, with the speed reading as a fallback beneath it.
 """
 
 from __future__ import annotations
@@ -38,9 +41,14 @@ from .db import JobRun
 from .fetching import fetch
 from .timeutil import combine_local, iso, local, now_utc, parse_iso
 
-#: Status words the feed uses. Anything else is stored verbatim and treated as unknown.
-IN_PORT = "In Port"
-UNDER_WAY = "Under Way"
+#: Status words meaning the vessel is not moving. Route 1 says `In Port`; route 29 — this
+#: route — says `Stopped`, which is what made the first live version derive no departure at
+#: all: matching only `In Port` meant Earls Cove never saw the transition it exists to catch.
+#: Both are kept because the wording is per-route and neither is more official than the other.
+STOPPED_STATUSES = frozenset({"in port", "stopped", "docked"})
+
+#: ...and the ones meaning it is.
+MOVING_STATUSES = frozenset({"under way", "underway", "en route"})
 
 _OPPOSITE = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
@@ -68,11 +76,30 @@ class VesselReading:
 
     @property
     def under_way(self) -> bool:
-        return self.status == UNDER_WAY
+        return is_moving(self.status, self.speed_knots) is True
 
     @property
     def in_port(self) -> bool:
-        return self.status == IN_PORT
+        return is_moving(self.status, self.speed_knots) is False
+
+
+def is_moving(status: str | None, speed_knots: float | None) -> bool | None:
+    """Is the vessel moving (True), stopped (False), or is this reading silent (None)?
+
+    Speed decides where the status word is one we have not seen. The wording turned out to
+    be per-route — `In Port` on one, `Stopped` on another — and a word we do not recognise
+    should not read as "not stopped", which is what silently cost Earls Cove every departure
+    in the first live version. A number in knots is far less likely to be reworded than a
+    label, so it is the safety net rather than the primary signal.
+    """
+    word = (status or "").strip().lower()
+    if word in MOVING_STATUSES:
+        return True
+    if word in STOPPED_STATUSES:
+        return False
+    if speed_knots is None:
+        return None
+    return speed_knots > 0
 
 
 def _strip(cell: str) -> str:
@@ -292,7 +319,7 @@ def departure_from_tracking(
         return None
 
     rows = conn.execute(
-        """SELECT status, heading, reported_at FROM vessel_positions
+        """SELECT status, heading, speed_knots, reported_at FROM vessel_positions
             WHERE route = ? AND fetch_status = 'ok' AND reported_at IS NOT NULL
               AND reported_at >= ? AND reported_at <= ?
             ORDER BY reported_at""",
@@ -301,10 +328,14 @@ def departure_from_tracking(
     if not rows:
         return None
 
-    stopped = [i for i, row in enumerate(rows) if row["status"] == IN_PORT]
+    # Classified here rather than matched in SQL, so an unrecognised status word falls
+    # through to speed instead of quietly matching nothing.
+    moving = [is_moving(row["status"], row["speed_knots"]) for row in rows]
+    stopped = [i for i, state in enumerate(moving) if state is False]
     if not stopped:
         return None
-    after = [row for row in rows[stopped[-1] + 1 :] if row["status"] == UNDER_WAY]
+    after = [row for row, state in zip(rows[stopped[-1] + 1 :], moving[stopped[-1] + 1 :],
+                                       strict=True) if state is True]
     if not after:
         return None
 

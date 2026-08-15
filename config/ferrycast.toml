@@ -57,7 +57,7 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   destination    = "ERL"
   # Which way the vessel points once it has left here. Saltery Bay lies west-northwest of
   # Earls Cove, so a ship leaving Saltery Bay runs east. This is what lets the vessel tracker
-  # tell the two directions apart: it reports "In Port" without ever naming the port, so the
+  # tell the two directions apart: it reports the vessel as stopped without ever naming where,
   # heading once moving is the only thing that says which terminal was just left. Leave it
   # blank and no departure is inferred from tracking for this terminal.
   outbound_bearing = "E"
