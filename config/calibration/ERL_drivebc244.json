@@ -1,0 +1,38 @@
+{
+  "terminal": "ERL",
+  "camera": "drivebc244",
+  "kind": "queue_extent",
+  "image_size": [480, 288],
+
+  "_source": "DriveBC HighwayCam 244, Hwy 101 at Egmont Road, 49.745664/-124.001841, looking south. Current image https://www.drivebc.ca/images/244.jpg; 24h of retroactive frames via https://www.drivebc.ca/api/webcams/244/replayTheDay/ then https://www.drivebc.ca/images/replaytheday/244/<timestamp>.jpg. Refreshes every 900s.",
+
+  "_axis": "Rows increase toward the camera. The terminal is north, off the bottom of frame; the queue's head is behind the camera and its tail runs away into the distance, so a longer queue has a SMALLER tail row.",
+
+  "flank": [-52.62, 2.9330, -0.006529],
+  "band_offset": -5,
+  "band_width": 20,
+
+  "light_offset": 30,
+  "light_width": 100,
+  "light_from_row": 150,
+  "_light": "A strip of the far carriageway used only to measure the light. Its 90th percentile across the 2026-08-14 replay day tracked the sun (154 at dawn, 233-239 midday, 183 under passing shade) and did not move when the queue arrived: 237/238/238/239 over the four queue frames against 234 and 237 either side of them.",
+
+  "far_row": 118,
+  "near_row": 253,
+  "camera_row": 288.0,
+
+  "_far_row": "The road bends out of sight around row 110 and station spacing falls below one row per vehicle before that. 118 is where the fit is still resolvable.",
+  "_near_row": "The DriveBC watermark bar occupies rows 254-288, so the near end of the road is occluded. camera_row stays at 288 because the distance model is fitted to the road, not to what is visible of it.",
+
+  "horizon": -200.0,
+  "scale": 9408.7,
+  "origin": 27.48,
+
+  "capacity_vehicles": 12.5,
+  "capacity_slack": 2.5,
+  "_capacity": "Local knowledge, not measured: the vessel usually takes another 10-15 vehicles beyond this camera once the queue has reached it. Note this sits just past max_vehicles (10.3) -- the camera saturates fractionally before the capacity line, so a frame filled to the far row reports a bound rather than a number.",
+
+  "headway_m": 6.5,
+
+  "fitted_from": "2026-08-15, from the 2026-08-14 replay day (96 frames). Station model fitted to five consecutive ordinary cars in the 13:00 queue (front bumpers at rows 142/155/170/185/200, RV excluded), rms 0.6px. Flank fitted to the 5th-percentile x of the change blob across the four queue frames 12:45-13:30, median residual 3.3px. Validated over 59 daylight frames referenced against a clear frame within 45 minutes: 4/4 true queues found, 0 false."
+}

@@ -91,8 +91,9 @@ class LaneCalibration:
         if raw.get("kind") != "lanes":
             raise CalibrationError(
                 f"{path} is a {raw.get('kind')!r} calibration; this reader wants 'lanes'. "
-                "Terminals differ — Earls Cove's camera faces the approach road and has no "
-                "lane grid to fit."
+                "Cameras differ — a 'queue_extent' calibration belongs to one pointed down "
+                "the approach road, where there is no lane grid and the measurement is how "
+                "far back the tail reaches. `extent` reads those."
             )
         spans = {
             int(k): [(int(r[0]), int(r[1]), int(r[2])) for r in v]
