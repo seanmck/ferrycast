@@ -131,6 +131,7 @@ def test_the_actual_departure_is_shown_with_its_delta(conn, config):
     row = status(conn, config)["recent"][0]
     assert row["departed_local"] == "12:47"
     assert row["minutes_late"] == 17
+    assert row["departed_source"] == "report"
 
 
 def test_an_early_departure_reads_as_a_negative_delta(conn, config):
@@ -140,13 +141,55 @@ def test_an_early_departure_reads_as_a_negative_delta(conn, config):
     assert status(conn, config)["recent"][0]["minutes_late"] == -4
 
 
-def test_an_unreported_departure_is_blank_rather_than_guessed(conn, config):
-    """Only a person in the line knows when the vessel went. No report, no claim."""
+def test_an_unwitnessed_departure_is_blank_rather_than_guessed(conn, config):
+    """No board, no tracker reading and nobody in the line: no claim."""
     seed_record(conn, config, TARGET, TIME, "boarded")
 
     row = status(conn, config)["recent"][0]
     assert row["departed_local"] is None
     assert row["minutes_late"] is None
+    assert row["departed_source"] is None
+
+
+def _record_departure(conn, config, service_date, hhmm, left_hhmm, source, origin="SLT"):
+    from ferrycast.timeutil import combine_local, iso, parse_hhmm
+
+    conn.execute(
+        """UPDATE sailing_records SET departed_at = ?, departed_source = ?
+            WHERE sailing_id = (SELECT id FROM sailings
+                                 WHERE origin = ? AND service_date = ? AND depart_hhmm = ?)""",
+        (
+            iso(combine_local(service_date, parse_hhmm(left_hhmm), config.tz)),
+            source,
+            origin,
+            service_date.isoformat(),
+            hhmm,
+        ),
+    )
+    conn.commit()
+
+
+def test_the_departure_the_record_established_is_shown(conn, config):
+    """Reading reports alone left the "Left" column permanently blank at Earls Cove, which
+    has no board and no reports — the one terminal the vessel tracker exists to cover."""
+    seed_record(conn, config, TARGET, TIME, "filled", origin="ERL")
+    _record_departure(conn, config, TARGET, TIME, "12:41", "tracking", origin="ERL")
+
+    row = status(conn, config, origin="ERL")["recent"][0]
+    assert row["departed_local"] == "12:41"
+    assert row["minutes_late"] == 11
+    assert row["departed_source"] == "tracking"
+
+
+def test_the_record_outranks_a_recollection(conn, config):
+    """The board publishes the departure to the minute; a report is somebody's memory."""
+    seed_record(conn, config, TARGET, TIME, "filled")
+    add_departure_report(conn, config, TARGET, TIME, "12:47")
+    _record_departure(conn, config, TARGET, TIME, "12:43", "board")
+
+    row = status(conn, config)["recent"][0]
+    assert row["departed_local"] == "12:43"
+    assert row["departed_source"] == "board"
 
 
 def test_disagreeing_reports_settle_on_the_median(conn, config):

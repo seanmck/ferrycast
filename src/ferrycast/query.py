@@ -1073,7 +1073,8 @@ def collection_status(
 
     rows = conn.execute(
         """SELECT s.service_date, s.depart_hhmm, s.scheduled_departure,
-                  r.outcome, r.filled_at, r.method, r.peak_queue
+                  r.outcome, r.filled_at, r.method, r.peak_queue,
+                  r.departed_at, r.departed_source
              FROM sailing_records r
              JOIN sailings s ON s.id = r.sailing_id
             WHERE s.route = ? AND s.origin = ? AND s.day_type = ?
@@ -1094,7 +1095,16 @@ def collection_status(
 
     recent = []
     for row in listed:
-        actual = departures.get((row["service_date"], row["depart_hhmm"]))
+        # When the vessel actually left. The record's own answer comes first — the board
+        # publishes "Departed 9:47 am" to the minute, and where there is no board the vessel
+        # tracker still saw it go — falling back to whoever was standing there watching.
+        # Reading reports alone, as this did, left every departure blank at the terminal
+        # that has no board, which is the one direction the tracker exists to cover.
+        actual = (
+            parse_iso(row["departed_at"])
+            if row["departed_at"]
+            else departures.get((row["service_date"], row["depart_hhmm"]))
+        )
         scheduled = datetime.fromisoformat(row["scheduled_departure"])
         recent.append(
             {
@@ -1102,12 +1112,12 @@ def collection_status(
                 "depart_hhmm": row["depart_hhmm"],
                 "outcome": row["outcome"],
                 "label": OUTCOME_LABELS.get(row["outcome"], row["outcome"]),
-                # When the vessel actually left, where somebody in the line said so. The
-                # feed only ever reports the scheduled sailing, so this is the one place
-                # the real departure is known — and it is often not known at all.
                 "departed_local": (
                     local(actual, config.tz).strftime("%H:%M") if actual else None
                 ),
+                # Which source timed it, so a reader can weigh it: `board` is to the minute,
+                # `tracking` to about five, and a report is somebody's recollection.
+                "departed_source": row["departed_source"] or ("report" if actual else None),
                 "minutes_late": (
                     int((actual - scheduled).total_seconds() // 60) if actual else None
                 ),

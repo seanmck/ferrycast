@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS vessel_positions (
     id           INTEGER PRIMARY KEY,
     route        TEXT NOT NULL,
     vessel       TEXT,
-    status       TEXT,        -- In Port | Under Way
+    status       TEXT,        -- Stopped | In Port | Under Way; wording varies by route
     heading      TEXT,        -- compass point; the feed never names the port a ship is in
     speed_knots  REAL,
     reported_at  TEXT,        -- the feed's own "Last Update", as UTC

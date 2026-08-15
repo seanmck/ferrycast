@@ -1103,7 +1103,16 @@
             <tr>
               <td class="n">{{ s.service_date }}</td>
               <td class="n">{{ s.depart_hhmm }}</td>
-              <td class="n">{{ s.departed_local or '—' }}</td>
+              {# The source decides how much the minute is worth: the board publishes it
+                 outright, the vessel tracker is good to about five, and a report is
+                 somebody's recollection. Shown on hover rather than in a column of its
+                 own — the table is already five wide on a phone. #}
+              <td class="n"{% if s.departed_source %} title="{{
+                  {'board': 'From the departures board, to the minute',
+                   'tracking': 'From the vessel tracker, to about five minutes',
+                   'report': 'Reported by someone in the line'}[s.departed_source]
+                  if s.departed_source in ('board', 'tracking', 'report')
+                  else s.departed_source }}"{% endif %}>{{ s.departed_local or '—' }}</td>
               <td class="n">
                 {%- if s.minutes_late is none %}—
                 {%- elif s.minutes_late > 0 %}+{{ s.minutes_late }}

@@ -324,3 +324,64 @@ def test_the_board_outranks_the_tracker(conn, config):
     ).fetchone()
     assert row["departed_source"] == "board"
     assert row["departed_at"] == iso(departure + timedelta(minutes=3))
+
+
+# ------------------------------------------------------- the status word is per-route
+
+
+def test_stopped_is_recognised_as_well_as_in_port(conn, config):
+    """Route 1 says `In Port`; this route says `Stopped`. Matching only the first meant the
+    live tracker never once produced a departure — Earls Cove, whose every departure this
+    is the only source of, saw nothing at all for as long as it ran."""
+    departure = _departure(config)
+    _track(conn, config, departure, [(-10, "Stopped", "NW"), (5, "Under Way", "W")])
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=5)
+
+
+def test_an_unfamiliar_status_falls_back_to_speed(conn, config):
+    """A word we have not seen must not read as "not stopped". Knots are far less likely to
+    be reworded than a label, so they are the safety net under the vocabulary."""
+    from ferrycast.vessels import VesselReading, is_moving, store_readings
+
+    assert is_moving("Alongside", 0.0) is False
+    assert is_moving("Alongside", 12.0) is True
+    assert is_moving("Alongside", None) is None
+
+    departure = _departure(config)
+    for offset, status, heading, speed in [
+        (-10, "Alongside", "NW", 0.0),
+        (5, "Making Way", "W", 11.4),
+    ]:
+        moment = departure + timedelta(minutes=offset)
+        store_readings(
+            conn,
+            config,
+            moment,
+            [
+                VesselReading(
+                    "Malaspina Sky",
+                    status,
+                    heading,
+                    moment.astimezone(config.tz).strftime("%H:%M"),
+                    speed,
+                )
+            ],
+        )
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=5)
+
+
+def test_the_live_wording_parses_as_stopped():
+    """Pinned against what route 29 actually publishes."""
+    from ferrycast.vessels import parse_tracking
+
+    stopped = TRACKER.replace("<td>Under Way</td><td>W</td>", "<td>Stopped</td><td>NW</td>")
+    stopped = stopped.replace("14.9 knots", "0 knots")
+    reading = parse_tracking(stopped)[0]
+    assert reading.in_port and not reading.under_way
+    assert reading.speed_knots == 0.0
