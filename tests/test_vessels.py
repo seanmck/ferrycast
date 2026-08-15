@@ -236,6 +236,107 @@ def test_a_vessel_that_never_left_yields_no_departure(conn, config):
     assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
 
 
+def test_a_departure_survives_the_vessel_arriving_at_the_other_end(conn, config):
+    """The regression that emptied the Earls Cove column.
+
+    The window reaches 75 minutes past the scheduled time so a late sailing is still caught,
+    and the crossing takes about fifty — so for any sailing punctual enough, the window also
+    contains the vessel arriving at Saltery Bay and tying up there. Anchored on the *last*
+    stopped reading, the search found that arrival instead of the departure, and a berthed
+    vessel produces no moving reading after it to return. Every ordinary Earls Cove sailing
+    therefore reported no departure at all, and only one over half an hour late reported
+    anything — the exact inverse of useful.
+    """
+    departure = _departure(config)
+    _track(
+        conn,
+        config,
+        departure,
+        [
+            (-10, "Stopped", "NW"),   # berthed at Earls Cove
+            (5, "Under Way", "W"),    # away, westbound: this is the answer
+            (25, "Under Way", "W"),
+            (45, "Under Way", "W"),
+            (60, "Stopped", "E"),     # berthed at Saltery Bay, still inside the window
+            (70, "Stopped", "E"),
+        ],
+    )
+
+    left = departure_from_tracking(conn, config, origin="ERL", departure=departure)
+
+    assert left == departure + timedelta(minutes=5)
+
+
+def test_the_far_terminals_departure_is_not_taken_for_this_ones(conn, config):
+    """The same window can hold the vessel turning round and leaving the other end. Both are
+    stopped-then-moving transitions; this terminal's is the earlier one."""
+    departure = _departure(config)
+    _track(
+        conn,
+        config,
+        departure,
+        [
+            (-10, "Stopped", "NW"),
+            (5, "Under Way", "W"),    # left Earls Cove
+            (45, "Under Way", "W"),
+            (60, "Stopped", "E"),     # arrived Saltery Bay
+            (70, "Under Way", "E"),   # and left again, the other way
+        ],
+    )
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=5)
+
+
+def test_the_previous_sailing_still_arriving_does_not_hide_the_departure(conn, config):
+    """At the head of the window the vessel is often still inbound on the leg before this
+    one. That is a crossing, not this terminal's departure, and it must not be mistaken for
+    either — the departure is the first stop-then-move after it."""
+    departure = _departure(config)
+    _track(
+        conn,
+        config,
+        departure,
+        [
+            (-18, "Under Way", "E"),  # inbound to Earls Cove on the previous sailing
+            (-10, "Stopped", "NW"),   # berthed
+            (5, "Under Way", "W"),    # away again
+        ],
+    )
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=5)
+
+
+def test_a_badly_late_sailing_looks_past_the_departure_the_board_claims(conn, config):
+    """Earliest transition, but earliest *unclaimed* — which is what makes earliest safe.
+
+    A sailing late enough opens its own window with the vessel still tied up at Saltery Bay,
+    so the first transition in it is Saltery Bay's departure rather than this terminal's.
+    The board publishes that one, which is exactly how it gets passed over for the next.
+    """
+    departure = _departure(config)
+    _track(
+        conn,
+        config,
+        departure,
+        [
+            (-20, "Stopped", "E"),    # still berthed at Saltery Bay, this sailing already due
+            (-10, "Under Way", "E"),  # away from *there* — the board publishes this one
+            (20, "Under Way", "E"),
+            (35, "Stopped", "NW"),    # berthed at Earls Cove at last
+            (45, "Under Way", "W"),   # and away: this is the answer
+        ],
+    )
+    _publish_departure(conn, config, date(2026, 8, 14), "08:50", "09:20", terminal="SLT")
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=45)
+
+
 def test_the_next_sailings_departure_is_out_of_range(conn, config):
     """The window stops well short of the tightest headway on this route, so one sailing
     cannot borrow the next one's departure and call itself very late."""
