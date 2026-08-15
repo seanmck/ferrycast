@@ -524,9 +524,9 @@ def _terminal_capabilities(config: Config) -> list[dict]:
                 "calibrated": bool(config_dir)
                 and lanes.load_for(config_dir, terminal.code) is not None,
                 "sees_berth": terminal.camera_sees_berth,
-                # Tracking can only name a departure for a terminal whose outbound heading
-                # is known — without it the feed cannot tell the two directions apart.
-                "tracking": bool(config.route.vessel_tracking_url and terminal.outbound_bearing),
+                # The tracker covers the route, not one terminal: it sees every departure
+                # and the board settles which end each one left from.
+                "tracking": bool(config.route.vessel_tracking_url),
                 "weather": terminal.configured_for_weather,
                 # A terminal can have more than one view, and the second one is often the
                 # decisive one: the marshalling camera sees the lanes, the highway camera

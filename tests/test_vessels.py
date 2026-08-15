@@ -185,6 +185,26 @@ def _track(conn, config, departure, entries):
         )
 
 
+def _publish_departure(conn, config, day, sailing_hhmm, departed_hhmm, *, terminal="SLT"):
+    """One scrape of the departures board, with a departure published against a sailing."""
+    from ferrycast.timeutil import combine_local, iso, parse_hhmm
+
+    conn.execute(
+        """INSERT INTO deck_space (route, terminal, observed_at, service_date, sailing_hhmm,
+               departed_hhmm, fetch_status)
+           VALUES (?, ?, ?, ?, ?, ?, 'ok')""",
+        (
+            config.route.id,
+            terminal,
+            iso(combine_local(day, parse_hhmm(departed_hhmm), config.tz)),
+            day.isoformat(),
+            sailing_hhmm,
+            departed_hhmm,
+        ),
+    )
+    conn.commit()
+
+
 def _departure(config, hhmm="09:30", day=date(2026, 8, 14)):
     hour, minute = (int(p) for p in hhmm.split(":"))
     return combine_local(day, time(hour, minute), config.tz)
@@ -198,36 +218,6 @@ def test_a_departure_is_read_from_stopped_then_moving_outbound(conn, config):
     left = departure_from_tracking(conn, config, origin="ERL", departure=departure)
 
     # The first moving reading: an upper bound, since it had certainly gone by then.
-    assert left == departure + timedelta(minutes=5)
-
-
-def test_the_other_terminals_departure_is_not_claimed_as_this_ones(conn, config):
-    """The feed never says which port a ship is docked at, so a vessel leaving Saltery Bay
-    eastbound looks identical to one leaving Earls Cove until you read the heading."""
-    departure = _departure(config)
-    _track(conn, config, departure, [(-10, "In Port", "S"), (5, "Under Way", "E")])
-
-    assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
-    assert departure_from_tracking(conn, config, origin="SLT", departure=departure) is not None
-
-
-def test_an_ambiguous_heading_is_refused_rather_than_guessed(conn, config):
-    """A vessel manoeuvring off the berth can point anywhere for a reading or two. 'N' says
-    nothing about east or west, and guessing would file the sailing against a terminal."""
-    departure = _departure(config)
-    _track(conn, config, departure, [(-10, "In Port", "S"), (5, "Under Way", "N")])
-
-    assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
-
-
-def test_a_manoeuvring_reading_does_not_hide_the_real_direction(conn, config):
-    departure = _departure(config)
-    _track(
-        conn, config, departure,
-        [(-10, "In Port", "S"), (5, "Under Way", "N"), (15, "Under Way", "W")],
-    )
-
-    left = departure_from_tracking(conn, config, origin="ERL", departure=departure)
     assert left == departure + timedelta(minutes=5)
 
 
@@ -255,22 +245,26 @@ def test_the_next_sailings_departure_is_out_of_range(conn, config):
     assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
 
 
-def test_a_terminal_with_no_configured_bearing_never_infers_one(conn, config):
-    """Bearing is route geometry, so it is configuration. Absent it, no claim is made —
-    a wrong one would attribute every sailing to the wrong end of the route."""
-    from dataclasses import replace
+def test_a_transition_the_board_already_claims_is_not_this_terminals(conn, config):
+    """The disambiguation, and the whole reason the compass is gone. Saltery Bay publishes
+    its departures; a transition matching one is Saltery Bay's, whatever the vessel happened
+    to be pointing at while it left the berth."""
+    departure = _departure(config)
+    _track(conn, config, departure, [(-10, "Stopped", "S"), (5, "Under Way", "NE")])
+    _publish_departure(conn, config, date(2026, 8, 14), "09:30", "09:35", terminal="SLT")
 
-    blind = replace(
-        config,
-        routes=tuple(
-            replace(r, terminals=tuple(replace(t, outbound_bearing="") for t in r.terminals))
-            for r in config.routes
-        ),
-    )
-    departure = _departure(blind)
-    _track(conn, blind, departure, [(-10, "In Port", "S"), (5, "Under Way", "W")])
+    assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
 
-    assert departure_from_tracking(conn, blind, origin="ERL", departure=departure) is None
+
+def test_a_transition_no_board_claims_belongs_to_the_silent_terminal(conn, config):
+    departure = _departure(config)
+    _track(conn, config, departure, [(-10, "Stopped", "S"), (5, "Under Way", "NE")])
+    # Saltery Bay's own departure that day was an hour earlier — nothing near this one.
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+
+    assert departure_from_tracking(
+        conn, config, origin="ERL", departure=departure
+    ) == departure + timedelta(minutes=5)
 
 
 # ------------------------------------------------------------------------ into the record
@@ -456,22 +450,16 @@ def test_a_sailing_far_past_its_time_is_abstained_on(conn, config):
     assert watch.departed == frozenset()
 
 
-def test_a_terminal_with_no_bearing_makes_no_claim(conn, config):
-    from dataclasses import replace
-
-    blind = replace(
-        config,
-        routes=tuple(
-            replace(r, terminals=tuple(replace(t, outbound_bearing="") for t in r.terminals))
-            for r in config.routes
-        ),
-    )
+def test_the_watch_also_defers_to_a_published_departure(conn, config):
     day = date(2026, 8, 14)
-    _track(conn, blind, _departure(blind, "15:40", day), [(-10, "Stopped", "NW")])
+    departure = _departure(config, "15:40", day)
+    _track(conn, config, departure, [(-10, "Stopped", "NW"), (6, "Under Way", "NE")])
+    _publish_departure(conn, config, day, "14:30", "15:46", terminal="SLT")
 
-    watch = _watch(conn, blind, day, ["15:40"], "15:53")
+    watch = _watch(conn, config, day, ["15:40"], "16:10")
 
-    assert watch.not_away == frozenset() and watch.observed_at is None
+    assert watch.departed == frozenset()
+    assert watch.not_away == frozenset({"15:40"})
 
 
 def test_a_silent_tracker_is_not_fresh(conn, config):
@@ -485,3 +473,19 @@ def test_a_silent_tracker_is_not_fresh(conn, config):
     now = _departure(config, "15:53", day)
     assert watch.is_fresh(now, td(minutes=40))
     assert not watch.is_fresh(now + td(hours=2), td(minutes=40))
+
+
+def test_the_heading_no_longer_decides_anything(conn, config):
+    """What replaced the compass. The vessel swings north-east out of the narrow cove at
+    Earls Cove before turning north-west across the strait, and `NE` contains an `E` — so
+    reading the heading called an outbound sailing inbound and refused it. The 15:40 that
+    left at 16:26 still showed "not away yet" ten minutes later. Headings are now ignored
+    entirely; a stopped-then-moving vessel has departed, and the board says from where."""
+    departure = _departure(config)
+    for heading in ("NE", "N", "S", "E", ""):
+        conn.execute("DELETE FROM vessel_positions")
+        conn.commit()
+        _track(conn, config, departure, [(-10, "Stopped", heading), (5, "Under Way", heading)])
+        assert departure_from_tracking(
+            conn, config, origin="ERL", departure=departure
+        ) == departure + timedelta(minutes=5), heading
