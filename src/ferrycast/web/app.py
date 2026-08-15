@@ -55,7 +55,7 @@ from ..schedule import day_type, season
 from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
 from . import analytics
-from .preview import health_preview, index_preview
+from .preview import health_preview, how_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -430,6 +430,56 @@ def _live_webcam(
         "url": f"{terminal.webcam_url}{separator}t={bucket}",
         "terminal": terminal.name,
     }
+
+
+# What an extra camera is there to answer, said for a reader rather than in the config's
+# vocabulary. An unknown kind falls through as itself, which is honest and rare.
+CAMERA_KINDS = {"lanes": "lane occupancy", "queue_extent": "overflow"}
+
+
+def _terminal_capabilities(config: Config) -> list[dict]:
+    """Which sources actually speak at each terminal, for the explainer page.
+
+    Read from the running configuration rather than written into the template, because the
+    two ends of a crossing are never alike — one camera looks down a lane grid and the other
+    up an approach road — and prose that described the wrong end would be worse than none.
+    A page that says what this install can see is also the honest answer to "why is there no
+    number for Earls Cove".
+    """
+    from .. import lanes
+
+    config_dir = Path(config.source_path).parent if config.source_path else None
+    capabilities = []
+    for terminal in config.route.terminals:
+        capabilities.append(
+            {
+                "code": terminal.code,
+                "name": terminal.name,
+                "board": bool(terminal.deck_space_url),
+                "camera": terminal.configured_for_capture,
+                # Calibration is a file beside the config, not a config key: a terminal is
+                # lane-read exactly when one has been fitted for it.
+                "calibrated": bool(config_dir)
+                and lanes.load_for(config_dir, terminal.code) is not None,
+                "sees_berth": terminal.camera_sees_berth,
+                # Tracking can only name a departure for a terminal whose outbound heading
+                # is known — without it the feed cannot tell the two directions apart.
+                "tracking": bool(config.route.vessel_tracking_url and terminal.outbound_bearing),
+                "weather": terminal.configured_for_weather,
+                # A terminal can have more than one view, and the second one is often the
+                # decisive one: the marshalling camera sees the lanes, the highway camera
+                # sees the overflow that only begins once those lanes are full. Listing them
+                # is the difference between "the camera" and what is actually watching.
+                "extra_cameras": [
+                    {
+                        "name": camera.name or camera.id,
+                        "reads": CAMERA_KINDS.get(camera.kind, camera.kind),
+                    }
+                    for camera in terminal.cameras
+                ],
+            }
+        )
+    return capabilities
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
@@ -1054,6 +1104,30 @@ def create_app(config_path: str | None = None) -> FastAPI:
                     else "capture on demand"
                 ),
                 "preview": health_preview(request, config),
+            },
+        )
+
+    @app.get("/how-it-works", response_class=HTMLResponse)
+    def how_it_works(
+        request: Request,
+        config: Config = Depends(get_config),
+    ):
+        """Where the front page's answer comes from, and what it cannot say.
+
+        No database: this page describes the method, not the data. `/health` is the one that
+        reports what has actually been collected, and the two are linked to each other rather
+        than merged — "how does this work" and "is it working" are different questions and
+        the answer to one is not evidence about the other.
+        """
+        return TEMPLATES.TemplateResponse(
+            request,
+            "how.html",
+            {
+                "route": config.route,
+                "terminals": _terminal_capabilities(config),
+                "capture": config.capture,
+                "query": config.query,
+                "preview": how_preview(request, config),
             },
         )
 

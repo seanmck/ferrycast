@@ -782,3 +782,84 @@ def test_the_board_and_the_camera_share_one_denominator(client, conn, config):
     assert "2 filled and still took everyone" in body
     assert "for 1 nobody has said either way" in body
     assert "The board reported on 3 of the 4" in body
+
+
+def test_how_it_works_explains_the_method(client):
+    body = client.get("/how-it-works").text
+
+    assert "A record, not a forecast." in body
+    # The sources, named as a reader would name them rather than as table names.
+    assert "The departures board" in body
+    assert "People in the line" in body
+    # And what none of them can say, which is the reason the page exists.
+    assert "Deck space is not the queue." in body
+
+
+def test_how_it_works_quotes_this_install_s_own_thresholds(client, config):
+    """The ladder is described from the running config, so the page cannot go stale against
+    the search it is describing — this install stops at 3, not at the shipped 5."""
+    body = client.get("/how-it-works").text
+
+    assert config.query.min_sample == 3
+    assert "3 sailings to answer from" in body
+    assert f"±{config.query.time_tolerance_minutes} min" in body
+
+
+def test_how_it_works_says_which_camera_is_lane_read(conn, config):
+    """One end calibrated and one not is the normal state of a route, and the page says so
+    per terminal rather than describing "the camera" as if there were one."""
+    from .test_ondemand_lanes import _write_calibration
+
+    _write_calibration(config, "SLT")
+    app = create_app(str(config.source_path))
+    with TestClient(app) as calibrated_client:
+        body = calibrated_client.get("/how-it-works").text
+
+    assert "Saltery Bay" in body
+    assert "Earls Cove" in body
+    # Exactly one of the two terminals is uncalibrated.
+    assert body.count("not calibrated") == 1
+
+
+def test_the_index_offers_the_explainer_at_the_bottom(client):
+    body = client.get("/").text
+    assert '<a href="/how-it-works">How it works</a>' in body
+
+
+def test_the_public_pages_do_not_offer_the_pipeline_dashboard(client):
+    """Capture failures and spend against budget are the operator's business, not a
+    traveller's. `/health` still answers at its URL — it is simply not linked from the pages
+    someone reaches while looking for a ferry."""
+    for path in ["/", "/how-it-works"]:
+        assert 'href="/health"' not in client.get(path).text
+
+    assert client.get("/health").status_code == 200
+
+
+def test_how_it_works_names_a_terminal_s_second_camera(tmp_path):
+    """One terminal, two views: the marshalling camera and the highway camera that sees the
+    overflow. A page claiming to say what this install can see has to name both."""
+    from ferrycast.db import init_db
+
+    from .test_cameras import _config_with_camera
+
+    config = _config_with_camera(
+        tmp_path,
+        """
+  [[route.terminals.cameras]]
+  id = "drivebc244"
+  name = "Hwy 101 at Egmont Road"
+  kind = "queue_extent"
+  image_url = "https://example.invalid/244.jpg"
+""",
+    )
+    init_db(config.db_path).close()
+
+    app = create_app(str(config.source_path))
+    with TestClient(app) as camera_client:
+        body = camera_client.get("/how-it-works").text
+
+    assert "Hwy 101 at Egmont Road" in body
+    # Said as what it answers, not as the config's word for it.
+    assert "overflow" in body
+    assert "queue_extent" not in body

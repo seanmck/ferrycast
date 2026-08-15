@@ -1089,8 +1089,11 @@
         {{ 'its' if c.timed == 1 else 'their' }} departure timed, which says the sailing ran
         and when, but nothing about whether anyone was left behind.{% endif %}</p>
     {% else %}
-      <p class="note flag">Nothing recorded for this sailing yet. If the collector has been
-        running for more than a few days, check <a href="/health">pipeline health</a>.</p>
+      {# No pointer to /health from here either: "check the pipeline" is an instruction to
+         whoever runs this, and the person reading it is looking for a ferry. #}
+      <p class="note flag">Nothing recorded for this sailing yet — normal for a new
+        collection, and until one of these sailings has run its full course while the
+        collector was up.</p>
     {% endif %}
 
     {% if c and c.recent %}
@@ -1602,7 +1605,13 @@
   </section>
 {% endif %}
 
-<p class="note"><a href="/health">Pipeline health</a></p>
+{# The one question left once the answer is read: where did it come from. At the bottom,
+   because it is not worth a line above a sailing's own distribution.
+
+   `/health` is deliberately not linked from here. It is the operator's dashboard — capture
+   failures, spend against budget — and none of it is a traveller's business. The page still
+   answers at its URL for whoever runs the collector. #}
+<p class="note"><a href="/how-it-works">How it works</a></p>
 {% endblock %}
 
 {% block script %}
