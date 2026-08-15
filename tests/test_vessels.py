@@ -385,3 +385,103 @@ def test_the_live_wording_parses_as_stopped():
     reading = parse_tracking(stopped)[0]
     assert reading.in_port and not reading.under_way
     assert reading.speed_knots == 0.0
+
+
+# ------------------------------------------------- what the board asks: has it gone yet?
+
+
+def _watch(conn, config, day, times, now_hhmm, origin="ERL"):
+    from ferrycast.vessels import tracker_watch
+
+    return tracker_watch(
+        conn,
+        config,
+        origin=origin,
+        target_date=day,
+        times=times,
+        now=_departure(config, now_hhmm, day),
+    )
+
+
+def test_a_late_sailing_reads_as_still_here_not_as_gone(conn, config):
+    """The failure this exists to fix. At Earls Cove nothing publishes a departure, so the
+    board fell through to the clock and dimmed the 15:40 the moment 15:40 passed — while the
+    webcam beside it showed the queue still waiting for a boat that had not arrived."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    # The vessel is still crossing *towards* this terminal: moving, and moving inbound.
+    _track(conn, config, departure, [(-20, "Under Way", "E"), (-5, "Under Way", "SE"),
+                                     (10, "Under Way", "S")])
+
+    watch = _watch(conn, config, day, ["15:40"], "15:53")
+
+    assert watch.not_away == frozenset({"15:40"})
+    assert watch.departed == frozenset()
+
+
+def test_a_sailing_the_tracker_watched_leave_reads_as_gone(conn, config):
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    _track(conn, config, departure, [(-10, "Stopped", "NW"), (6, "Under Way", "W")])
+
+    watch = _watch(conn, config, day, ["15:40"], "16:10")
+
+    assert watch.departed == frozenset({"15:40"})
+    assert watch.not_away == frozenset()
+
+
+def test_a_sailing_not_yet_due_is_left_alone(conn, config):
+    """A boat that is not due has obviously not gone; the board says so with a countdown."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    _track(conn, config, departure, [(-40, "Under Way", "E")])
+
+    watch = _watch(conn, config, day, ["15:40", "18:00"], "15:20")
+
+    assert "18:00" not in watch.not_away and "18:00" not in watch.departed
+    assert "15:40" not in watch.not_away  # not due either
+
+
+def test_a_sailing_far_past_its_time_is_abstained_on(conn, config):
+    """Beyond the span a departure could still turn up in, the tracker stops claiming. Left
+    unbounded, an undetected departure would hold "not away yet" for the rest of the day and
+    tell somebody a boat they had missed was still catchable."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    _track(conn, config, departure, [(-20, "Under Way", "E")])
+
+    watch = _watch(conn, config, day, ["15:40"], "17:30")  # 110 min after schedule
+
+    assert watch.not_away == frozenset()
+    assert watch.departed == frozenset()
+
+
+def test_a_terminal_with_no_bearing_makes_no_claim(conn, config):
+    from dataclasses import replace
+
+    blind = replace(
+        config,
+        routes=tuple(
+            replace(r, terminals=tuple(replace(t, outbound_bearing="") for t in r.terminals))
+            for r in config.routes
+        ),
+    )
+    day = date(2026, 8, 14)
+    _track(conn, blind, _departure(blind, "15:40", day), [(-10, "Stopped", "NW")])
+
+    watch = _watch(conn, blind, day, ["15:40"], "15:53")
+
+    assert watch.not_away == frozenset() and watch.observed_at is None
+
+
+def test_a_silent_tracker_is_not_fresh(conn, config):
+    from datetime import timedelta as td
+
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    _track(conn, config, departure, [(-20, "Under Way", "E")])
+
+    watch = _watch(conn, config, day, ["15:40"], "15:53")
+    now = _departure(config, "15:53", day)
+    assert watch.is_fresh(now, td(minutes=40))
+    assert not watch.is_fresh(now + td(hours=2), td(minutes=40))
