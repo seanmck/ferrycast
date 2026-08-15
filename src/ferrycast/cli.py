@@ -599,9 +599,7 @@ def cmd_lanes(args) -> int:
 def cmd_backgrounds(args) -> int:
     """Rebuild the per-hour references every geometric reader differences against."""
     from .config import MAIN_CAMERA
-    from .extent import load_for as load_extent
-    from .lanes import build_backgrounds
-    from .lanes import load_for as load_lanes
+    from .lanes import build_backgrounds, cameras_with_calibration
 
     config = _config(args)
     conn = _open(config)
@@ -609,28 +607,21 @@ def cmd_backgrounds(args) -> int:
     for terminal in config.route.terminals:
         if args.terminal and terminal.code != args.terminal:
             continue
-        # Every camera at the terminal that has a calibration to be read against. A camera
-        # with none is skipped rather than given a reference nothing will ever use.
-        targets: list[tuple[str, object]] = [
-            (MAIN_CAMERA, load_lanes(config_dir, terminal.code))
-        ]
-        for camera in terminal.cameras:
-            if args.camera and camera.id != args.camera:
-                continue
-            loader = load_extent if camera.kind == "queue_extent" else load_lanes
-            targets.append((camera.id, loader(config_dir, terminal.code, camera.id)))
+        # Shared with the scheduler, which is what actually runs in production. Duplicating
+        # the "which cameras count" rule here is how the two came to disagree.
+        cameras = cameras_with_calibration(config_dir, terminal)
         if args.camera:
-            targets = [t for t in targets if t[0] == args.camera]
+            cameras = [c for c in cameras if c == args.camera]
+        if not cameras:
+            print(f"skip  {terminal.code}: no calibrated camera")
+            continue
 
-        for camera_id, calibration in targets:
+        for camera_id in cameras:
             label = (
                 terminal.code
                 if camera_id == MAIN_CAMERA
                 else f"{terminal.code}/{camera_id}"
             )
-            if calibration is None:
-                print(f"skip  {label}: no calibration")
-                continue
             stats = build_backgrounds(
                 conn, config, terminal.code, camera=camera_id, days=args.days
             )

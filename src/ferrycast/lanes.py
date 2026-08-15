@@ -305,6 +305,27 @@ def load_for(
     return LaneCalibration.load(path) if path.exists() else None
 
 
+def cameras_with_calibration(config_dir: str | Path, terminal) -> list[str]:
+    """Which of a terminal's cameras have a calibration to be read against.
+
+    The gate on building a reference: a camera without a calibration gets no background,
+    because the reference would be built, stored, and never differenced against anything.
+    Kept here rather than at each call site so the scheduler and the CLI cannot drift into
+    disagreeing about which cameras exist — they did, and the one running in production was
+    the one that had never heard of the second camera.
+    """
+    from .extent import load_for as load_extent
+
+    found = []
+    if load_for(config_dir, terminal.code) is not None:
+        found.append(MAIN_CAMERA)
+    for camera in terminal.cameras:
+        loader = load_extent if camera.kind == "queue_extent" else load_for
+        if loader(config_dir, terminal.code, camera.id) is not None:
+            found.append(camera.id)
+    return found
+
+
 PROMPT_VERSION = "geom-v1"
 MODEL = "lane-geometry"
 

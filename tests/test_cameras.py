@@ -10,7 +10,9 @@ paid model to answer a question about a compound that is not in the picture.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +20,8 @@ from ferrycast.config import MAIN_CAMERA, ConfigError, load_config
 from ferrycast.db import SCHEMA_VERSION, init_db, schema_version
 
 from .conftest import CONFIG_TEMPLATE, SCHEDULE_TEMPLATE
+
+REPO = Path(__file__).resolve().parents[1]
 
 # The shape `frames` had at v9, before cameras were nameable.
 FRAMES_V9 = """
@@ -227,6 +231,55 @@ def _when():
     from ferrycast.timeutil import UTC
 
     return datetime(2026, 8, 14, 21, 0, tzinfo=UTC)
+
+
+def test_an_extra_cameras_reference_is_built_by_the_job_that_actually_runs(config, tmp_path):
+    """The scheduler builds backgrounds in production, not the CLI. Written separately, the
+    two disagreed about which cameras exist — and the one that ran was the one that had
+    never heard of the second camera, so its reader would have had nothing to difference
+    against however well the frames were collected."""
+    from dataclasses import replace
+
+    from ferrycast.config import MAIN_CAMERA, Camera
+    from ferrycast.lanes import cameras_with_calibration
+
+    config_dir = tmp_path / "calibration"
+    config_dir.mkdir()
+    (config_dir / "ERL.json").write_text(
+        json.dumps({"terminal": "ERL", "kind": "lanes", "image_size": [320, 240],
+                    "lane_spans": {}, "vanishing_point": [0, 0], "y_ref": 1.0,
+                    "mobius": [1, 0, 0]}),
+        encoding="utf-8",
+    )
+    (config_dir / "ERL_drivebc244.json").write_text(
+        (REPO / "config" / "calibration" / "ERL_drivebc244.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    terminal = replace(
+        config.route.terminal("ERL"),
+        cameras=(Camera(id="drivebc244", kind="queue_extent",
+                        image_url="https://example.invalid/244.jpg"),),
+    )
+
+    found = cameras_with_calibration(tmp_path, terminal)
+
+    assert found == [MAIN_CAMERA, "drivebc244"]
+
+
+def test_a_camera_without_a_calibration_gets_no_reference(config, tmp_path):
+    """The reference would be built, stored, and never differenced against anything."""
+    from dataclasses import replace
+
+    from ferrycast.config import Camera
+    from ferrycast.lanes import cameras_with_calibration
+
+    (tmp_path / "calibration").mkdir()
+    terminal = replace(
+        config.route.terminal("ERL"),
+        cameras=(Camera(id="nocal", kind="queue_extent",
+                        image_url="https://example.invalid/x.jpg"),),
+    )
+    assert cameras_with_calibration(tmp_path, terminal) == []
 
 
 def test_frames_from_different_cameras_do_not_share_a_path(config):
