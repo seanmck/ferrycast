@@ -9,10 +9,17 @@ Nothing in the app reads this file. Everything it serves is cut from it by
 | File | What it is | Where it is used |
 |------|------------|------------------|
 | `mark.png` | the roundel alone, 128 px, transparent | the masthead, on every page |
-| `logo.png` | the full lockup, 640 px wide, transparent | the project README |
+| `logo.png` | the full lockup, 640 px wide, transparent | anywhere the ground is light — including the README on GitHub's light theme |
 | `og.png` | the lockup on cream, 1200×630 | link previews (`og:image`) |
 | `apple-touch-icon.png` | the roundel on cream, 180 px | iOS home screen |
 | `favicon.ico` | the roundel at 16/32/48 | browser tabs |
+
+One more is written beside the master rather than into `web/static/`, because the app never
+serves it and it has no business in the wheel:
+
+| File | What it is | Where it is used |
+|------|------------|------------------|
+| `logo-readme.png` | the lockup on cream, 756 px wide | the top of the project README, **on dark themes only** |
 
 ```bash
 pip install pillow      # already a dependency of the app itself
@@ -31,6 +38,28 @@ otherwise the mark carries a pale halo everywhere the page is dark.
 mid-blue, both of which disappear against the hull navy of the app's dark side. The roundel
 alone survives either ground — the clock face is opaque white and carries it — which is why
 the masthead uses the mark and not the lockup.
+
+That rule is why `logo-readme.png` exists, and why the README serves **two** files rather
+than one:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/logo-readme.png">
+  <img src="src/ferrycast/web/static/brand/logo.png" alt="FerryCast" width="320">
+</picture>
+```
+
+GitHub renders a README on whichever ground the reader has chosen, and strips `style`
+attributes out of the HTML in it — so a transparent lockup cannot be given a ground in
+markup, only in the file. But a cream plate is only *right* on the dark side. On GitHub's
+light canvas, which is pure white, it reads as an unintentional box, and badly: the clock
+face is near-white, so the plate lands as white inside cream inside white. The transparent
+lockup is what belongs there, and `<picture>` is what lets each ground have the file it
+wants.
+
+The plain `<img>` is the light one deliberately. It is the fallback anywhere `<picture>`
+or `prefers-color-scheme` is not honoured — npm, editors, plain markdown renderers — and
+those default to a light ground, so the transparent lockup is the safe thing to land on.
 
 `og.png` is the card a chat client shows when a FerryCast link is pasted, and it is the
 lockup and nothing else. The preview is deliberately generic — the same card and the same
