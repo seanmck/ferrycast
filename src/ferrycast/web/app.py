@@ -54,6 +54,7 @@ from ..reports import (
 from ..schedule import day_type, season
 from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
+from ..vessels import TrackerWatch, tracker_watch
 from . import analytics
 from .preview import health_preview, how_preview, index_preview
 
@@ -212,6 +213,40 @@ def _watch_window(config: Config) -> timedelta:
     return timedelta(minutes=2 * config.capture.interval_minutes)
 
 
+def _tracker_window(config: Config) -> timedelta:
+    """How stale the vessel feed may be and still be worth believing.
+
+    Wider than the board's window because the feed publishes on its own schedule, not ours:
+    measured over a day of live readings the gap between consecutive ones ran a median of 5
+    minutes, a 90th percentile of 9, and a longest of 35. A window inside that would flap to
+    "gone" during an ordinary quiet stretch, which is the wrong error — so it sits above the
+    longest gap seen, and the `not_away` span bounds the damage if the feed dies outright.
+    """
+    return timedelta(minutes=40)
+
+
+def _tracker_for(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    service_date: date,
+    now: datetime,
+    times: list[str],
+) -> TrackerWatch | None:
+    """What the vessel tracker says about today, or None when it cannot be believed.
+
+    Same shape and the same reason as `_watch_for`: only today, and a stale feed is
+    discarded rather than used.
+    """
+    if service_date != now.date():
+        return None
+    watch = tracker_watch(
+        conn, config, origin=origin, target_date=service_date, times=times, now=now
+    )
+    return watch if watch.is_fresh(now, _tracker_window(config)) else None
+
+
 def _watch_for(
     conn: sqlite3.Connection,
     config: Config,
@@ -235,20 +270,33 @@ def _watch_for(
     return watch if watch.is_fresh(now, _watch_window(config)) else None
 
 
-def _has_sailed(watch: BoardWatch | None, depart_hhmm: str) -> bool:
+def _has_sailed(
+    watch: BoardWatch | None,
+    depart_hhmm: str,
+    tracker: TrackerWatch | None = None,
+) -> bool:
     """Whether the vessel has actually gone, as opposed to merely being due.
 
-    With no live reading at all — a past date, a terminal with no conditions page, a scraper
-    that has fallen over — this is the clock's call again, and the caller has already made
-    it. Where there *is* a reading, only two things count as gone: a published departure
-    time, or the sailing having dropped off the board entirely, which is how a departure
-    that was never published finally settles.
+    Where the published board speaks it decides, because it reports the departure to the
+    minute. Where it does not, the vessel tracker does — and at Earls Cove, which has no
+    conditions page at all, that is the only thing that can. Falling straight through to the
+    clock there marked every sailing gone the instant its scheduled time passed, so a boat
+    running forty minutes late showed as departed while the webcam beside it showed the
+    queue still waiting for it.
+
+    With neither source able to answer, this is the clock's call again and the caller has
+    already made it. That default is deliberate rather than incidental: the tracker only
+    contradicts the clock on a positive finding, so a dead feed or a sailing too far past
+    its time reverts to "gone" instead of telling somebody a boat they have missed is still
+    there.
     """
-    if watch is None:
-        return True
-    if depart_hhmm in watch.departures:
-        return True
-    return depart_hhmm not in watch.listed
+    if watch is not None:
+        if depart_hhmm in watch.departures:
+            return True
+        return depart_hhmm not in watch.listed
+    if tracker is not None and depart_hhmm in tracker.not_away:
+        return False
+    return True
 
 
 def _board(
@@ -282,6 +330,20 @@ def _board(
     worst = _worst_of_day(rows)
     last_hhmm = rows[-1].depart_hhmm
     watch = _watch_for(conn, config, origin=origin, service_date=service_date, now=now)
+    # The tracker only gets a say where the board has none, but where it does have a say it
+    # is the only thing standing between a late boat and a row that claims it has gone.
+    tracker = (
+        None
+        if watch is not None
+        else _tracker_for(
+            conn,
+            config,
+            origin=origin,
+            service_date=service_date,
+            now=now,
+            times=[r.depart_hhmm for r in rows],
+        )
+    )
 
     board = []
     for row in rows:
@@ -291,7 +353,7 @@ def _board(
         # clock's to answer. Whether the vessel has actually gone is a fact about the
         # water, and only BC Ferries' board knows it.
         past = scheduled <= now
-        sailed = past and _has_sailed(watch, row.depart_hhmm)
+        sailed = past and _has_sailed(watch, row.depart_hhmm, tracker)
         # Only today has a next departure worth counting down to. On any other date the
         # countdown is a number of hours nobody is acting on.
         is_next = bool(

@@ -34,12 +34,12 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from .config import Config
 from .db import JobRun
 from .fetching import fetch
-from .timeutil import combine_local, iso, local, now_utc, parse_iso
+from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
 #: Status words meaning the vessel is not moving. Route 1 says `In Port`; route 29 — this
 #: route — says `Stopped`, which is what made the first live version derive no departure at
@@ -325,6 +325,16 @@ def departure_from_tracking(
             ORDER BY reported_at""",
         (config.route.id, iso(departure - grace), iso(departure + LATE_TOLERANCE)),
     ).fetchall()
+    return _departure_from_rows(rows, bearing=bearing)
+
+
+def _departure_from_rows(rows, *, bearing: str) -> datetime | None:
+    """The rule itself, over readings already narrowed to one sailing's window.
+
+    Split out so the day board can ask about ten sailings from a single read of the table
+    without the rule living in two places — the board and the record disagreeing about
+    whether a sailing has gone would be worse than either being wrong alone.
+    """
     if not rows:
         return None
 
@@ -343,3 +353,83 @@ def departure_from_tracking(
     if not committed or not committed[0]:
         return None
     return parse_iso(after[0]["reported_at"])
+
+
+@dataclass(frozen=True)
+class TrackerWatch:
+    """What the vessel tracker can say about today's sailings from one terminal.
+
+    Deliberately three-valued, like the board's own watch. `departed` and `not_away` are
+    both positive findings; a sailing in neither is one the tracker declines to speak about,
+    and the caller falls back to whatever it would have done without a tracker.
+
+    That abstention is the important part. A sailing far enough past its time is beyond what
+    a departure window can reason about, and a tracker that has stopped publishing knows
+    nothing at all — in both cases claiming "not away yet" would tell somebody a boat they
+    have missed is still catchable, which is the direction this project is not allowed to be
+    wrong in.
+    """
+
+    departed: frozenset[str] = frozenset()
+    not_away: frozenset[str] = frozenset()
+    observed_at: datetime | None = None
+
+    def is_fresh(self, now: datetime, within: timedelta) -> bool:
+        return self.observed_at is not None and now - self.observed_at <= within
+
+
+def tracker_watch(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    times: list[str],
+    now: datetime,
+    grace: timedelta = timedelta(minutes=20),
+    route_id: str | None = None,
+) -> TrackerWatch:
+    """Which of today's sailings the tracker has watched leave, and which are still here.
+
+    One read of the table answers the whole timetable. Only sailings whose time has already
+    come are considered — a boat that is not due has obviously not gone, and the board says
+    so with a countdown rather than with this.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    bearing = route.terminal(origin).outbound_bearing
+    if not bearing or not times:
+        return TrackerWatch()
+
+    scheduled = {
+        hhmm: combine_local(target_date, parse_hhmm(hhmm), config.tz) for hhmm in times
+    }
+    first = min(scheduled.values()) - grace
+    rows = conn.execute(
+        """SELECT status, heading, speed_knots, reported_at FROM vessel_positions
+            WHERE route = ? AND fetch_status = 'ok' AND reported_at IS NOT NULL
+              AND reported_at >= ? AND reported_at <= ?
+            ORDER BY reported_at""",
+        (route.id, iso(first), iso(now)),
+    ).fetchall()
+    if not rows:
+        return TrackerWatch()
+
+    stamps = [parse_iso(row["reported_at"]) for row in rows]
+    departed: set[str] = set()
+    not_away: set[str] = set()
+    for hhmm, when in scheduled.items():
+        if when > now:
+            continue
+        window = [
+            row
+            for row, at in zip(rows, stamps, strict=True)
+            if when - grace <= at <= when + LATE_TOLERANCE
+        ]
+        left = _departure_from_rows(window, bearing=bearing)
+        if left is not None and left <= now:
+            departed.add(hhmm)
+        elif now <= when + LATE_TOLERANCE:
+            # Still inside the span a departure could turn up in, and none has. That is a
+            # positive finding: the boat is late, not missed.
+            not_away.add(hhmm)
+    return TrackerWatch(frozenset(departed), frozenset(not_away), stamps[-1])

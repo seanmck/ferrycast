@@ -424,3 +424,80 @@ def test_the_health_page_has_no_board(client):
     body = client.get("/health").text
     assert "board-row" not in body
     assert "chrome-dir" not in body
+
+
+# ---- ...and where nothing publishes a board at all ---------------------------------------
+#
+# Earls Cove has no conditions page, so the tests above have nothing to work with there and
+# the board fell straight through to the clock: every sailing dimmed the minute its time
+# passed. On a peak Saturday that is exactly wrong — the boat runs late, the compound fills,
+# and the row says the sailing everyone is queueing for has already gone. The vessel tracker
+# is the only thing that knows, so these are about believing it too.
+
+
+@pytest.fixture
+def just_after_the_0930(monkeypatch):
+    """Fri 14 Aug 2026, 09:50 — the Earls Cove 09:30 is twenty minutes overdue."""
+    when = datetime(2026, 8, 14, 16, 50, tzinfo=UTC)
+    monkeypatch.setattr("ferrycast.web.app.now_utc", lambda: when)
+    monkeypatch.setattr("ferrycast.query.now_utc", lambda: when)
+
+
+def seed_tracking(conn, config, entries, *, day="2026-08-14"):
+    """Readings as (local HH:MM, status, heading)."""
+    from ferrycast.timeutil import combine_local, iso, parse_hhmm
+
+    for hhmm, status, heading in entries:
+        moment = combine_local(date.fromisoformat(day), parse_hhmm(hhmm), config.tz)
+        conn.execute(
+            """INSERT INTO vessel_positions
+                   (route, vessel, status, heading, speed_knots, reported_at, observed_at,
+                    fetch_status)
+               VALUES (?, 'Malaspina Sky', ?, ?, ?, ?, ?, 'ok')""",
+            (
+                config.route.id,
+                status,
+                heading,
+                0.0 if status == "Stopped" else 14.0,
+                iso(moment),
+                iso(moment),
+            ),
+        )
+    conn.commit()
+
+
+def test_a_late_earls_cove_sailing_is_not_called_sailed(client, conn, config, just_after_the_0930):
+    """09:50, and the 09:30 is scheduled away. The tracker has the vessel still crossing
+    towards Earls Cove, so it has not gone — and the queue on the webcam is waiting for it."""
+    seed_tracking(conn, config, [("09:35", "Under Way", "E"), ("09:47", "Under Way", "SE")])
+
+    body = client.get("/?origin=ERL&service_date=2026-08-14").text
+
+    assert "not away yet" in body
+
+
+def test_an_earls_cove_sailing_the_tracker_watched_leave_has_gone(
+    client, conn, config, just_after_the_0930
+):
+    seed_tracking(conn, config, [("09:25", "Stopped", "NW"), ("09:38", "Under Way", "W")])
+
+    body = client.get("/?origin=ERL&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+
+
+def test_a_silent_tracker_leaves_the_clock_in_charge(client, conn, config, just_after_the_0930):
+    """A feed that stopped publishing at 07:00 knows nothing about 09:50. Believing it would
+    hold the sailing at "not away yet" — telling somebody a boat they have missed is still
+    there, which is the one direction this app may not be wrong in."""
+    seed_tracking(conn, config, [("07:00", "Under Way", "E")])
+
+    body = client.get("/?origin=ERL&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+
+
+def test_with_no_tracking_at_all_nothing_changes(client, conn, config, just_after_the_0930):
+    body = client.get("/?origin=ERL&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
