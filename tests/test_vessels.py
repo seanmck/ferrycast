@@ -525,6 +525,37 @@ def test_a_sailing_the_tracker_watched_leave_reads_as_gone(conn, config):
     assert watch.not_away == frozenset()
 
 
+def test_a_sailing_stays_gone_once_the_vessel_berths_at_the_other_end(conn, config):
+    """The live half of the same bug, and the worse half: not a blank cell but a wrong answer.
+
+    An hour after the 15:40 leaves, the vessel is tied up at Saltery Bay — and that berthing
+    is the last stop inside the sailing's window, with nothing moving after it. Anchored
+    there the tracker found no departure, and a sailing still inside `LATE_TOLERANCE` with no
+    departure is a positive `not_away`. So the board told travellers a boat already berthed
+    across the strait had not gone yet, which is the one direction `TrackerWatch` is
+    three-valued to avoid being wrong in.
+    """
+    day = date(2026, 8, 14)
+    departure = _departure(config, "15:40", day)
+    _track(
+        conn,
+        config,
+        departure,
+        [
+            (-10, "Stopped", "NW"),   # berthed at Earls Cove
+            (5, "Under Way", "W"),    # away
+            (30, "Under Way", "W"),
+            (55, "Stopped", "E"),     # tied up at Saltery Bay, and still inside the window
+            (60, "Stopped", "E"),
+        ],
+    )
+
+    watch = _watch(conn, config, day, ["15:40"], "16:40")
+
+    assert watch.departed == frozenset({"15:40"})
+    assert watch.not_away == frozenset()
+
+
 def test_a_sailing_not_yet_due_is_left_alone(conn, config):
     """A boat that is not due has obviously not gone; the board says so with a countdown."""
     day = date(2026, 8, 14)
