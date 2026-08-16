@@ -918,18 +918,39 @@ def _extent_frames(conn, config, departure, readings, *, terminal="ERL"):
 
 
 def _tracked_departure(conn, config, departure):
-    """The vessel tracker seeing the sailing go — Earls Cove's only departure source."""
+    """The vessel tracker seeing the sailing go — Earls Cove's only departure source.
+
+    The alternation ledger names a transition's end from a published anchor, so a lone
+    stopped-then-moving is not enough: lay down the shuttle whole. Saltery Bay's 12:30
+    goes at 12:34 and the board publishes it; the crossing that follows is therefore
+    Earls Cove's, five minutes after this sailing's scheduled time.
+    """
+    from ferrycast.timeutil import combine_local, parse_hhmm
     from ferrycast.vessels import VesselReading, store_readings
 
-    for offset, status, heading in [
-        (-10, "In Port", "S"), (5, "Under Way", "W"), (25, "Under Way", "NW"),
-    ]:
-        moment = departure + timedelta(minutes=offset)
+    day = departure.astimezone(config.tz).date()
+
+    def emit(moment, status):
         store_readings(
             conn, config, moment,
-            [VesselReading("Malaspina Sky", status, heading,
+            [VesselReading("Malaspina Sky", status, "",
                            moment.astimezone(config.tz).strftime("%H:%M"))],
         )
+
+    slt_left = combine_local(day, parse_hhmm("12:34"), config.tz)
+    erl_left = departure + timedelta(minutes=5)
+    for left in (slt_left, erl_left):
+        emit(left - timedelta(minutes=10), "In Port")
+        emit(left, "Under Way")
+        emit(left + timedelta(minutes=15), "Under Way")
+        emit(left + timedelta(minutes=48), "In Port")
+    conn.execute(
+        """INSERT OR IGNORE INTO deck_space (route, terminal, observed_at, service_date,
+               sailing_hhmm, departed_hhmm, fetch_status)
+           VALUES (?, 'SLT', ?, ?, '12:30', '12:34', 'ok')""",
+        (config.route.id, iso(slt_left), day.isoformat()),
+    )
+    conn.commit()
 
 
 def _erl_record(conn, hhmm="13:30"):

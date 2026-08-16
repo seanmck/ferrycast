@@ -659,6 +659,11 @@ def test_a_sailing_stays_gone_once_the_vessel_berths_at_the_other_end(conn, conf
     three-valued to avoid being wrong in.
     """
     day = date(2026, 8, 14)
+    # The ledger names departures by alternation from a published anchor; without one the
+    # 15:45 transition belongs to no end and the watch rightly claims nothing. This test
+    # is about the berthing, not about anchorless days, so give the day its ordinary
+    # anchor — production gets eight a day.
+    _anchor(conn, config, "14:34", "14:30", day)
     departure = _departure(config, "15:40", day)
     _track(
         conn,
