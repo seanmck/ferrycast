@@ -948,7 +948,7 @@ def test_a_highway_overflow_with_a_tracked_departure_reads_filled(conn, config):
     day = date(2026, 8, 14)
     departure = _departure(config, day, "13:30")
     _extent_frames(conn, config, departure,
-                   [(-30, "heavy"), (-10, "overflowing"), (20, "heavy")])
+                   [(-30, "heavy"), (-10, "heavy"), (20, "heavy")])
     _tracked_departure(conn, config, departure)
 
     aggregate_day(conn, config, day)
@@ -957,7 +957,7 @@ def test_a_highway_overflow_with_a_tracked_departure_reads_filled(conn, config):
     assert row["outcome"] == "filled"
     assert row["filled"] == 1
     assert row["left_behind"] == 1
-    assert row["peak_fullness"] == "overflowing"
+    assert row["peak_fullness"] == "heavy"
     assert row["method"] == "frames:extent-v1"
 
 
@@ -992,3 +992,98 @@ def test_the_compound_and_highway_cameras_witness_one_sailing_together(conn, con
 
     assert row["outcome"] == "filled"
     assert row["method"] == "frames:extent-v1+geom-v1"
+
+
+# --- the licensed clear: fitted lanes known to sit short of the capacity line ------------
+
+
+def _declare_erl_capacity_geometry(config):
+    """Install a lane calibration stating the fitted lanes sit short of the one-vessel
+    line — the fact that turns a clear reading from silence into a claim."""
+    import json
+    from pathlib import Path
+
+    cal_dir = Path(config.source_path).parent / "calibration"
+    cal_dir.mkdir(exist_ok=True)
+    (cal_dir / "ERL.json").write_text(
+        json.dumps({
+            "terminal": "ERL", "kind": "lanes", "image_size": [320, 240],
+            "lane_spans": {"4": [], "5": []}, "vanishing_point": [0, 0], "y_ref": 1.0,
+            "mobius": [1, 0, 0], "covers_compound": False, "lanes_before_capacity": True,
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_clear_fitted_lanes_at_a_tracked_departure_read_boarded(conn, config):
+    """The payoff of the licensed clear: a quiet sailing finally classifies. The queue
+    never reached the fitted lanes, the tracker saw the vessel go — everyone standing fit
+    on the boat, and the record can finally say so instead of `unknown`."""
+    _declare_erl_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _geom_frames(conn, config, departure,
+                 [(-30, 0, "empty"), (-10, 0, "empty"), (20, 0, "empty")], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "boarded"
+    assert row["left_behind"] == 0
+    assert row["method"] == "frames:geom-v1"
+
+
+def test_a_queue_standing_through_the_going_is_an_overload(conn, config):
+    """Vehicles visible in the fitted lanes immediately after departure suggest overflow
+    (maintainer, 2026-08-16) — they were the tail of the queue the vessel left behind."""
+    _declare_erl_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _geom_frames(conn, config, departure,
+                 [(-30, 1, "heavy"), (-5, 2, "heavy"), (20, 1, "heavy")], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "filled"
+    assert row["filled"] == 1
+    assert row["left_behind"] == 1
+
+
+def test_a_queue_that_cleared_before_the_going_belongs_to_the_next_sailing(conn, config):
+    """The whose-queue guard, one terminal over. The fitted lanes drained while the vessel
+    loaded, so whatever stands in them after departure is the next sailing's queue forming
+    — the same false overload `empty_when_it_left` already stops at Saltery Bay, and the
+    licensed clear is what makes the drain visible at Earls Cove at all."""
+    _declare_erl_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _geom_frames(conn, config, departure,
+                 [(-30, 2, "heavy"), (-5, 0, "empty"), (25, 2, "heavy")], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "boarded"
+    assert row["left_behind"] == 0
+
+
+def test_clear_lanes_without_a_seen_departure_stay_unknown(conn, config):
+    """Where "empty" is bare tarmac, a cleared compound alone proves the sailing ran. A
+    licensed clear proves no such thing: five cars can wait all evening below the fitted
+    lanes for a boat that never came, reading "empty" the whole time. Without something
+    that saw the sailing go, the claim must stay unmade."""
+    _declare_erl_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _geom_frames(conn, config, departure,
+                 [(-30, 0, "empty"), (-10, 0, "empty"), (20, 0, "empty")], terminal="ERL")
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "unknown"
+    assert row["left_behind"] is None

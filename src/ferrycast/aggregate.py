@@ -31,12 +31,14 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from .config import Config
 from .db import JobRun
 from .deckspace import notice_says_full, status_says_departed
 from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
 from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
+from .lanes import load_for as load_lane_calibration
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
 from .timeutil import iso, local, now_utc, parse_iso
@@ -467,6 +469,7 @@ def classify_from_bands(
     still_at_dock: bool = False,
     berth_visible: bool = False,
     empty_when_it_left: bool = False,
+    clear_requires_departure: bool = False,
 ) -> tuple[str, bool, bool, int | None]:
     """Return (outcome, overload, cancelled, carryover) from fullness bands alone.
 
@@ -497,6 +500,16 @@ def classify_from_bands(
         return "unknown", False, False, None
 
     if residual_fullness == "empty":
+        # Where "empty" is bare tarmac, a cleared compound alone proves the sailing ran —
+        # nothing else carries a queue away. Where it is a licensed inference ("the queue
+        # never reached the fitted lanes", Earls Cove), it proves no such thing: five cars
+        # can stand all evening below the fitted lanes waiting for a boat that never came,
+        # and reading their invisible patience as `boarded` is the false all-clear again,
+        # one level up. So a licensed clear also needs something to have seen the sailing
+        # go — in practice the vessel tracker, which covers exactly the terminal that
+        # needs this.
+        if clear_requires_departure and not departure_seen:
+            return "unknown", False, False, None
         return "boarded", False, False, 0
 
     if not departure_seen:
@@ -710,6 +723,21 @@ def compute_record(
         bool(banded_before_settle) and banded_before_settle[-1].fullness == "empty"
     )
 
+    # Whether this terminal's "empty" band is bare tarmac or a licensed inference. The
+    # reader owns that distinction through its calibration (`lanes_before_capacity`), so
+    # ask the same file it read — keeping the rule in one place, where drift cannot put
+    # the classifier and the reader on different sides of it.
+    lane_cal = (
+        load_lane_calibration(Path(config.source_path).parent, sailing_row["origin"])
+        if config.source_path
+        else None
+    )
+    clear_is_inference = (
+        lane_cal is not None
+        and not lane_cal.covers_compound
+        and lane_cal.lanes_before_capacity
+    )
+
     # Bands are preferred where they exist. A count is the older contract and the weaker
     # measurement — it survives only so that frames read under prompt v1 keep their meaning.
     if banded_before or banded_after:
@@ -720,6 +748,7 @@ def compute_record(
             still_at_dock=still_at_dock,
             berth_visible=berth_visible,
             empty_when_it_left=empty_when_it_left,
+            clear_requires_departure=clear_is_inference,
         )
         used = banded_before + banded_after
     else:
