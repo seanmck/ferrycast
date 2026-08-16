@@ -8,9 +8,16 @@
 
 {# The roundel does all the icon duty. .ico for tabs (three sizes in the one file, which is
    still the only format every desktop browser agrees on), a cream-backed PNG for iOS —
-   which composites its own ground behind a transparent icon and would otherwise pick it. #}
+   which composites its own ground behind a transparent icon and would otherwise pick it.
+
+   The manifest is what the "Add to Home Screen" sheet reads: the apple-touch-icon alone
+   covers the old bookmark, but the install flow behind "Open as Web App" wants a manifest,
+   and without one it names the app from <title> and draws its own lettered tile. The
+   apple-touch-icon stays for the iOS versions that predate that flow. #}
 <link rel="icon" href="/static/brand/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="FerryCast">
 <meta name="theme-color" content="#F4EFE4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0B1A22" media="(prefers-color-scheme: dark)">
 

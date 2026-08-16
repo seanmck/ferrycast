@@ -946,3 +946,69 @@ def test_how_it_works_names_a_terminal_s_second_camera(tmp_path):
     # Said as what it answers, not as the config's word for it.
     assert "overflow" in body
     assert "queue_extent" not in body
+
+
+# ---- Add to Home Screen -----------------------------------------------------------------
+#
+# The install sheet is a different reader from the page: it takes the name, the icon and the
+# URL from the manifest, and with no manifest it guesses all three — the document title as the
+# app name, and a tile with the first letter of it in place of the roundel. These read what is
+# actually served, because the failure that matters is a file the install flow cannot fetch.
+
+
+def test_manifest_is_served_as_a_manifest(client):
+    """A manifest served as application/json is ignored, and the install flow silently falls
+    back to guessing — the same outcome as shipping no manifest at all."""
+    response = client.get("/manifest.webmanifest")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/manifest+json")
+
+
+def test_the_page_points_at_the_manifest(client):
+    assert '<link rel="manifest" href="/manifest.webmanifest">' in client.get("/").text
+
+
+def test_installed_app_opens_the_bare_page(client):
+    """Share is tapped from whatever sailing the visitor was reading. Without start_url the
+    installed icon would pin that query string and open one past Friday for ever."""
+    # Fetched from a sailing URL, exactly as the install sheet does.
+    manifest = client.get(
+        "/manifest.webmanifest", headers={"Referer": "/?origin=SLT&time=12:30"}
+    ).json()
+
+    assert manifest["start_url"] == "/"
+    assert manifest["scope"] == "/"
+    assert manifest["display"] == "standalone"
+
+
+def test_home_screen_name_is_short_enough_to_read(client):
+    """The full name carries the route; a home screen truncates at about a dozen characters,
+    so the short name has to stand alone."""
+    manifest = client.get("/manifest.webmanifest").json()
+
+    assert manifest["short_name"] == "FerryCast"
+    assert manifest["name"] == "FerryCast — Saltery Bay - Earls Cove"
+
+
+def test_every_declared_icon_is_actually_served(client):
+    """The container installs the package rather than copying src/, so an icon missing from
+    package-data is a 404 in production and a lettered tile on the home screen."""
+    manifest = client.get("/manifest.webmanifest").json()
+
+    sizes = {icon["sizes"] for icon in manifest["icons"]}
+    assert {"192x192", "512x512"} <= sizes
+    assert any(icon["purpose"] == "maskable" for icon in manifest["icons"])
+
+    for icon in manifest["icons"]:
+        served = client.get(icon["src"])
+        assert served.status_code == 200, f"{icon['src']} is not served"
+        assert served.headers["content-type"] == "image/png"
+
+
+def test_apple_touch_icon_survives_alongside_the_manifest(client):
+    """iOS versions that predate the web app install flow read only this one."""
+    html = client.get("/").text
+
+    assert '<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">' in html
+    assert client.get("/static/brand/apple-touch-icon.png").status_code == 200

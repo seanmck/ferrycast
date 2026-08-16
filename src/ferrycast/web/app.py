@@ -17,7 +17,13 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Form, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.gzip import GZipMiddleware
@@ -56,6 +62,7 @@ from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
 from ..vessels import TrackerWatch, tracker_watch
 from . import analytics
+from .manifest import manifest as web_manifest
 from .preview import health_preview, how_preview, index_preview
 
 STATIC = Path(__file__).parent / "static"
@@ -1377,6 +1384,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
     def favicon():
         """Crawlers and older browsers ask for this path regardless of the <link> tag."""
         return FileResponse(STATIC / "brand" / "favicon.ico", media_type="image/x-icon")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def webmanifest(config: Config = Depends(get_config)):
+        """What "Add to Home Screen" reads — see web/manifest.py.
+
+        The media type is not decoration: a manifest served as application/json is ignored by
+        the install flow, which then falls back to guessing a name and drawing its own icon.
+        """
+        return JSONResponse(web_manifest(config), media_type="application/manifest+json")
 
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():
