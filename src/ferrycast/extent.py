@@ -9,9 +9,10 @@ Highway 101, and a highway camera 0.7-0.9 km down the road sees it coming.
 
 That inverts the usual reading. A queue standing on the highway is not a measure of how busy
 the terminal is; it is proof the terminal has already run out of room, because cars only
-spill onto the road once the lanes are full. So this module measures one number — how far
-past the camera the tail has reached — and compares it against the distance at which the
-queue equals a sailing's worth of vehicles.
+spill onto the road once the lanes are full. Full is still not *over*: the maintainer's own
+count (2026-08-16) is that the first ten to fifteen vehicles visible here usually make the
+sailing anyway, so how far a pre-departure queue reaches decides nothing — the claim this
+camera can settle is a tail still standing after the vessel has gone.
 
 Three things follow from the geometry rather than from any judgement about the scene:
 
@@ -23,9 +24,11 @@ Three things follow from the geometry rather than from any judgement about the s
   pavement here means the queue has not overflowed, which is consistent with a compound
   anywhere from bare to brim-full. `fullness` is therefore left unknown, never "empty" — a
   false all-clear is the worst answer this project can give.
-* **It saturates before it runs out of road.** The visible stretch holds only about ten
-  vehicles, slightly short of the capacity line. Once the tail leaves the top of frame the
-  honest answer is a bound ("at least this many"), not a number, and `read_frame` says so.
+* **It saturates below the fill boundary.** The visible stretch holds only about ten
+  vehicles, and the boat usually swallows more than that from this road, so no reading here
+  can prove "more than a boatload": the band caps at "heavy". Once the tail leaves the top
+  of frame the honest answer is a bound ("at least this many"), not a number, and
+  `read_frame` says so.
 
 Calibration lives in `config/calibration/<TERMINAL>_<CAMERA>.json` with `kind` set to
 `queue_extent`, and is fitted per camera at one pan and tilt. Unlike the compound camera
@@ -122,8 +125,12 @@ class QueueExtentCalibration:
     horizon: float
     scale: float
     origin: float
-    #: Vehicles past the camera at which the vessel is full. Not derived — this is local
-    #: knowledge, and `capacity_slack` is the width of the band it was given as.
+    #: Vehicles past the camera at which the vessel was first believed full, kept for the
+    #: fitting record. Local knowledge has since moved the boundary out of reach: the first
+    #: ten to fifteen vehicles visible here usually board (maintainer, 2026-08-16), which
+    #: is more than the visible stretch holds — so no reading is compared against this line
+    #: any more, and the band caps at "heavy". `capacity_slack` is the width of the band
+    #: the original figure was given as.
     capacity_vehicles: float
     capacity_slack: float
     #: Metres per vehicle, for converting a reading back into a distance. Not used in the
@@ -352,7 +359,6 @@ def read_frame(
             "illumination_ratio": round(lit, 3),
             "vehicles_beyond_camera": 0.0,
             "tail_row": None,
-            "over_capacity": False,
         }
 
     vehicles = cal.vehicles_at(row)
@@ -372,31 +378,31 @@ def read_frame(
             "illumination_ratio": round(lit, 3),
             "vehicles_beyond_camera": round(vehicles, 1),
             "tail_row": row,
-            "over_capacity": False,
         }
 
     saturated = row <= cal.far_row
-    floor = cal.capacity_vehicles - cal.capacity_slack
-    over = vehicles >= floor
-
-    line = f"{cal.capacity_vehicles:g}±{cal.capacity_slack:g}"
     if saturated:
         notes = (
             f"queue runs past the top of frame — at least {vehicles:.1f} vehicles beyond "
-            f"the camera, which is at or past the capacity line ({line})"
+            "the camera"
         )
     else:
         notes = (
             f"{vehicles:.1f} vehicles beyond the camera "
-            f"(~{cal.metres(vehicles):.0f} m of queue on the highway); capacity line {line}"
+            f"(~{cal.metres(vehicles):.0f} m of queue on the highway)"
         )
 
     return {
         "compound_visible": False,
         # A queue on the highway is proof the compound is full — cars do not stand on
-        # Highway 101 while there are lanes free. So the weakest honest band is "heavy",
-        # and reaching the capacity line makes it "overflowing".
-        "fullness": "overflowing" if over else "heavy",
+        # Highway 101 while there are lanes free. It is NOT proof anyone will be left:
+        # the maintainer's own count (2026-08-16) is that the first ten to fifteen
+        # vehicles visible here usually still make it aboard, and the visible stretch
+        # saturates below that, so the fill boundary lies past everything this camera can
+        # measure. "heavy" is therefore both the weakest and the strongest honest band —
+        # the left-behind claim belongs to a tail still standing after the vessel has
+        # gone, not to how far a pre-departure queue reaches.
+        "fullness": "heavy",
         "vehicle_count": int(round(vehicles)),
         "lanes_occupied": None,
         "queue_extends_beyond_frame": saturated,
@@ -409,7 +415,6 @@ def read_frame(
         "illumination_ratio": round(lit, 3),
         "vehicles_beyond_camera": round(vehicles, 1),
         "tail_row": row,
-        "over_capacity": over,
     }
 
 
@@ -426,7 +431,6 @@ def _refusal(reason: str, lit: float) -> dict:
         "illumination_ratio": round(lit, 3),
         "vehicles_beyond_camera": None,
         "tail_row": None,
-        "over_capacity": None,
     }
 
 

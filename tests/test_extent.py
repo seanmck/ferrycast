@@ -82,7 +82,6 @@ def test_a_clear_road_is_not_reported_as_an_empty_terminal(cal):
     reading = read_frame(ERL_BG, ERL_BG, cal)
     assert reading["vehicle_count"] == 0
     assert reading["fullness"] is None          # not "empty"
-    assert not reading["over_capacity"]
     assert "ays nothing about how full the compound is" in reading["notes"]
 
 
@@ -98,17 +97,22 @@ def test_the_reading_grows_as_the_queue_reaches_further_back(cal):
 
 def test_a_queue_on_the_highway_is_read_as_a_full_compound(cal):
     """Vehicles do not stand on Highway 101 while there are lanes free at the terminal, so
-    an overflow of any length is already evidence the compound is full."""
+    an overflow of any length is already evidence the compound is full. Full and no more:
+    the first ten to fifteen vehicles visible here usually make the sailing anyway
+    (maintainer, 2026-08-16), and the visible stretch saturates below that, so no queue —
+    however long — reads past "heavy". The overload claim belongs to a tail still standing
+    after the vessel has gone, not to how far a pre-departure queue reaches."""
     reading = read_frame(_road(cal, tail=190), ERL_BG, cal)
-    assert reading["fullness"] in {"heavy", "overflowing"}
+    assert reading["fullness"] == "heavy"
     assert reading["compound_visible"] is False
 
 
 def test_a_queue_running_off_the_top_of_frame_is_a_bound_not_a_measurement(cal):
     reading = read_frame(_road(cal, tail=cal.far_row), ERL_BG, cal)
     assert reading["queue_extends_beyond_frame"]
-    assert reading["over_capacity"]
-    assert reading["fullness"] == "overflowing"
+    # Still only "heavy": a bound of ~ten vehicles sits below where the boat stops
+    # swallowing the road, so even a saturated reading cannot prove an overload.
+    assert reading["fullness"] == "heavy"
     assert "at least" in reading["notes"]
     # Marked down against a queue whose end was actually seen: this is a floor on the answer.
     assert reading["confidence"] < read_frame(_road(cal, tail=190), ERL_BG, cal)["confidence"]

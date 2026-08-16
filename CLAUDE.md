@@ -84,9 +84,12 @@ operator's "loading maximum number of vehicles" note sets `filled`, and a depart
 that stayed noteless for `DEPARTED_NOTE_WAIT` reads as `boarded` at low confidence. Earls
 Cove has no board at all, so that direction has only the vessel tracker (departure time
 only), reports, and geometry — the compound camera's lanes plus the highway camera's
-overflow. Both of ERL's geometric witnesses are one-sided: neither can ever attest `empty`,
-so free evidence there can prove `filled` but never `boarded`. The percentage code stays
-because other routes publish one.
+overflow. ERL's geometry rests on the maintainer's own capacity facts
+(`lanes_before_capacity` in `ERL.json`): the fitted lanes sit short of the one-vessel
+line, so bare fitted lanes at a *tracked* departure are an affirmative `boarded`, while
+occupied lanes or a highway tail cap at `heavy` — a healthy queue, provably a fill only
+when it still stands after the vessel has gone. The percentage code stays because other
+routes publish one.
 
 `None` means *nobody has said*, which is not `False`. `outcome`
 (`boarded`/`filled`/`waited_1`/`waited_2plus`/`cancelled`/`unknown`) is derived from the pair by

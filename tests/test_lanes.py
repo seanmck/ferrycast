@@ -165,16 +165,36 @@ def test_earls_cove_does_not_claim_to_see_the_whole_compound(erl):
 
 
 @erl_only
-def test_a_partly_seen_compound_never_reports_empty(erl):
+def test_a_partly_seen_compound_never_reports_empty_without_the_capacity_fact(erl):
     """The failure this flag exists to stop. This camera faces away from the dock down the
     tail ends of the lanes, and arriving traffic queues in a lane that is not fitted — on
     2026-08-15 at 14:57, five vehicles stood in frame with both calibrated lanes clear.
-    Reported as "empty" that is a confident all-clear for a compound nobody can see."""
+    Reported as "empty" that is a confident all-clear for a compound nobody can see.
+    Only local knowledge of where the capacity line sits (`lanes_before_capacity`) may
+    license the claim; a calibration without it keeps refusing."""
+    from dataclasses import replace
+
+    unflagged = replace(erl, lanes_before_capacity=False)
+    bare = _paint(unflagged)
+    shares = occupancy(bare, bare, unflagged)
+
+    assert occupied_lanes(shares) == []
+    assert fullness_from_lanes(shares, unflagged) is None      # not "empty"
+
+
+@erl_only
+def test_clear_fitted_lanes_short_of_the_capacity_line_are_an_affirmative_empty(erl):
+    """Those five vehicles at 14:57 were below a boatload *because* the queue had not
+    reached lane 4: the fitted lanes are the last pavement to fill, and everything the
+    compound holds short of them fits on one vessel (maintainer, 2026-08-16). So with
+    `lanes_before_capacity` declared, bare fitted lanes stop being silence and become the
+    claim every consumer of "empty" actually derives — the sailing takes everyone queued."""
+    assert erl.lanes_before_capacity is True
     bare = _paint(erl)
     shares = occupancy(bare, bare, erl)
 
     assert occupied_lanes(shares) == []
-    assert fullness_from_lanes(shares, erl) is None      # not "empty"
+    assert fullness_from_lanes(shares, erl) == "empty"
 
 
 @erl_only
@@ -187,22 +207,26 @@ def test_a_saltery_bay_style_camera_still_reports_empty(cal):
 
 
 @erl_only
-def test_occupancy_at_the_far_end_is_the_trustworthy_direction(erl):
-    """Bare pavement says nothing, but a vehicle says a lot: these lanes are the last
-    pavement to fill, so anything standing here has everything ahead of it already taken."""
+def test_occupancy_at_the_far_end_proves_a_queue_and_never_a_fill(erl):
+    """A vehicle in the fitted lanes says a lot: they are the last pavement to fill, so
+    anything standing there has everything ahead of it already taken. It never says
+    "overflowing", though — how far the queue runs past them is out of frame, and the
+    maintainer's geometry is that it must back well onto the highway before anyone is at
+    risk of being left. Claiming the capacity line off two lanes that sit far short of it
+    is what let the band path read a healthy Saturday queue as a fill."""
     bare = _paint(erl)
     one = fullness_from_lanes(occupancy(_paint(erl, occupied=[5]), bare, erl), erl)
     both = fullness_from_lanes(occupancy(_paint(erl, occupied=[4, 5]), bare, erl), erl)
 
     assert one == "heavy"
-    assert both == "overflowing"
+    assert both == "heavy"
 
 
 @erl_only
-def test_a_clear_reading_carries_its_own_caveat(erl):
+def test_a_clear_reading_states_the_licensed_claim(erl):
     reading = read_frame(ERL_BG, ERL_BG, erl)
-    assert reading["fullness"] is None
-    assert "says nothing about how full the rest of it is" in reading["notes"]
+    assert reading["fullness"] == "empty"
+    assert "fits on one vessel" in reading["notes"]
 
 
 @erl_only
