@@ -55,12 +55,6 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   code           = "SLT"
   name           = "Saltery Bay"
   destination    = "ERL"
-  # Which way the vessel points once it has left here. Saltery Bay lies west-northwest of
-  # Earls Cove, so a ship leaving Saltery Bay runs east. This is what lets the vessel tracker
-  # tell the two directions apart: it reports the vessel as stopped without ever naming where,
-  # heading once moving is the only thing that says which terminal was just left. Leave it
-  # blank and no departure is inferred from tracking for this terminal.
-  outbound_bearing = "E"
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam1_SLT.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/SLT-ERL"
   # Set true ONLY if this camera actually shows the berth — look at a frame first. When
@@ -76,9 +70,6 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   code           = "ERL"
   name           = "Earls Cove"
   destination    = "SLT"
-  # Leaving Earls Cove the crossing runs west-northwest toward Saltery Bay. This terminal has
-  # no departures board of any kind, so tracking is its only source of a departure time.
-  outbound_bearing = "W"
   # cam2, lowercase. Not cam1_ERL.jpg — that was inferred from Saltery Bay and 404s.
   webcam_url     = "https://ccimg.bcferries.com/cc/support/terminals/cam2_erl.jpg"
   deck_space_url = "https://www.bcferries.com/current-conditions/ERL-SLT"

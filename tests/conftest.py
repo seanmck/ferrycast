@@ -25,7 +25,6 @@ name = "Saltery Bay - Earls Cove"
   destination = "ERL"
   webcam_url = "https://example.invalid/slt.jpg"
   deck_space_url = "https://example.invalid/slt"
-  outbound_bearing = "E"
 
   [[route.terminals]]
   code = "ERL"
@@ -33,7 +32,6 @@ name = "Saltery Bay - Earls Cove"
   destination = "SLT"
   webcam_url = "https://example.invalid/erl.jpg"
   deck_space_url = "https://example.invalid/erl"
-  outbound_bearing = "W"
 
 [capture]
 interval_minutes = 15

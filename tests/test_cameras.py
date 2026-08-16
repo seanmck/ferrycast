@@ -302,7 +302,7 @@ def test_frames_from_different_cameras_do_not_share_a_path(config):
 
 # Cameras hang off the terminal above them, so this is spliced into ERL's entry rather
 # than appended — appended, it would read as a third terminal on a two-terminal route.
-ERL_ANCHOR = '  outbound_bearing = "W"\n'
+ERL_ANCHOR = '  deck_space_url = "https://example.invalid/erl"\n'
 
 CAMERA_BLOCK = """
   [[route.terminals.cameras]]

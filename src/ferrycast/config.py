@@ -104,12 +104,6 @@ class Terminal:
     # feed's path, so a site code without one cannot be fetched.
     weather_site: str = ""
     weather_province: str = ""
-    # Which way a vessel points once it has left this terminal — "W" leaving Earls Cove,
-    # "E" leaving Saltery Bay. Needed because the vessel tracker never names the port a ship
-    # is docked at, so its heading once moving is the only thing that says which terminal it
-    # just left. Left empty, no departure is ever inferred from tracking for this terminal:
-    # a wrong bearing would attribute the other direction's sailing to this one.
-    outbound_bearing: str = ""
     # Extra cameras at this terminal, beyond the one `webcam_url` names.
     cameras: tuple[Camera, ...] = ()
 
@@ -445,16 +439,9 @@ def _parse_route(raw: dict) -> Route:
                 camera_sees_berth=bool(entry.get("camera_sees_berth", False)),
                 weather_site=entry.get("weather_site", ""),
                 weather_province=entry.get("weather_province", ""),
-                outbound_bearing=str(entry.get("outbound_bearing", "")).strip().upper(),
                 cameras=_parse_cameras(code, entry.get("cameras") or []),
             )
         )
-        bearing = str(entry.get("outbound_bearing", "")).strip().upper()
-        if bearing and (set(bearing) - set("NESW") or not bearing):
-            raise ConfigError(
-                f"terminal {code!r} has outbound_bearing {entry['outbound_bearing']!r}; "
-                "it must be a compass point such as N, W or NW"
-            )
         if bool(entry.get("weather_site")) != bool(entry.get("weather_province")):
             raise ConfigError(
                 f"terminal {code!r} needs both `weather_site` and `weather_province`, or "

@@ -21,7 +21,7 @@ from ferrycast.replay import ReplayError, parse_index, sweep, sweep_camera
 
 from .conftest import CONFIG_TEMPLATE, SCHEDULE_TEMPLATE
 
-ERL_ANCHOR = '  outbound_bearing = "W"\n'
+ERL_ANCHOR = '  deck_space_url = "https://example.invalid/erl"\n'
 CAMERA_BLOCK = """
   [[route.terminals.cameras]]
   id = "drivebc244"
