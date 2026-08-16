@@ -322,15 +322,25 @@ def departure_from_tracking(
 ) -> datetime | None:
     """When the vessel left `origin`, as the tracker saw it — or None if it cannot say.
 
-    Returns the first moving reading after the vessel was last seen stopped, which is an
-    upper bound: it had certainly gone by then, and reading a residual queue slightly late
-    is the safe direction to be wrong in.
+    Returns the first moving reading of the earliest stopped-then-moving transition in the
+    window that the board does not already account for elsewhere. That is an upper bound on
+    the departure: the vessel had certainly gone by then, and reading a residual queue
+    slightly late is the safe direction to be wrong in.
 
     The route is a two-point shuttle with one vessel, so stopped-then-moving *is* a
     departure and there is nothing to infer about that. The only real question is which end
     it left from, and that is settled against the board rather than guessed from the feed:
     Saltery Bay publishes its departures to the minute, so a transition matching one is
     Saltery Bay's, and a transition matching none belongs to the end that publishes nothing.
+
+    Every transition is offered to that test, earliest first, rather than only the last one
+    in the window. The window has to reach far enough past the scheduled time to catch a
+    late sailing, and on a fifty-minute crossing that is long enough to also contain the
+    vessel arriving at the *other* end and tying up there. Taking the last transition
+    therefore found the far terminal's departure — or, with the vessel still berthed over
+    there when the window closed, no transition at all. Either way the answer was None for
+    every sailing punctual enough that the round trip fitted inside the window, which is to
+    say for nearly all of them: only a sailing over half an hour late reported anything.
 
     This replaced reading the compass heading, which tried to derive the same fact from a
     three-character string and got it wrong in production. Earls Cove sits in a narrow cove,
@@ -348,11 +358,13 @@ def departure_from_tracking(
             ORDER BY reported_at""",
         (route.id, iso(window[0]), iso(window[1])),
     ).fetchall()
-    left = _departure_from_rows(rows)
-    if left is None:
+    found = _transitions(rows)
+    if not found:
         return None
-    return None if _is_claimed(left, _published_elsewhere(
-        conn, config, route_id=route.id, origin=origin, window=window)) else left
+    published = _published_elsewhere(
+        conn, config, route_id=route.id, origin=origin, window=window
+    )
+    return next((left for left in found if not _is_claimed(left, published)), None)
 
 
 def _is_claimed(moment: datetime, published: list[datetime]) -> bool:
@@ -361,29 +373,41 @@ def _is_claimed(moment: datetime, published: list[datetime]) -> bool:
                for other in published)
 
 
-def _departure_from_rows(rows) -> datetime | None:
-    """The first moving reading after the vessel was last seen stopped.
+def _transitions(rows) -> list[datetime]:
+    """Every stopped-then-moving transition in `rows`, earliest first.
 
     Split out so the day board can ask about ten sailings from a single read of the table
     without the rule living in two places — the board and the record disagreeing about
     whether a sailing has gone would be worse than either being wrong alone.
 
-    Says nothing about *which* terminal was left; that is the caller's to settle. A vessel
-    stopping mid-crossing would register here as a departure, which is the one case this
-    shape cannot distinguish — rare enough, and the sailing window bounds the damage.
+    Every one of them, and not just the last. A window wide enough to catch a late sailing
+    is also wide enough to hold a whole round trip on a fifty-minute crossing, so its last
+    transition is the far terminal's departure — and when the vessel is still tied up over
+    there as the window closes, there is no last transition at all. That is what emptied the
+    Earls Cove column: any sailing punctual enough to get across and berth reported nothing,
+    and only one over half an hour late reported at all.
+
+    Says nothing about *which* terminal each was left from; that is the caller's to settle.
+    A vessel stopping mid-crossing would register here as a departure, which is the one case
+    this shape cannot distinguish — rare enough, and the sailing window bounds the damage.
     """
     if not rows:
-        return None
+        return []
 
     # Classified here rather than matched in SQL, so an unrecognised status word falls
     # through to speed instead of quietly matching nothing.
     moving = [is_moving(row["status"], row["speed_knots"]) for row in rows]
-    stopped = [i for i, state in enumerate(moving) if state is False]
-    if not stopped:
-        return None
-    after = [row for row, state in zip(rows[stopped[-1] + 1 :], moving[stopped[-1] + 1 :],
-                                       strict=True) if state is True]
-    return parse_iso(after[0]["reported_at"]) if after else None
+    found = []
+    berthed = False
+    for row, state in zip(rows, moving, strict=True):
+        if state is False:
+            berthed = True
+        elif state is True and berthed:
+            found.append(parse_iso(row["reported_at"]))
+            berthed = False
+    # A silent reading is neither: it says nothing, and being silent is not the same as
+    # being tied up, so it can neither open a berthing nor close one.
+    return found
 
 
 @dataclass(frozen=True)
@@ -461,9 +485,9 @@ def tracker_watch(
             for row, at in zip(rows, stamps, strict=True)
             if when - grace <= at <= when + LATE_TOLERANCE
         ]
-        left = _departure_from_rows(window)
-        if left is not None and _is_claimed(left, published):
-            left = None
+        left = next(
+            (at for at in _transitions(window) if not _is_claimed(at, published)), None
+        )
         if left is not None and left <= now:
             departed.add(hhmm)
         elif now <= when + LATE_TOLERANCE:
