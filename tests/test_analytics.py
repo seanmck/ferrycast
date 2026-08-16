@@ -269,3 +269,104 @@ def test_an_export_is_counted(client, posthog):
     (export,) = posthog.named("data_exported")
     assert export["dataset"] == "sailings"
     assert export["format"] == "csv"
+
+
+# --- whose machine is this ---------------------------------------------------------
+
+# Real strings, because a hand-written user agent proves only that the regex matches the
+# regex. Every family here impersonates an older one — Edge claims to be Chrome, which
+# claims to be Safari, which claims to be Mozilla — and that is the whole difficulty.
+AGENTS = [
+    (
+        "iphone-safari",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        ("Safari", "iOS", "Mobile"),
+    ),
+    (
+        "android-chrome",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Mobile Safari/537.36",
+        ("Chrome", "Android", "Mobile"),
+    ),
+    (
+        "ipad-safari",
+        "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        ("Safari", "iOS", "Tablet"),
+    ),
+    (
+        "android-tablet",
+        "Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36",
+        ("Chrome", "Android", "Tablet"),
+    ),
+    (
+        # The one actually seen in production, and the one that read as `Linux` before this.
+        "windows-edge",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        ("Microsoft Edge", "Windows", "Desktop"),
+    ),
+    (
+        "mac-firefox",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:127.0) Gecko/20100101 Firefox/127.0",
+        ("Firefox", "Mac OS X", "Desktop"),
+    ),
+    (
+        "samsung-internet",
+        "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "SamsungBrowser/25.0 Chrome/121.0.0.0 Mobile Safari/537.36",
+        ("Samsung Internet", "Android", "Mobile"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("agent", "expected"),
+    [pytest.param(agent, expected, id=name) for name, agent, expected in AGENTS],
+)
+def test_the_user_agent_is_read_into_browser_os_and_device(agent, expected):
+    read = analytics._visitor_agent(agent)
+
+    assert (read["$browser"], read["visitor_os"], read["$device_type"]) == expected
+
+
+def test_an_unreadable_user_agent_says_unknown_rather_than_guessing():
+    """The house rule, applied to a header: not knowing is an answer and gets said.
+
+    Left off instead, it would land in a breakdown as an empty bucket, which reads like a
+    reporting fault rather than like the honest gap it is.
+    """
+    read = analytics._visitor_agent("Mozilla/5.0 (compatible)")
+
+    assert read == {
+        "$browser": analytics.UNKNOWN,
+        "visitor_os": analytics.UNKNOWN,
+        "$device_type": analytics.UNKNOWN,
+    }
+
+
+def test_the_visitors_os_never_travels_as_dollar_os(client, posthog):
+    """`$os` belongs to the SDK, which fills it from `platform` — the container's.
+
+    It merges its own system context *over* whatever is passed here, so sending `$os` would
+    be silently dropped and reading it back would report the server's OS for every traveller.
+    The honest value therefore travels under a name the SDK does not claim.
+    """
+    client.get("/", headers={"user-agent": AGENTS[0][1]})
+
+    (view,) = posthog.named("$pageview")
+    assert view["visitor_os"] == "iOS"
+    assert "$os" not in view
+
+
+def test_a_pageview_says_it_was_read_on_a_phone(client, posthog):
+    """The question the module was built for, and the one it could not answer before."""
+    client.get("/", headers={"user-agent": AGENTS[0][1]})
+
+    (view,) = posthog.named("$pageview")
+    assert view["$device_type"] == "Mobile"
+    assert view["$browser"] == "Safari"
+    # The evidence travels with the reading, so a count that looks wrong can be argued with.
+    assert view["$raw_user_agent"] == AGENTS[0][1]

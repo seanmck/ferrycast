@@ -23,6 +23,22 @@ What it counts:
 | `backfill_requested` | someone paid to fill a slot's history, and what it bought |
 | `ondemand_check`     | someone asked the camera to look now |
 | `data_exported`      | the datasets get read by someone other than me |
+
+**Whose machine the `$`-prefixed properties describe.** Two of them describe the *server*, and
+saying so here is the point of this paragraph. `posthog-python` merges its `system_context()`
+over every caller's properties (`client.py`: `{**properties, **system_context()}`), so `$os`,
+`$os_version`, `$os_distro`, `$python_runtime` and `$python_version` are the container's and
+cannot be overridden from here — passing `$os` simply loses to the SDK. On a page read from an
+iPhone at Saltery Bay, `$os` says `Linux`. That is not a missing answer, it is a confident
+wrong one, which is the failure this project spends the rest of its code refusing, so: **never
+read `$os` as the visitor's.** `visitor_os` below is the honest one.
+
+And the visitor's browser and device are ours to work out. PostHog does not parse a user agent
+on ingestion — that parsing lives in `posthog-js` and runs on the client, and this app has no
+browser tag by design. `$raw_user_agent` is stored verbatim (PostHog's own bot-detection
+helpers take it as an argument, which is the tell), so `$browser` and `$device_type` stay empty
+unless something fills them. `_visitor_agent` fills them, from the string the request already
+carried.
 """
 
 from __future__ import annotations
@@ -75,6 +91,82 @@ _BOT_AGENTS = re.compile(
 # Copied through when present, so a link posted to the ferry Facebook group can be told
 # apart from one texted between two people. Nothing else is read from the query string.
 _CAMPAIGN_PARAMS = ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term")
+
+# What a user agent is allowed to be read as when it does not clearly say. The literal beats
+# leaving the property off: an absent property lands in a breakdown as an empty bucket, which
+# reads like a reporting glitch, and this is the codebase where not knowing is a real answer
+# and gets said out loud.
+UNKNOWN = "unknown"
+
+# Ordered, and the order is the whole correctness argument — every one of these families
+# impersonates an older one in its user agent, so the first match has to be the most specific.
+# Values are spelled the way `posthog-js` spells them, so that a breakdown built on these does
+# not split in two if a browser tag is ever added.
+#
+# Deliberately shallow: no versions, no engine, no minor variants. A shallower reader is a
+# reader that stays right for longer, and the question this is here to answer is the coarse
+# one — is this being read on a phone at the side of Highway 101, or at a desk the night
+# before.
+_BROWSERS = (
+    ("Microsoft Edge", re.compile(r"Edg(?:e|A|iOS)?/", re.IGNORECASE)),
+    ("Opera", re.compile(r"OPR/|Opera", re.IGNORECASE)),
+    ("Samsung Internet", re.compile(r"SamsungBrowser", re.IGNORECASE)),
+    ("Firefox", re.compile(r"Firefox/|FxiOS/", re.IGNORECASE)),
+    # Chrome on iOS is `CriOS`; every Chromium desktop build says `Chrome/` and also `Safari/`,
+    # which is why Safari is last of the three rather than first.
+    ("Chrome", re.compile(r"CriOS/|Chrome/|Chromium/", re.IGNORECASE)),
+    ("Safari", re.compile(r"Safari/")),
+    ("Internet Explorer", re.compile(r"MSIE |Trident/")),
+)
+
+_OPERATING_SYSTEMS = (
+    # Before Linux: Android says `Linux` too. Before Mac OS X: an iPad says
+    # `CPU OS 17_0 like Mac OS X`.
+    ("iOS", re.compile(r"iPhone|iPad|iPod|iOS|CPU OS ", re.IGNORECASE)),
+    ("Android", re.compile(r"Android", re.IGNORECASE)),
+    ("Windows", re.compile(r"Windows")),
+    ("Chrome OS", re.compile(r"CrOS")),
+    ("Mac OS X", re.compile(r"Macintosh|Mac OS X")),
+    ("Linux", re.compile(r"Linux|X11")),
+)
+
+# Tablet first: an iPad's agent contains `Mobile`, and an Android tablet is exactly an Android
+# phone minus that word.
+_TABLET = re.compile(r"iPad|Tablet|PlayBook|Silk|(?=.*\bAndroid\b)(?!.*\bMobile\b)", re.IGNORECASE)
+_MOBILE = re.compile(r"Mobi|iPhone|iPod|Android|Windows Phone|BlackBerry", re.IGNORECASE)
+_DESKTOP = re.compile(r"Windows NT|Macintosh|X11|CrOS|Linux", re.IGNORECASE)
+
+
+def _visitor_agent(user_agent: str) -> dict:
+    """Browser, OS and device type, or `unknown` for each the string will not commit to.
+
+    One limit worth naming rather than papering over: an iPad in its default desktop mode
+    sends a user agent identical to a Mac's, so it is counted here as a desktop. Telling them
+    apart needs client hints, which need script in the page, which is the one thing this
+    module is built not to have. A known, bounded undercount of tablets beats a tag.
+    """
+    return {
+        "$browser": _first_match(_BROWSERS, user_agent),
+        "visitor_os": _first_match(_OPERATING_SYSTEMS, user_agent),
+        "$device_type": _device_type(user_agent),
+    }
+
+
+def _first_match(table: tuple[tuple[str, re.Pattern], ...], user_agent: str) -> str:
+    for name, pattern in table:
+        if pattern.search(user_agent):
+            return name
+    return UNKNOWN
+
+
+def _device_type(user_agent: str) -> str:
+    if _TABLET.search(user_agent):
+        return "Tablet"
+    if _MOBILE.search(user_agent):
+        return "Mobile"
+    if _DESKTOP.search(user_agent):
+        return "Desktop"
+    return UNKNOWN
 
 
 class Analytics:
@@ -199,14 +291,16 @@ def _visitor_id(request: Request) -> tuple[str, bool]:
 
 def _request_properties(request: Request) -> dict:
     referrer = request.headers.get("referer", "")
+    user_agent = request.headers.get("user-agent", "")
     properties = {
         "$current_url": str(request.url),
         "$pathname": request.url.path,
         "$host": request.url.hostname or "",
-        # PostHog derives browser, OS and device type from this, which is the whole of what
-        # a server-side install can know about the phone — and enough to answer "is this
-        # thing being read on a phone in a queue", which is what it was built for.
-        "$raw_user_agent": request.headers.get("user-agent", ""),
+        # Kept raw as well as read: it is the evidence behind the three derived properties,
+        # so a device count that looks wrong can be argued with rather than just distrusted.
+        # The same reason frames are archived instead of only their extracted numbers.
+        "$raw_user_agent": user_agent,
+        **_visitor_agent(user_agent),
         "$referrer": referrer or "$direct",
         "$referring_domain": urlsplit(referrer).netloc or "$direct",
         "route": _route_id(request),
