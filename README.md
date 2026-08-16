@@ -618,6 +618,18 @@ count as one person and nothing else about them is knowable. Crawlers and link-p
 are dropped before anything is recorded, and so is the container's own liveness probe, which
 would otherwise outnumber the people by a hundred to one.
 
+The one thing read out of the request beyond what was asked for is the user agent, and it is
+read here rather than by PostHog. Browser-side analytics works this out in the browser, which
+is exactly the script this page does not load, so the header the request already carried is
+parsed on the server into a browser, an OS and a device type — coarsely, and `unknown` wherever
+the string will not commit, which is the same rule the sailing records follow. It is there to
+answer one question: whether this is being read on a phone at the side of the highway or at a
+desk the night before, because those are two different pages to design for. Two caveats worth
+stating rather than burying. An iPad in desktop mode is indistinguishable from a Mac without
+client hints — which would need script in the page — so tablets are undercounted. And PostHog's
+own `$os` on these events is the *container's*, injected by the Python SDK and not overridable;
+the visitor's is `visitor_os`.
+
 The events are few and named for the questions they answer:
 
 | Event | Asks |
