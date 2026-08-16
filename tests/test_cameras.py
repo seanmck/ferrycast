@@ -486,7 +486,7 @@ def test_the_shared_sweep_reads_the_highway_camera(tmp_path):
     assert clear["fullness"] is None
     assert clear["vehicle_count"] is None
     assert queue["usable"] == 1
-    assert queue["fullness"] in ("heavy", "overflowing")
+    assert queue["fullness"] == "heavy"
     assert queue["vehicle_count"] is None
 
 
