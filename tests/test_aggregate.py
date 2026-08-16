@@ -393,8 +393,14 @@ def test_the_board_departure_beats_the_scheduled_time_for_a_late_sailing(conn, c
 
 # --- bands: what the cameras can actually support -------------------------------------
 
-def _band_frames(conn, config, departure, bands, *, terminal="SLT", dock_before=True):
-    """Lay down a band trace around a departure: (minutes relative to departure, band)."""
+def _band_frames(
+    conn, config, departure, bands, *, terminal="SLT", dock_before=True, dock_until=0
+):
+    """Lay down a band trace around a departure: (minutes relative to departure, band).
+
+    `dock_until` is where the vessel stops being berthed, for the late sailings this route
+    actually runs. It defaults to the scheduled minute, which is the on-time case.
+    """
     for offset, band in bands:
         at = departure + timedelta(minutes=offset)
         cur = conn.execute(
@@ -417,7 +423,7 @@ def _band_frames(conn, config, departure, bands, *, terminal="SLT", dock_before=
                 cur.lastrowid,
                 config.vision.prompt_version,
                 band,
-                1 if (dock_before and offset < 0) else 0,
+                1 if (dock_before and offset < dock_until) else 0,
                 iso(now_utc()),
             ),
         )
@@ -541,6 +547,62 @@ def test_bands_are_preferred_when_a_frame_carries_both():
         departure_seen=True,
     )
     assert (outcome, overload, carryover) == ("boarded", False, 0)
+
+
+def test_a_compound_that_was_bare_when_the_vessel_left_took_everyone_in_it():
+    """The 2026-08-15 05:35 shape: cleared at 05:28, sailed, two lanes filled again by 05:48.
+
+    Those two lanes are the 07:25's queue starting to form, not vehicles that failed to get
+    on. Read as a residual they put "provably left vehicles behind" on the emptiest sailing of
+    the day, on a morning the departures board never posted a capacity notice at all.
+    """
+    outcome, overload, _, carryover = classify_from_bands(
+        residual_fullness="light",
+        fullness_at_departure="empty",
+        departure_seen=True,
+        empty_when_it_left=True,
+    )
+    assert (outcome, overload, carryover) == ("boarded", False, 0)
+
+
+def test_a_residual_lighter_than_the_departure_band_is_still_an_overload():
+    """"The residual got lighter" is not the discriminator, and must not be mistaken for one.
+
+    Draining from heavy to light is precisely what a real overload looks like: on 2026-08-14 the
+    16:55 went heavy → light and the board independently posted its capacity notice. A rule that
+    cleared a sailing whenever the compound thinned out would erase exactly those.
+    """
+    outcome, overload, *_ = classify_from_bands(
+        residual_fullness="light",
+        fullness_at_departure="heavy",
+        departure_seen=True,
+        empty_when_it_left=False,
+    )
+    assert (outcome, overload) == ("filled", True)
+
+
+def test_an_emptied_compound_with_no_vessel_ever_seen_is_not_a_boarding():
+    """A compound emptying only says a sailing carried it away if something saw a sailing.
+
+    Where nothing did, bare asphalt is equally consistent with a cancellation nobody queued
+    for — so the clear must not outrank the departure check that sits above it.
+    """
+    blind, *_ = classify_from_bands(
+        residual_fullness="light",
+        fullness_at_departure="empty",
+        departure_seen=False,
+        berth_visible=False,
+        empty_when_it_left=True,
+    )
+    seeing, _, cancelled, _ = classify_from_bands(
+        residual_fullness="light",
+        fullness_at_departure="empty",
+        departure_seen=False,
+        berth_visible=True,
+        empty_when_it_left=True,
+    )
+    assert blind == "unknown"
+    assert (seeing, cancelled) == ("cancelled", True)
 
 
 def test_a_vessel_still_berthed_is_unknown_not_an_overload():
@@ -754,3 +816,72 @@ def test_a_compound_that_never_empties_has_no_clear(conn, config):
     row = _record_for(conn)
     assert row["cleared_at"] is None
     assert row["residual_fullness"] == "light"
+    # The 2026-08-14 16:55 shape, and the board posted its capacity notice on that one. Pinned
+    # here so the clear gate below can never be widened into clearing a real overload.
+    assert row["outcome"] == "filled"
+    assert row["overload"] == 1
+
+
+def test_the_first_sailing_of_the_day_is_not_an_overload_because_the_next_queue_formed(
+    conn, config
+):
+    """A queue that forms after the compound went bare belongs to the *next* sailing.
+
+    On 2026-08-15 the 05:35 out of Saltery Bay cleared at 05:28, sailed, and two lanes filled
+    again at 05:48 — arrivals for the 07:25, which duly built to heavy and boarded. The record
+    read "ran out of room" and "left vehicles behind" anyway: `residual_fullness` is the single
+    first frame after the settle, and the band path called any band above "empty" an overload
+    where the count path would have wanted five vehicles.
+
+    The dawn sailing is the most exposed on the timetable — first of the day, and 110 minutes
+    of clear water before the next, so the post-window is never clamped — but nothing here is
+    dawn-specific. The geometry was right about every frame; the reading of it was not.
+    """
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure,
+        # a queue, bare seven minutes before departure, still bare as it goes, and then the
+        # next sailing's arrivals
+        [(-45, "light"), (-20, "light"), (-7, "empty"), (5, "empty"), (25, "light")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["overload"] == 0
+    assert row["left_behind"] == 0
+    assert row["cleared_at"] == iso(departure - timedelta(minutes=7))
+    # The measurement is kept and only its reading changes: the compound really was occupied
+    # again afterwards, and a later report about that queue must still find the number.
+    assert row["residual_fullness"] == "light"
+
+
+def test_a_compound_that_refilled_before_a_late_vessel_left_still_left_people_behind(
+    conn, config
+):
+    """The gate is anchored to the ship, not to the timetable, and this is why.
+
+    A sailing 40 minutes late is routine on this route — the live board showed 9:25 departing
+    at 9:56. So a compound can be bare at the scheduled minute, fill again while the vessel is
+    still loading, and strand everyone who joined in between. Keying the clear off
+    `fullness_at_departure`, which stops at the scheduled time, would read that as "boarded"
+    and state outright that nobody was left behind — a false denial on a real overload, which
+    is worse than the false positive this change removes and in the one direction this app is
+    not allowed to be wrong in.
+    """
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure,
+        [(-20, "light"), (-5, "empty"), (10, "heavy"), (25, "heavy"), (40, "light")],
+        dock_until=30,
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["fullness_at_departure"] == "empty"
+    assert row["outcome"] == "filled"
+    assert row["left_behind"] == 1
