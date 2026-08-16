@@ -369,6 +369,17 @@ class LaneStats:
         if self.errors is None:
             self.errors = []
 
+    def absorb(self, other: LaneStats) -> None:
+        """Fold another sweep's counts into this one — the capture job reads several
+        cameras in one run and reports them as one job outcome."""
+        self.considered += other.considered
+        self.read += other.read
+        self.unusable += other.unusable
+        self.skipped_no_calibration += other.skipped_no_calibration
+        self.skipped_no_background += other.skipped_no_background
+        self.failed += other.failed
+        self.errors.extend(other.errors)
+
 
 def read_frame(
     frame: str | Path,
@@ -462,12 +473,15 @@ def pending_frames(
     terminal: str | None = None,
     terminals: list[str] | None = None,
     camera: str | None = MAIN_CAMERA,
+    prompt_version: str | None = None,
 ):
     """Frames with no geometric reading yet. Mirrors `vision.pending_frames`.
 
     Scoped to the terminal's own camera. A lane calibration is fitted to one view, and a
     frame from a different camera at the same terminal is not a harder version of the same
     problem — it is a different scene, at a different size, with no lane grid in it at all.
+    `prompt_version` names which reader's absence makes a frame pending — the lane grid's
+    by default, `extent`'s when sweeping a highway camera.
     """
     sql = """
         SELECT f.id, f.terminal, f.camera, f.captured_at, f.path
@@ -475,7 +489,7 @@ def pending_frames(
           LEFT JOIN observations o ON o.frame_id = f.id AND o.prompt_version = ?
          WHERE f.status = 'ok' AND f.path IS NOT NULL AND o.id IS NULL
     """
-    params: list = [PROMPT_VERSION]
+    params: list = [prompt_version or PROMPT_VERSION]
     if camera is not None:
         sql += " AND f.camera = ?"
         params.append(camera)
@@ -596,7 +610,15 @@ def extract_frames(
 PENDING_SCAN_LIMIT = 5000
 
 
-def extract_pending(conn, config, *, max_reads: int, dry_run: bool = False) -> LaneStats:
+def extract_pending(
+    conn,
+    config,
+    *,
+    max_reads: int,
+    dry_run: bool = False,
+    since: str | None = None,
+    terminal: str | None = None,
+) -> LaneStats:
     """Read up to `max_reads` of the oldest pending frames that can actually be read.
 
     The queue discipline matters more than it looks. Frames from a terminal with no
@@ -607,17 +629,59 @@ def extract_pending(conn, config, *, max_reads: int, dry_run: bool = False) -> L
     all, and the read cap is enforced by `extract_frames` against reads rather than against
     frames considered, which lets no-background frames (a transient condition — backgrounds
     build as history accumulates) wait in the queue without blocking anything behind them.
+
+    One sweep covers every camera a geometric reader exists for — the lane grids first,
+    then any `queue_extent` camera with a calibration, on whatever budget the grids left.
+    That order is deliberate: the terminal cameras are live and a frame not read soon is a
+    frame someone's "how is the queue now" cannot use, while the highway camera arrives in
+    twice-daily replay batches that were already hours old when fetched — another few
+    minutes in the queue costs those nothing. This is the single place that decides which
+    cameras get read; the scheduler and the CLI both call it, because when each kept its
+    own list the one running in production was the one that had never heard of the second
+    camera.
     """
+    from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
+    from .extent import extract_frames as extract_extent_frames
+    from .extent import load_for as load_extent
+
     config_dir = Path(config.source_path).parent
+    stats = LaneStats()
+
     calibrated = [
-        terminal.code
-        for terminal in config.route.terminals
-        if calibration_path(config_dir, terminal.code).exists()
+        t.code
+        for t in config.route.terminals
+        if (terminal is None or t.code == terminal)
+        and calibration_path(config_dir, t.code).exists()
     ]
-    if not calibrated:
-        return LaneStats()
-    frames = pending_frames(conn, PENDING_SCAN_LIMIT, terminals=calibrated)
-    return extract_frames(conn, config, frames, dry_run=dry_run, max_reads=max_reads)
+    if calibrated:
+        frames = pending_frames(conn, PENDING_SCAN_LIMIT, since=since, terminals=calibrated)
+        stats = extract_frames(conn, config, frames, dry_run=dry_run, max_reads=max_reads)
+
+    for t in config.route.terminals:
+        if terminal is not None and t.code != terminal:
+            continue
+        for camera in t.cameras:
+            if camera.kind != "queue_extent":
+                continue
+            if load_extent(config_dir, t.code, camera.id) is None:
+                continue
+            remaining = max_reads - stats.read
+            if remaining <= 0:
+                return stats
+            frames = pending_frames(
+                conn,
+                PENDING_SCAN_LIMIT,
+                since=since,
+                terminal=t.code,
+                camera=camera.id,
+                prompt_version=EXTENT_PROMPT_VERSION,
+            )
+            stats.absorb(
+                extract_extent_frames(
+                    conn, config, frames, dry_run=dry_run, max_reads=remaining
+                )
+            )
+    return stats
 
 
 # --- rolling backgrounds ----------------------------------------------------------------

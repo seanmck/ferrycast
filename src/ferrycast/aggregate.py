@@ -35,6 +35,7 @@ from datetime import date, datetime, timedelta
 from .config import Config
 from .db import JobRun
 from .deckspace import notice_says_full, status_says_departed
+from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
 from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
@@ -141,27 +142,34 @@ def _load_observations(
 ) -> list[_Obs]:
     """Readings for this terminal's frames, geometry preferred over the model.
 
-    Both extractors write here, keyed by prompt version, and a frame can carry one of each.
-    Geometry wins where it exists: it is measured against known lane positions rather than
-    judged, so it cannot report a lane it is unable to see — which is exactly how the model
-    path went wrong, calling a compound clear while a queue stood in the lanes whose numbers
-    are not painted in view.
+    All the extractors write here, keyed by prompt version, and a frame can carry more than
+    one reading. Geometry wins where it exists: it is measured against known positions
+    rather than judged, so it cannot report a lane it is unable to see — which is exactly
+    how the model path went wrong, calling a compound clear while a queue stood in the
+    lanes whose numbers are not painted in view. The two geometric generations never share
+    a frame — the lane grid reads the terminal camera and `extent` reads the highway one —
+    so no order between them is ever exercised.
 
     Filtering on `config.vision.prompt_version` alone, as this did, meant aggregation never
     saw a geometric reading at all. Every frame was read and every record stayed `unknown`.
+
+    Frames are matched by terminal, not by camera, and that is what routes the highway
+    camera in: its frames are stored under the terminal it watches the approach to, so its
+    bands land in the same window as everything else Earls Cove has to say.
     """
     sql = """
         SELECT o.frame_id, o.prompt_version, f.captured_at, o.vehicle_count, o.ferry_at_dock,
                o.queue_beyond_frame, o.fullness, o.confidence, o.usable
           FROM observations o
           JOIN frames f ON f.id = o.frame_id
-         WHERE o.prompt_version IN (?, ?)
+         WHERE o.prompt_version IN (?, ?, ?)
            AND f.terminal = ?
            AND f.captured_at >= ?
            AND f.captured_at <= ?
     """
     params = [
         LANE_PROMPT_VERSION,
+        EXTENT_PROMPT_VERSION,
         config.vision.prompt_version,
         terminal,
         iso(start),
@@ -174,7 +182,7 @@ def _load_observations(
     best: dict[int, sqlite3.Row] = {}
     for row in conn.execute(sql, tuple(params)).fetchall():
         current = best.get(row["frame_id"])
-        if current is None or row["prompt_version"] == LANE_PROMPT_VERSION:
+        if current is None or row["prompt_version"] != config.vision.prompt_version:
             best[row["frame_id"]] = row
 
     return [

@@ -578,18 +578,27 @@ def cmd_calibrate(args) -> int:
 
 
 def cmd_lanes(args) -> int:
-    """Read frames geometrically — per-lane occupancy from a calibrated fixed camera."""
-    from .lanes import extract_frames, pending_frames
+    """Read frames geometrically — every camera a calibration exists for.
+
+    The same sweep the scheduler runs, on purpose: when the CLI kept its own list of
+    cameras the two disagreed, and the list running in production was the wrong one.
+    """
+    from .lanes import extract_pending
 
     config = _config(args)
     conn = _open(config)
-    frames = pending_frames(
-        conn, args.limit, since=args.since, terminal=args.terminal
+    stats = extract_pending(
+        conn,
+        config,
+        max_reads=args.limit,
+        dry_run=args.dry_run,
+        since=args.since,
+        terminal=args.terminal,
     )
-    stats = extract_frames(conn, config, frames, dry_run=args.dry_run)
     print(
         f"considered {stats.considered}, read {stats.read}, unusable {stats.unusable}, "
-        f"no calibration {stats.skipped_no_calibration}, failed {stats.failed}"
+        f"no calibration {stats.skipped_no_calibration}, "
+        f"no background {stats.skipped_no_background}, failed {stats.failed}"
     )
     for err in stats.errors[:5]:
         print(f"  {err}")
@@ -1030,9 +1039,9 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate_p.set_defaults(func=cmd_calibrate)
 
     lanes_p = sub.add_parser(
-        "lanes", help="per-lane occupancy from the calibrated camera geometry (no API cost)"
+        "lanes", help="geometric readings from every calibrated camera (no API cost)"
     )
-    lanes_p.add_argument("--limit", type=int, default=500)
+    lanes_p.add_argument("--limit", type=int, default=500, help="most frames to actually read")
     lanes_p.add_argument("--since", help="only frames captured at or after this ISO timestamp")
     lanes_p.add_argument("--terminal", help="restrict to one terminal")
     lanes_p.add_argument("--dry-run", action="store_true")
