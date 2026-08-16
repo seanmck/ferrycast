@@ -69,6 +69,20 @@ def _capture(conn, config: Config) -> str:
         detail += f", read {read.read}"
         if read.unusable:
             detail += f" ({read.unusable} unusable)"
+
+    # Aggregate what we just learned, in the same job and for the same reason the frames
+    # are read here: the inference costs about a second of SQLite and spends nothing, while
+    # waiting for the hourly pass left finished sailings sitting classified-but-invisible
+    # for most of an hour — on 2026-08-16 the 12:55's evidence was complete at 13:37,
+    # missed that hour's run by seconds, and read `unknown` until 14:38. Guarded, because
+    # capture is the one collector whose failure loses data forever: a broken aggregation
+    # must not take the frame archive down with it. It stays loud on its own in the hourly
+    # job, which still runs it unguarded and remains the floor for installs that scrape or
+    # track without scheduled capture.
+    try:
+        detail += ", " + _aggregate(conn, config)
+    except Exception as exc:
+        detail += f", aggregation failed: {exc}"
     return detail
 
 
