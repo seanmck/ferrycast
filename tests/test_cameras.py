@@ -385,3 +385,229 @@ def test_a_camera_with_nothing_to_fetch_is_refused(tmp_path):
         block = block.replace(line, "")
     with pytest.raises(ConfigError, match="nothing could ever be captured"):
         _config_with_camera(tmp_path, block)
+
+
+# --- extraction --------------------------------------------------------------------------
+
+EXTENT_CAL = REPO / "config" / "calibration" / "ERL_drivebc244.json"
+EXTENT_BG = REPO / "config" / "calibration" / "ERL_drivebc244_background.jpg"
+
+needs_extent_calibration = pytest.mark.skipif(
+    not (EXTENT_CAL.exists() and EXTENT_BG.exists()),
+    reason="Earls Cove highway calibration not present",
+)
+
+#: The UTC hour the frames below are captured in, as a local wall-clock hour — what the
+#: background library keys references by. 20:00Z in America/Vancouver is 13:00.
+LOCAL_HOUR = 13
+
+
+def _wired_config(tmp_path):
+    """A config that declares the highway camera, with its calibration installed and one
+    hour's background reference built — everything extraction needs short of frames."""
+    import shutil
+
+    from PIL import Image
+
+    from ferrycast.lanes import MIN_BACKGROUND_SAMPLES, backgrounds_dir
+
+    config = _config_with_camera(tmp_path, CAMERA_BLOCK)
+    cal_dir = Path(config.source_path).parent / "calibration"
+    cal_dir.mkdir(exist_ok=True)
+    shutil.copyfile(EXTENT_CAL, cal_dir / "ERL_drivebc244.json")
+
+    root = backgrounds_dir(config.data_dir, "ERL", "drivebc244")
+    root.mkdir(parents=True, exist_ok=True)
+    Image.open(EXTENT_BG).convert("L").save(root / f"{LOCAL_HOUR:02d}.png")
+    (root / f"{LOCAL_HOUR:02d}.json").write_text(
+        json.dumps({"terminal": "ERL", "hour": LOCAL_HOUR,
+                    "samples": MIN_BACKGROUND_SAMPLES,
+                    "from": "x", "to": "y", "built_at": "z"}),
+        encoding="utf-8",
+    )
+    return config
+
+
+def _hw_frame(conn, config, minute, content):
+    rel = f"hw/{minute:02d}.jpg"
+    path = config.data_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    conn.execute(
+        """INSERT INTO frames (route, terminal, camera, captured_at, service_date, path,
+                               status)
+           VALUES ('route7', 'ERL', 'drivebc244', ?, '2026-08-14', ?, 'ok')""",
+        (f"2026-08-14T20:{minute:02d}:01Z", rel),
+    )
+    conn.commit()
+
+
+def _queue_bytes():
+    """A frame with a real standing queue painted onto the reference road."""
+    from ferrycast.extent import QueueExtentCalibration
+
+    from .test_extent import _road
+
+    cal = QueueExtentCalibration.load(EXTENT_CAL)
+    tail = next(
+        row for row in range(cal.near_row, cal.far_row - 1, -1)
+        if cal.vehicles_at(row) >= 6.0
+    )
+    return _road(cal, tail=tail)
+
+
+@needs_extent_calibration
+def test_the_shared_sweep_reads_the_highway_camera(tmp_path):
+    """`extract_pending` is the one place that decides which cameras get read; a camera it
+    has not heard of is collected, background-built, and never once extracted. Also pins
+    what gets stored: a clear road is a trustworthy reading that claims *nothing* — no
+    band, and above all no vehicle count of zero for aggregation to mistake for an emptied
+    compound — and even a real queue keeps its highway count out of `vehicle_count`,
+    because that column means vehicles in the compound."""
+    from ferrycast.extent import PROMPT_VERSION
+    from ferrycast.lanes import extract_pending
+
+    config = _wired_config(tmp_path)
+    conn = init_db(config.db_path)
+    _hw_frame(conn, config, 0, EXTENT_BG.read_bytes())   # clear road
+    _hw_frame(conn, config, 15, _queue_bytes())          # standing queue
+
+    stats = extract_pending(conn, config, max_reads=10)
+
+    rows = conn.execute(
+        """SELECT o.fullness, o.vehicle_count, o.usable FROM observations o
+             JOIN frames f ON f.id = o.frame_id
+            WHERE o.prompt_version = ? ORDER BY f.captured_at""",
+        (PROMPT_VERSION,),
+    ).fetchall()
+    assert stats.read == 2
+    clear, queue = rows
+    assert clear["usable"] == 1
+    assert clear["fullness"] is None
+    assert clear["vehicle_count"] is None
+    assert queue["usable"] == 1
+    assert queue["fullness"] in ("heavy", "overflowing")
+    assert queue["vehicle_count"] is None
+
+
+@needs_extent_calibration
+def test_a_dark_highway_frame_is_refused_not_read(tmp_path):
+    """Differencing across a big illumination change is not validated, and the failure mode
+    is a confident phantom queue. The refusal is stored, unusable, so the frame does not
+    stay pending forever."""
+    import io
+
+    from PIL import Image
+
+    from ferrycast.extent import PROMPT_VERSION
+    from ferrycast.lanes import extract_pending
+
+    config = _wired_config(tmp_path)
+    conn = init_db(config.db_path)
+    buf = io.BytesIO()
+    Image.new("RGB", Image.open(EXTENT_BG).size, (5, 5, 5)).save(buf, format="JPEG")
+    _hw_frame(conn, config, 0, buf.getvalue())
+
+    stats = extract_pending(conn, config, max_reads=10)
+
+    row = conn.execute(
+        "SELECT fullness, usable FROM observations WHERE prompt_version = ?",
+        (PROMPT_VERSION,),
+    ).fetchone()
+    assert stats.read == 1 and stats.unusable == 1
+    assert row["usable"] == 0
+    assert row["fullness"] is None
+
+
+@needs_extent_calibration
+def test_the_read_budget_carries_over_between_sweeps(tmp_path):
+    """The cap bounds one run's work, not which frames ever get read: what this sweep
+    cannot afford, the next one picks up."""
+    from ferrycast.extent import PROMPT_VERSION
+    from ferrycast.lanes import extract_pending
+
+    config = _wired_config(tmp_path)
+    conn = init_db(config.db_path)
+    _hw_frame(conn, config, 0, EXTENT_BG.read_bytes())
+    _hw_frame(conn, config, 15, EXTENT_BG.read_bytes())
+
+    first = extract_pending(conn, config, max_reads=1)
+    second = extract_pending(conn, config, max_reads=1)
+
+    assert (first.read, second.read) == (1, 1)
+    n = conn.execute(
+        "SELECT COUNT(*) FROM observations WHERE prompt_version = ?", (PROMPT_VERSION,)
+    ).fetchone()[0]
+    assert n == 2
+
+
+# --- retention ---------------------------------------------------------------------------
+
+
+def test_thinning_does_not_delete_the_replay_archive(conn, config):
+    """`_thin_unextracted` keeps the frames the essential-offsets selection picks, and that
+    selection has never heard of a second camera — so applied to the highway one it kept
+    nothing and would have deleted every replay frame ever collected, unread."""
+    from datetime import timedelta
+
+    from ferrycast.maintenance import prune_frames
+    from ferrycast.timeutil import iso, now_utc
+
+    old = now_utc() - timedelta(days=60)   # past thinning (45d), inside retention (400d)
+    rel = "hw/old.jpg"
+    path = config.data_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 100)
+    conn.execute(
+        """INSERT INTO frames (route, terminal, camera, captured_at, service_date, path,
+                               status)
+           VALUES ('route7', 'ERL', 'drivebc244', ?, ?, ?, 'ok')""",
+        (iso(old), old.date().isoformat(), rel),
+    )
+    conn.commit()
+
+    result = prune_frames(conn, config)
+
+    assert result.thinned_unextracted == 0
+    assert path.exists()
+
+
+def test_an_extent_read_highway_frame_is_reclaimed_at_the_horizon(conn, config):
+    """The other half of the retention rule. "Read" means read by the extractor that will
+    ever look at a frame — vision never sees the highway camera, so testing for a vision
+    observation made every replay frame permanently unprunable, extracted or not."""
+    from datetime import timedelta
+
+    from ferrycast.extent import PROMPT_VERSION
+    from ferrycast.maintenance import prune_frames
+    from ferrycast.timeutil import iso, now_utc
+
+    ancient = now_utc() - timedelta(days=500)   # past the 400-day hard horizon
+    paths = {}
+    for name, extracted in (("read", True), ("unread", False)):
+        rel = f"hw/{name}.jpg"
+        path = config.data_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 100)
+        paths[name] = path
+        cur = conn.execute(
+            """INSERT INTO frames (route, terminal, camera, captured_at, service_date,
+                                   path, status)
+               VALUES ('route7', 'ERL', 'drivebc244', ?, ?, ?, 'ok')""",
+            (iso(ancient + timedelta(minutes=1 if extracted else 2)),
+             ancient.date().isoformat(), rel),
+        )
+        if extracted:
+            conn.execute(
+                """INSERT INTO observations (frame_id, prompt_version, model, usable,
+                                             created_at)
+                   VALUES (?, ?, 'queue-extent', 1, ?)""",
+                (cur.lastrowid, PROMPT_VERSION, iso(ancient)),
+            )
+    conn.commit()
+
+    result = prune_frames(conn, config)
+
+    assert not paths["read"].exists()      # numbers banked, file reclaimed
+    assert paths["unread"].exists()        # the only record of its moment
+    assert result.deleted == 1

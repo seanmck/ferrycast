@@ -58,7 +58,7 @@ to be *visible in the data*, never fatal to the job or to the other terminal.
 | `capture.py` / `deckspace.py` / `vessels.py` / `marine.py` / `shore.py` | The free collectors. |
 | `vision.py` | Paid Claude extraction, keyed `(frame, prompt_version)`. |
 | `lanes.py` | Free geometric reader for a berth-facing camera (SLT): fitted lane polygons differenced against a per-hour median background. |
-| `extent.py` | Free geometric reader for a highway camera pointed down the approach road (ERL). New — module and tests exist; not yet wired into the CLI or aggregation. |
+| `extent.py` | Free geometric reader for a highway camera pointed down the approach road (ERL): the tail's position past the camera is proof the compound overflowed. Read by the same `lanes.extract_pending` sweep as the lane grids; writes band-only observations (`vehicle_count` deliberately NULL — a highway count is not a compound residual). |
 | `selection.py` | Which frames are worth paying to read (essential offsets around each departure). |
 | `aggregate.py` | The inference. Biggest and most delicate file. |
 | `query.py` | Comparability search and the fallback ladder. |
@@ -83,8 +83,10 @@ numeric path never fires here and `filled_at` is never set — no free source gi
 operator's "loading maximum number of vehicles" note sets `filled`, and a departed sailing
 that stayed noteless for `DEPARTED_NOTE_WAIT` reads as `boarded` at low confidence. Earls
 Cove has no board at all, so that direction has only the vessel tracker (departure time
-only), reports, and — once someone calibrates its camera — geometry. The percentage code
-stays because other routes publish one.
+only), reports, and geometry — the compound camera's lanes plus the highway camera's
+overflow. Both of ERL's geometric witnesses are one-sided: neither can ever attest `empty`,
+so free evidence there can prove `filled` but never `boarded`. The percentage code stays
+because other routes publish one.
 
 `None` means *nobody has said*, which is not `False`. `outcome`
 (`boarded`/`filled`/`waited_1`/`waited_2plus`/`cancelled`/`unknown`) is derived from the pair by

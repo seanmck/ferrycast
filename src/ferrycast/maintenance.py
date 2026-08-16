@@ -12,8 +12,9 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
-from .config import Config
+from .config import MAIN_CAMERA, Config
 from .db import JobRun, scalar
+from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
 from .marine import _table_exists as marine_table_exists
 from .schedule import load_schedule_cached, sailings_for_day
 from .shore import _table_exists as shore_table_exists
@@ -55,6 +56,12 @@ def _thin_unextracted(
     point. So after a while we keep exactly the frames nearest the essential offsets around
     each departure — the set `extract --essential` would read — and drop the rest. Every
     sailing remains fully analysable, at roughly half the disk.
+
+    Main-camera frames only. The keep-set is defined by `essential_frames_for_day`, which
+    selects from the terminal's own camera and has never heard of any other — applied to
+    the highway camera it kept nothing, so this rule was quietly deleting an archive it had
+    never once considered. Extra-camera frames wait for the hard horizon in `_prune_frames`
+    instead, which knows their reader.
     """
     from .selection import essential_frames_for_day
 
@@ -63,11 +70,11 @@ def _thin_unextracted(
         row[0]
         for row in conn.execute(
             """SELECT DISTINCT service_date FROM frames
-                WHERE path IS NOT NULL AND captured_at < ?
+                WHERE path IS NOT NULL AND captured_at < ? AND camera = ?
                   AND NOT EXISTS (SELECT 1 FROM observations o
                                    WHERE o.frame_id = frames.id AND o.prompt_version = ?)
                 ORDER BY service_date""",
-            (cutoff, config.vision.prompt_version),
+            (cutoff, MAIN_CAMERA, config.vision.prompt_version),
         ).fetchall()
     ]
 
@@ -81,10 +88,10 @@ def _thin_unextracted(
         }
         doomed = conn.execute(
             """SELECT id, path FROM frames
-                WHERE path IS NOT NULL AND service_date = ? AND captured_at < ?
+                WHERE path IS NOT NULL AND service_date = ? AND captured_at < ? AND camera = ?
                   AND NOT EXISTS (SELECT 1 FROM observations o
                                    WHERE o.frame_id = frames.id AND o.prompt_version = ?)""",
-            (service_date, cutoff, config.vision.prompt_version),
+            (service_date, cutoff, MAIN_CAMERA, config.vision.prompt_version),
         ).fetchall()
         for row in doomed:
             if row["id"] in keep:
@@ -126,13 +133,20 @@ def _prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool) ->
     retention = config.retention
 
     # An unread frame is not redundant — it is the only remaining record of that moment.
+    # "Read" means read by the extractor that will ever look at it: vision for the terminal
+    # cameras, `extent` for a highway camera vision is never sent. Testing only for vision,
+    # as this did, made every replay frame permanently unprunable — extracted or not.
     extracted_only = (
         """ AND EXISTS (SELECT 1 FROM observations o
-                         WHERE o.frame_id = frames.id AND o.prompt_version = ?)"""
+                         WHERE o.frame_id = frames.id AND o.prompt_version IN (?, ?))"""
         if retention.keep_unextracted
         else ""
     )
-    guard_params = [config.vision.prompt_version] if retention.keep_unextracted else []
+    guard_params = (
+        [config.vision.prompt_version, EXTENT_PROMPT_VERSION]
+        if retention.keep_unextracted
+        else []
+    )
 
     delete_before = iso(now - timedelta(days=retention.keep_frames_days))
     rows = conn.execute(
@@ -183,8 +197,9 @@ def _prune_frames(conn: sqlite3.Connection, config: Config, *, dry_run: bool) ->
                 """SELECT COUNT(*) FROM frames
                     WHERE path IS NOT NULL AND captured_at < ?
                       AND NOT EXISTS (SELECT 1 FROM observations o
-                                       WHERE o.frame_id = frames.id AND o.prompt_version = ?)""",
-                (downsample_before, config.vision.prompt_version),
+                                       WHERE o.frame_id = frames.id
+                                         AND o.prompt_version IN (?, ?))""",
+                (downsample_before, config.vision.prompt_version, EXTENT_PROMPT_VERSION),
             ).fetchone()[0]
             or 0
         )

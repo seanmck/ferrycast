@@ -885,3 +885,110 @@ def test_a_compound_that_refilled_before_a_late_vessel_left_still_left_people_be
     assert row["fullness_at_departure"] == "empty"
     assert row["outcome"] == "filled"
     assert row["left_behind"] == 1
+
+
+# --- the highway camera: overflow evidence for the direction with no board ---------------
+
+
+def _extent_frames(conn, config, departure, readings, *, terminal="ERL"):
+    """Lay down highway readings: (minutes relative to departure, band-or-None).
+
+    Mirrors what `extent.extract_frames` stores: bands only, `vehicle_count` NULL even when
+    the reader counted vehicles standing on the highway, because that count is not a
+    compound residual. A None band is a clear road — trustworthy, and attesting nothing.
+    """
+    for offset, band in readings:
+        at = departure + timedelta(minutes=offset)
+        cur = conn.execute(
+            """INSERT INTO frames (route, terminal, camera, captured_at, service_date,
+                                   path, status)
+               VALUES (?, ?, 'drivebc244', ?, ?, ?, 'ok')""",
+            (config.route.id, terminal, iso(at), departure.date().isoformat(),
+             f"hw{terminal}-{offset}.jpg"),
+        )
+        conn.execute(
+            """INSERT INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
+                    fullness, ferry_at_dock, visibility, confidence, usable, created_at)
+               VALUES (?, 'extent-v1', 'queue-extent', NULL, NULL, ?, 0, 'clear',
+                       0.9, 1, ?)""",
+            (cur.lastrowid, band, iso(now_utc())),
+        )
+    conn.commit()
+
+
+def _tracked_departure(conn, config, departure):
+    """The vessel tracker seeing the sailing go — Earls Cove's only departure source."""
+    from ferrycast.vessels import VesselReading, store_readings
+
+    for offset, status, heading in [
+        (-10, "In Port", "S"), (5, "Under Way", "W"), (25, "Under Way", "NW"),
+    ]:
+        moment = departure + timedelta(minutes=offset)
+        store_readings(
+            conn, config, moment,
+            [VesselReading("Malaspina Sky", status, heading,
+                           moment.astimezone(config.tz).strftime("%H:%M"))],
+        )
+
+
+def _erl_record(conn, hhmm="13:30"):
+    return conn.execute(
+        """SELECT r.* FROM sailing_records r JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'ERL' AND s.depart_hhmm = ?""",
+        (hhmm,),
+    ).fetchone()
+
+
+def test_a_highway_overflow_with_a_tracked_departure_reads_filled(conn, config):
+    """Earls Cove's whole free evidence chain in one record. No board, no percentages —
+    the tracker says when the sailing went, and the highway camera says the compound had
+    run out of room before it went and still had a tail standing after. That pair is
+    `filled`: the first outcome the homeward direction can produce without a human."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _extent_frames(conn, config, departure,
+                   [(-30, "heavy"), (-10, "overflowing"), (20, "heavy")])
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "filled"
+    assert row["filled"] == 1
+    assert row["left_behind"] == 1
+    assert row["peak_fullness"] == "overflowing"
+    assert row["method"] == "frames:extent-v1"
+
+
+def test_a_clear_highway_is_not_evidence_anyone_boarded(conn, config):
+    """The false all-clear, end to end. A clear road means only that the queue has not
+    overflowed — the compound behind it can be anywhere from bare to brim-full — so a day
+    of clear readings plus a tracked departure must stay `unknown`, never `boarded`."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _extent_frames(conn, config, departure, [(-30, None), (-10, None), (20, None)])
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "unknown"
+    assert row["filled"] is None
+    assert row["left_behind"] is None
+
+
+def test_the_compound_and_highway_cameras_witness_one_sailing_together(conn, config):
+    """Two free geometric readers, one window: the terminal camera saw the lanes full
+    before departure and the highway camera saw a tail still standing after it."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _geom_frames(conn, config, departure, [(-15, 2, "heavy")], terminal="ERL")
+    _extent_frames(conn, config, departure, [(20, "heavy")])
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "filled"
+    assert row["method"] == "frames:extent-v1+geom-v1"

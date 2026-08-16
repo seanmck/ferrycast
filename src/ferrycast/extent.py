@@ -445,3 +445,96 @@ def load_for(
 
 PROMPT_VERSION = "extent-v1"
 MODEL = "queue-extent"
+
+
+def extract_frames(conn, config, frames, *, dry_run: bool = False, max_reads: int | None = None):
+    """Read highway frames geometrically and store them as observations.
+
+    Same table and same discipline as `lanes.extract_frames` — its own prompt version, no
+    cost, `max_reads` capping reads rather than frames considered so a skip cannot eat the
+    budget. Two deliberate differences in what gets stored:
+
+    * `vehicle_count` is always NULL. The reader's count is vehicles standing on the
+      *highway*, and aggregation treats a stored count as a compound residual — a clear
+      road stored as `0` would have classified the sailing `boarded` off a camera that
+      cannot see whether anyone boarded. The number survives in `raw` for calibration work.
+    * A clear road is stored usable but with no claims (`fullness` NULL): the reading is
+      trustworthy, it just attests nothing about the compound, and aggregation must see
+      silence rather than "empty". Only a refusal — light the differencing is not
+      validated across — is unusable.
+    """
+    from .lanes import BackgroundLibrary, LaneStats
+    from .timeutil import iso, local, now_utc, parse_iso
+
+    stats = LaneStats()
+    if not frames or dry_run:
+        stats.considered = len(frames)
+        return stats
+
+    config_dir = Path(config.source_path).parent
+    cals: dict[tuple[str, str], QueueExtentCalibration | None] = {}
+    libraries: dict[tuple[str, str], BackgroundLibrary] = {}
+    backgrounds: dict[tuple[str, str, int], object] = {}
+
+    for frame in frames:
+        if max_reads is not None and stats.read >= max_reads:
+            break
+        stats.considered += 1
+        key = (frame["terminal"], frame["camera"])
+        if key not in cals:
+            cals[key] = load_for(config_dir, *key)
+            libraries[key] = BackgroundLibrary(config.data_dir, *key)
+        cal = cals[key]
+        if cal is None:
+            stats.skipped_no_calibration += 1
+            continue
+
+        # The reference must match the hour — this camera's docstring is stricter than the
+        # compound one's about how far the sun may move, and the per-hour library is what
+        # satisfies it. An hour with no reference yet waits rather than differencing badly.
+        hour = local(parse_iso(frame["captured_at"]), config.tz).hour
+        if key + (hour,) not in backgrounds:
+            backgrounds[key + (hour,)] = libraries[key].for_hour(hour)
+        background = backgrounds[key + (hour,)]
+        if background is None:
+            stats.skipped_no_background += 1
+            continue
+
+        path = Path(config.data_dir) / frame["path"]
+        if not path.exists():
+            stats.failed += 1
+            stats.errors.append(f"frame {frame['id']}: file missing at {path}")
+            continue
+        try:
+            parsed = read_frame(path, background.path, cal)
+        except Exception as exc:
+            stats.failed += 1
+            stats.errors.append(f"frame {frame['id']}: {exc}")
+            continue
+
+        usable = parsed["vehicle_count"] is not None
+        conn.execute(
+            """INSERT OR REPLACE INTO observations
+                   (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
+                    queue_beyond_frame, ferry_at_dock, visibility, fullness, confidence,
+                    usable, notes, input_tokens, output_tokens, cost_usd, created_at, raw)
+               VALUES (?, ?, ?, NULL, NULL, ?, 0, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)""",
+            (
+                frame["id"],
+                PROMPT_VERSION,
+                MODEL,
+                int(bool(parsed["queue_extends_beyond_frame"])),
+                "clear" if usable else "obscured",
+                parsed["fullness"],
+                parsed["confidence"],
+                int(usable),
+                parsed["notes"] or None,
+                iso(now_utc()),
+                json.dumps(parsed, separators=(",", ":")),
+            ),
+        )
+        stats.read += 1
+        if not usable:
+            stats.unusable += 1
+    conn.commit()
+    return stats
