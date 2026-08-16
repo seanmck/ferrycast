@@ -83,6 +83,18 @@ class LaneCalibration:
     #: prevent. Defaults True so a calibration that has not thought about it behaves as
     #: before; set it false deliberately.
     covers_compound: bool = True
+    #: Whether the fitted lanes sit short of the one-vessel line.
+    #:
+    #: The claim it licenses is the one `covers_compound = false` otherwise forbids. At
+    #: Earls Cove the fitted lanes are the last pavement to fill, and the operator's own
+    #: geometry (Sean, 2026-08-16) is that everything the compound holds short of them fits
+    #: on a single vessel — the queue has to back well out onto the highway before anyone
+    #: is at risk of being left. So bare fitted lanes do not mean bare tarmac (vehicles can
+    #: stand in the unfitted lanes), but they do mean "whatever is queued fits on the
+    #: boat", and every claim this system derives from the `empty` band reduces to exactly
+    #: that. Defaults False: a calibration that has not established where the capacity
+    #: line sits keeps refusing, which is the safe direction to be wrong in.
+    lanes_before_capacity: bool = False
 
     @property
     def lanes(self) -> list[int]:
@@ -121,6 +133,7 @@ class LaneCalibration:
             mobius=tuple(raw["mobius"]),
             fitted_from=raw.get("fitted_from", ""),
             covers_compound=bool(raw.get("covers_compound", True)),
+            lanes_before_capacity=bool(raw.get("lanes_before_capacity", False)),
         )
 
 
@@ -235,13 +248,25 @@ def fullness_from_lanes(shares: dict[int, float], cal: LaneCalibration) -> str |
     five vehicles stood in shot while both calibrated lanes read clear. Occupancy still means
     something, and means it strongly: vehicles at the far end are only there once everything
     ahead of them is taken.
+
+    `lanes_before_capacity` re-licenses one end of that scale. Where the fitted lanes are
+    known to sit short of the one-vessel line, bare fitted lanes are no longer silence:
+    those five vehicles in shot were below a boatload *because* the queue had not reached
+    lane 4, and "whatever is queued fits" is what the `empty` band claims everywhere this
+    system consumes it. The other end tightens instead: every fitted lane occupied proves
+    "at least this much" and nothing more — how far the queue runs past them is out of
+    frame, and the same geometry says it must back well onto the highway before anyone is
+    at risk. `overflowing` claimed the capacity line off two lanes that sit far short of
+    it, and the band path reads an overflowing departure with a residual as a fill.
     """
     lanes = cal.lanes
     used = len(occupied_lanes(shares))
     if not cal.covers_compound:
-        if not lanes or used == 0:
+        if not lanes:
             return None
-        return "overflowing" if used == len(lanes) else "heavy"
+        if used == 0:
+            return "empty" if cal.lanes_before_capacity else None
+        return "heavy"
     if not lanes:
         return "empty"
     if used == 0:
@@ -444,6 +469,11 @@ def read_frame(
             notes += " — the far end of the compound, so everything ahead of them is taken"
     elif cal.covers_compound:
         notes = "compound clear"
+    elif cal.lanes_before_capacity:
+        notes = (
+            f"lanes {cal.lanes} clear — the queue has not reached the fitted lanes, and "
+            "everything the compound holds short of them fits on one vessel"
+        )
     else:
         notes = (
             f"lanes {cal.lanes} clear, but they are the far end of a compound this camera "
