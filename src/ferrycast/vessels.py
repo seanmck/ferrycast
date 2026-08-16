@@ -23,10 +23,16 @@ gone for good, exactly like a frame.
 
 Which terminal a vessel is stopped at is **not** published: the status says it is stopped and
 never where. But the route is a two-point shuttle with a single vessel, so stopped-then-moving
-*is* a departure, and the only open question is which end it left. That is settled against the
-Saltery Bay board — which publishes its own departures to the minute — rather than inferred
-from the compass heading: a transition matching a published one is Saltery Bay's, and one
-matching none belongs to Earls Cove, which publishes nothing.
+*is* a departure, and the only open question is which end it left.
+
+That question is answered for the day at once rather than for each sailing separately, in
+`departure_ledger`. The boat must arrive somewhere before it can leave again, so departures
+strictly alternate between the two ends; the Saltery Bay board publishes its own departures
+to the minute several times a day, and each one it publishes fixes the parity of the whole
+sequence — including the departures it has not got round to publishing yet, and every Earls
+Cove departure, which it never publishes at all. The compass heading is not read: it is a
+proxy for geometry where the alternation is a consequence of the timetable being physically
+possible.
 
 The status wording is per-route — `Stopped` here, `In Port` on the Tsawwassen runs — so it is
 matched against a set, with the speed reading as a fallback beneath it.
@@ -42,6 +48,7 @@ from datetime import date, datetime, time, timedelta
 from .config import Config
 from .db import JobRun
 from .fetching import fetch
+from .schedule import load_schedule_cached, sailings_for_day
 from .timeutil import combine_local, iso, local, now_utc, parse_hhmm, parse_iso
 
 #: Status words meaning the vessel is not moving. Route 1 says `In Port`; route 29 — this
@@ -264,37 +271,45 @@ def refresh(conn: sqlite3.Connection, config: Config) -> dict:
         return {"ok": True, "rows": stored, "vessels": len(readings)}
 
 
-#: How late a sailing may leave and still be recognised. Comfortably inside this route's
-#: tightest headway (110 minutes at Earls Cove), so one sailing's window cannot reach into
-#: the next one's departure.
+#: How late a sailing may leave and still be paired with its scheduled time. Comfortably
+#: inside this route's tightest headway (110 minutes at Earls Cove), so a sailing cannot be
+#: handed the departure that belonged to the next one.
 LATE_TOLERANCE = timedelta(minutes=75)
 
-#: How close a tracked transition may sit to a departure the board published at the *other*
-#: terminal before it is taken to be that same departure rather than this terminal's. The two
-#: cannot really be confused: the same vessel has to cross between them, so consecutive
-#: departures are at least a crossing apart — about fifty minutes on this route. Fifteen
-#: minutes is therefore generous against feed lag while nowhere near the real separation.
+#: How close a tracked transition may sit to a departure the board published before it is
+#: taken to *be* that departure. Consecutive departures are at least a crossing apart —
+#: about fifty minutes here — so fifteen minutes is generous against feed lag while nowhere
+#: near the real separation.
 SAME_DEPARTURE = timedelta(minutes=15)
 
+#: The least that can separate two consecutive departures on a two-point shuttle: the vessel
+#: has to cross and turn around. Anything closer is not the next departure but a reading the
+#: alternation cannot account for — a stop mid-crossing, most likely — so the chain is cut
+#: there rather than carried across a step that cannot be real. Well under the true
+#: half-cycle (a fifty-minute crossing plus a turnaround) and well over the feed's jitter.
+MIN_SEPARATION = timedelta(minutes=30)
 
-def _published_elsewhere(
-    conn: sqlite3.Connection, config: Config, *, route_id: str, origin: str, window: tuple
-) -> list[datetime]:
-    """Departures the board published for a terminal other than this one, inside `window`.
 
-    This is the whole disambiguation, and it rests on hard evidence rather than inference:
-    the operator states when a sailing left Saltery Bay, so a transition matching one is
-    Saltery Bay's and any other transition belongs to the end that publishes nothing.
+def _published_departures(
+    conn: sqlite3.Connection, config: Config, *, route_id: str, span: tuple
+) -> list[tuple[datetime, str]]:
+    """Every departure the board published inside `span`, with the terminal that published it.
+
+    These are the ledger's anchors, and they are hard evidence rather than inference: the
+    operator states that a sailing left Saltery Bay at 5:51, so a transition matching it is
+    Saltery Bay's. Every terminal that publishes contributes; on this route that is one of
+    the two, which is enough, because fixing one departure in an alternating sequence fixes
+    all of them.
     """
-    start, end = window
+    start, end = span
     days = sorted({(start.date() - timedelta(days=1)), start.date(), end.date()})
     placeholders = ",".join("?" for _ in days)
     rows = conn.execute(
-        f"""SELECT DISTINCT service_date, sailing_hhmm, departed_hhmm FROM deck_space
-             WHERE route = ? AND terminal != ? AND fetch_status = 'ok'
+        f"""SELECT DISTINCT terminal, service_date, sailing_hhmm, departed_hhmm FROM deck_space
+             WHERE route = ? AND fetch_status = 'ok'
                AND departed_hhmm IS NOT NULL
                AND service_date IN ({placeholders})""",
-        (route_id, origin, *(d.isoformat() for d in days)),
+        (route_id, *(d.isoformat() for d in days)),
     ).fetchall()
 
     found = []
@@ -307,70 +322,174 @@ def _published_elsewhere(
         if left < scheduled - timedelta(hours=12):
             left += timedelta(days=1)
         if start - SAME_DEPARTURE <= left <= end + SAME_DEPARTURE:
-            found.append(left)
-    return found
+            found.append((left, row["terminal"]))
+    return sorted(found)
 
 
-def departure_from_tracking(
+@dataclass(frozen=True)
+class Departure:
+    """One tracked departure, and the end it left from once the ledger can say.
+
+    `terminal` is None where the ledger declines to name one. That is not the same as the
+    departure not having happened: the vessel certainly went somewhere, we just cannot say
+    from which end, and a caller must not read it as either terminal's.
+    """
+
+    at: datetime
+    terminal: str | None = None
+
+
+@dataclass(frozen=True)
+class Ledger:
+    """The day's departures in order, each labelled with the end it left from.
+
+    Empty means the tracker cannot speak to this day at all, which is different from a day
+    with no departures in it — `observed_at` tells them apart, and is what freshness is
+    judged on.
+    """
+
+    departures: tuple[Departure, ...] = ()
+    observed_at: datetime | None = None
+
+    def left_from(self, terminal: str) -> list[datetime]:
+        return [d.at for d in self.departures if d.terminal == terminal]
+
+    @property
+    def named_any(self) -> bool:
+        """Whether the ledger managed to name a terminal for anything at all."""
+        return any(d.terminal for d in self.departures)
+
+
+def departure_ledger(
     conn: sqlite3.Connection,
     config: Config,
     *,
-    origin: str,
-    departure: datetime,
-    grace: timedelta = timedelta(minutes=20),
+    target_date: date,
+    until: datetime | None = None,
     route_id: str | None = None,
-) -> datetime | None:
-    """When the vessel left `origin`, as the tracker saw it — or None if it cannot say.
+) -> Ledger:
+    """Every departure the tracker saw on `target_date`, each attributed to an end.
 
-    Returns the first moving reading of the earliest stopped-then-moving transition in the
-    window that the board does not already account for elsewhere. That is an upper bound on
-    the departure: the vessel had certainly gone by then, and reading a residual queue
-    slightly late is the safe direction to be wrong in.
+    This is a two-point shuttle with a single vessel, and that premise does the work that
+    was previously attempted per sailing from a slice of time. The boat has to *arrive*
+    somewhere before it can leave again, so departures strictly alternate between the two
+    ends — which makes the end a departure left from a property of the whole day's sequence,
+    not something to be inferred afresh from each one.
 
-    The route is a two-point shuttle with one vessel, so stopped-then-moving *is* a
-    departure and there is nothing to infer about that. The only real question is which end
-    it left from, and that is settled against the board rather than guessed from the feed:
-    Saltery Bay publishes its departures to the minute, so a transition matching one is
-    Saltery Bay's, and a transition matching none belongs to the end that publishes nothing.
+    So the parity of any single departure fixes the parity of every other, and the board
+    supplies parity for free: Saltery Bay publishes its departures to the minute, several
+    times a day. A transition matching one of those is Saltery Bay's, and the alternation
+    carries that outward in both directions — forward over the departures the board has not
+    posted yet, which is the case this exists for. Saltery Bay routinely takes half an hour
+    to publish, and Earls Cove never publishes at all.
 
-    Every transition is offered to that test, earliest first, rather than only the last one
-    in the window. The window has to reach far enough past the scheduled time to catch a
-    late sailing, and on a fifty-minute crossing that is long enough to also contain the
-    vessel arriving at the *other* end and tying up there. Taking the last transition
-    therefore found the far terminal's departure — or, with the vessel still berthed over
-    there when the window closed, no transition at all. Either way the answer was None for
-    every sailing punctual enough that the round trip fitted inside the window, which is to
-    say for nearly all of them: only a sailing over half an hour late reported anything.
+    What this replaced was a per-sailing search over a window from twenty minutes before the
+    scheduled time to seventy-five after, which asked "which of these transitions is not
+    accounted for at the other end?". That question has no answer at Saltery Bay, because
+    the other end is Earls Cove and it publishes nothing to subtract — so the search fell
+    back to taking the earliest transition in the window, unguarded. On a day running late
+    the previous Earls Cove sailing lands inside that window and *before* the real one, so
+    the earliest transition is the wrong end's, and Saltery Bay would have been told its
+    boat had gone while it was still crossing towards the berth. Alternation needs nothing
+    subtracted and so has no such blind side.
 
-    This replaced reading the compass heading, which tried to derive the same fact from a
-    three-character string and got it wrong in production. Earls Cove sits in a narrow cove,
-    so the vessel swings north-east clear of it before turning north-west across the strait
-    — and `NE` contains an `E`, so an outbound sailing read as inbound and the 15:40 that
-    left at 16:26 still showed "not away yet" ten minutes later. Heading is a proxy for
-    geometry; the board is the fact.
+    Being able to check itself is the other half. Two anchors an even number of steps apart
+    have to name the same end, and an odd number apart opposite ends; where they do not, a
+    transition was missed — a feed gap swallowing a whole turnaround, or a vessel stopping
+    mid-crossing and registering as a departure. The chain is cut there and the stretch
+    between those anchors goes unnamed, rather than the error propagating silently through
+    every departure after it. A window search cannot do this: it has nothing to be
+    inconsistent with.
     """
     route = config.route_by_id(route_id) if route_id else config.route
-    window = (departure - grace, departure + LATE_TOLERANCE)
+    codes = route.codes
+    # Alternation is only meaningful between exactly two ends. A route with more is not a
+    # shuttle and every claim below would be unfounded on it.
+    if len(codes) != 2:
+        return Ledger()
+
+    start = combine_local(target_date, time(0, 0), config.tz)
+    end = until or start + timedelta(days=1)
     rows = conn.execute(
-        """SELECT status, speed_knots, reported_at FROM vessel_positions
+        """SELECT vessel, status, speed_knots, reported_at FROM vessel_positions
             WHERE route = ? AND fetch_status = 'ok' AND reported_at IS NOT NULL
               AND reported_at >= ? AND reported_at <= ?
             ORDER BY reported_at""",
-        (route.id, iso(window[0]), iso(window[1])),
+        (route.id, iso(start), iso(end)),
     ).fetchall()
-    found = _transitions(rows)
-    if not found:
-        return None
-    published = _published_elsewhere(
-        conn, config, route_id=route.id, origin=origin, window=window
+    if not rows:
+        return Ledger()
+    observed_at = parse_iso(rows[-1]["reported_at"])
+
+    # One vessel is a premise, not a detail: two boats interleave their transitions into one
+    # sequence and the alternation is no longer about a single hull going back and forth.
+    # Asserted rather than assumed, because the feed would report a second vessel without
+    # any other sign that the reasoning below had stopped being true.
+    if len({row["vessel"] for row in rows if row["vessel"]}) > 1:
+        return Ledger(observed_at=observed_at)
+
+    moments = _transitions(rows)
+    if not moments:
+        return Ledger(observed_at=observed_at)
+
+    anchored = _anchors(
+        moments, _published_departures(conn, config, route_id=route.id, span=(start, end))
     )
-    return next((left for left in found if not _is_claimed(left, published)), None)
+    labels = _label_by_alternation(moments, anchored, codes)
+    return Ledger(
+        tuple(Departure(at, label) for at, label in zip(moments, labels, strict=True)),
+        observed_at,
+    )
 
 
-def _is_claimed(moment: datetime, published: list[datetime]) -> bool:
-    """Whether the board has already accounted for this transition at the other terminal."""
-    return any(abs((moment - other).total_seconds()) <= SAME_DEPARTURE.total_seconds()
-               for other in published)
+def _anchors(
+    moments: list[datetime], published: list[tuple[datetime, str]]
+) -> dict[int, str]:
+    """Which departures the board has already named an end for, by position in the sequence."""
+    found = {}
+    for index, moment in enumerate(moments):
+        for at, terminal in published:
+            if abs((moment - at).total_seconds()) <= SAME_DEPARTURE.total_seconds():
+                found[index] = terminal
+                break
+    return found
+
+
+def _label_by_alternation(
+    moments: list[datetime], anchored: dict[int, str], codes: tuple[str, ...]
+) -> list[str | None]:
+    """Spread each anchor's end outward by alternation, cutting the chain where it cannot hold.
+
+    A stretch with no anchor in it goes unnamed. That is the conservative answer and it is
+    the right one: the alternation is only ever as good as the fact it is anchored to, and
+    with nothing to anchor to there is no fact, only a pattern.
+    """
+    breaks = {
+        index
+        for index in range(1, len(moments))
+        if moments[index] - moments[index - 1] < MIN_SEPARATION
+    }
+
+    # Anchors that disagree about parity mean a transition between them was missed. Neither
+    # anchor is in doubt — the board published both — so both keep their own end and go on
+    # anchoring their own side; it is only the stretch between them that cannot be walked.
+    ordered = sorted(anchored)
+    for earlier, later in zip(ordered, ordered[1:], strict=False):
+        agrees = (anchored[earlier] == anchored[later]) == ((later - earlier) % 2 == 0)
+        if not agrees:
+            breaks.update({earlier + 1, later})
+
+    labels: list[str | None] = [None] * len(moments)
+    opened = 0
+    for boundary in sorted(breaks) + [len(moments)]:
+        segment = range(opened, boundary)
+        anchor = next((index for index in segment if index in anchored), None)
+        if anchor is not None:
+            base = codes.index(anchored[anchor])
+            for index in segment:
+                labels[index] = codes[(base + index - anchor) % 2]
+        opened = boundary
+    return labels
 
 
 def _transitions(rows) -> list[datetime]:
@@ -380,16 +499,11 @@ def _transitions(rows) -> list[datetime]:
     without the rule living in two places — the board and the record disagreeing about
     whether a sailing has gone would be worse than either being wrong alone.
 
-    Every one of them, and not just the last. A window wide enough to catch a late sailing
-    is also wide enough to hold a whole round trip on a fifty-minute crossing, so its last
-    transition is the far terminal's departure — and when the vessel is still tied up over
-    there as the window closes, there is no last transition at all. That is what emptied the
-    Earls Cove column: any sailing punctual enough to get across and berth reported nothing,
-    and only one over half an hour late reported at all.
-
-    Says nothing about *which* terminal each was left from; that is the caller's to settle.
-    A vessel stopping mid-crossing would register here as a departure, which is the one case
-    this shape cannot distinguish — rare enough, and the sailing window bounds the damage.
+    Says nothing about *which* end each was left from: that is `departure_ledger`'s to
+    settle, from the sequence as a whole. A vessel stopping mid-crossing registers here as a
+    departure, which is the one case this shape cannot tell apart on its own — the ledger
+    catches it downstream, as a step too short to be a real crossing or as two anchors that
+    no longer agree on parity.
     """
     if not rows:
         return []
@@ -433,6 +547,103 @@ class TrackerWatch:
         return self.observed_at is not None and now - self.observed_at <= within
 
 
+def _sailing_times(config: Config, route, origin: str, target_date: date) -> list[str]:
+    blocks = load_schedule_cached(config.schedule_path)
+    return [
+        s.depart_hhmm
+        for s in sailings_for_day(
+            blocks, target_date, route.id, route.destinations, config.tz, origin=origin
+        )
+    ]
+
+
+def _pair_with_sailings(
+    departures: list[datetime], scheduled: dict[str, datetime], grace: timedelta
+) -> dict[str, datetime]:
+    """Give each scheduled sailing the tracked departure that was its own.
+
+    Both sequences are in order and a departure can only belong to one sailing, so this is
+    an ordered, exclusive hand-out rather than a search: each sailing takes the earliest
+    departure still going that could plausibly be its own, and that departure is then spent.
+    The plausibility bound is what makes it refuse rather than reach — a sailing whose own
+    departure was never tracked is left with nothing instead of being handed the next one's.
+    """
+    remaining = sorted(departures)
+    paired: dict[str, datetime] = {}
+    for hhmm, when in sorted(scheduled.items(), key=lambda item: item[1]):
+        match = next(
+            (at for at in remaining if when - grace <= at <= when + LATE_TOLERANCE), None
+        )
+        if match is not None:
+            paired[hhmm] = match
+            remaining.remove(match)
+    return paired
+
+
+def departures_by_sailing(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    target_date: date,
+    until: datetime | None = None,
+    times: list[str] | None = None,
+    grace: timedelta = timedelta(minutes=20),
+    route_id: str | None = None,
+) -> dict[str, datetime]:
+    """`HH:MM` -> when the tracker saw that sailing leave `origin`, for one service date.
+
+    The single place a tracked departure is turned into a claim about a scheduled sailing,
+    so the record and the live board cannot come to different conclusions from the same
+    readings.
+    """
+    route = config.route_by_id(route_id) if route_id else config.route
+    hhmms = times if times is not None else _sailing_times(config, route, origin, target_date)
+    if not hhmms:
+        return {}
+    ledger = departure_ledger(
+        conn, config, target_date=target_date, until=until, route_id=route.id
+    )
+    scheduled = {
+        hhmm: combine_local(target_date, parse_hhmm(hhmm), config.tz) for hhmm in hhmms
+    }
+    return _pair_with_sailings(ledger.left_from(origin), scheduled, grace)
+
+
+def departure_from_tracking(
+    conn: sqlite3.Connection,
+    config: Config,
+    *,
+    origin: str,
+    departure: datetime,
+    grace: timedelta = timedelta(minutes=20),
+    route_id: str | None = None,
+) -> datetime | None:
+    """When the vessel left `origin` on this sailing, as the tracker saw it, or None.
+
+    The first moving reading after it was last seen stopped, which is an upper bound: it had
+    certainly gone by then, and reading a residual queue slightly late is the safe direction
+    to be wrong in.
+
+    Which end that transition was from comes from `departure_ledger` — the day's departures
+    alternate between the two terminals, so the board naming one names them all — and never
+    from the compass heading, which tried to derive the same fact from a three-character
+    string and got it wrong in production. Earls Cove sits in a narrow cove, so the vessel
+    swings north-east clear of it before turning north-west across the strait, and `NE`
+    contains an `E`: an outbound sailing read as inbound, and the 15:40 that left at 16:26
+    still showed "not away yet" ten minutes later.
+    """
+    here = local(departure, config.tz)
+    return departures_by_sailing(
+        conn,
+        config,
+        origin=origin,
+        target_date=here.date(),
+        grace=grace,
+        route_id=route_id,
+    ).get(here.strftime("%H:%M"))
+
+
 def tracker_watch(
     conn: sqlite3.Connection,
     config: Config,
@@ -454,44 +665,32 @@ def tracker_watch(
     if not times:
         return TrackerWatch()
 
+    ledger = departure_ledger(
+        conn, config, target_date=target_date, until=now, route_id=route.id
+    )
+    # A ledger holding departures it could name no end for knows nothing about this
+    # terminal, and its silence must not be read as "nothing has left here" — that is the
+    # reading that tells somebody a boat they have missed is still catchable. No departures
+    # at all is a different and stronger statement: the vessel was watched and never went
+    # anywhere, which *is* evidence it is still tied up.
+    if ledger.departures and not ledger.named_any:
+        return TrackerWatch(observed_at=ledger.observed_at)
+
     scheduled = {
         hhmm: combine_local(target_date, parse_hhmm(hhmm), config.tz) for hhmm in times
     }
-    first = min(scheduled.values()) - grace
-    rows = conn.execute(
-        """SELECT status, speed_knots, reported_at FROM vessel_positions
-            WHERE route = ? AND fetch_status = 'ok' AND reported_at IS NOT NULL
-              AND reported_at >= ? AND reported_at <= ?
-            ORDER BY reported_at""",
-        (route.id, iso(first), iso(now)),
-    ).fetchall()
-    if not rows:
-        return TrackerWatch()
+    paired = _pair_with_sailings(ledger.left_from(origin), scheduled, grace)
 
-    stamps = [parse_iso(row["reported_at"]) for row in rows]
-    # One read for the whole day, same as the positions: every sailing is checked against
-    # the departures the other end published, so a transition the board already accounts
-    # for is never also counted as this terminal's.
-    published = _published_elsewhere(
-        conn, config, route_id=route.id, origin=origin, window=(first, now)
-    )
     departed: set[str] = set()
     not_away: set[str] = set()
     for hhmm, when in scheduled.items():
         if when > now:
             continue
-        window = [
-            row
-            for row, at in zip(rows, stamps, strict=True)
-            if when - grace <= at <= when + LATE_TOLERANCE
-        ]
-        left = next(
-            (at for at in _transitions(window) if not _is_claimed(at, published)), None
-        )
+        left = paired.get(hhmm)
         if left is not None and left <= now:
             departed.add(hhmm)
         elif now <= when + LATE_TOLERANCE:
             # Still inside the span a departure could turn up in, and none has. That is a
             # positive finding: the boat is late, not missed.
             not_away.add(hhmm)
-    return TrackerWatch(frozenset(departed), frozenset(not_away), stamps[-1])
+    return TrackerWatch(frozenset(departed), frozenset(not_away), ledger.observed_at)

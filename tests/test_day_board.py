@@ -284,6 +284,58 @@ def test_a_published_departure_is_what_makes_a_sailing_sailed(
     assert body.count("board-row past") == 2
 
 
+def test_the_tracker_answers_a_board_that_has_not_posted_yet(
+    client, conn, config, friday_lunchtime
+):
+    """Saltery Bay's board publishes the departure, but not promptly.
+
+    On 15 Aug the 16:55 left at 17:51 and the board still said "Upcoming" at 18:22; the time
+    appeared at 18:27, thirty-six minutes late. For all thirty-six the day board said "not
+    away yet" about a boat halfway across the strait and held the live camera on its empty
+    berth — while the tracker had watched it go and was never asked, because the board being
+    present at all was taken for the board having spoken.
+
+    Here the same shape: the 12:30 is listed with no departure against it, and the tracker
+    has it away at 12:41. The board's silence is not evidence the vessel is alongside.
+    """
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+    # The 08:30, published and tracked, is what names the ends for the whole day.
+    seed_deck_space(conn, config, at="08:40", rows={"08:30": "08:34"})
+    seed_tracking(
+        conn,
+        config,
+        [
+            ("08:24", "Stopped", ""),
+            ("08:34", "Under Way", ""),   # away from Saltery Bay — the board published this
+            ("09:24", "Stopped", ""),     # berthed at Earls Cove
+            ("10:30", "Under Way", ""),   # away from Earls Cove
+            ("11:20", "Stopped", ""),     # berthed at Saltery Bay again
+            ("12:41", "Under Way", ""),   # and away: the 12:30, eleven minutes late
+        ],
+    )
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" not in body
+    assert body.count("board-row past") == 2
+
+
+def test_an_unnamed_departure_does_not_overrule_the_board(
+    client, conn, config, friday_lunchtime
+):
+    """The tracker only overrules the board's silence on a positive finding, and naming the
+    end a departure left from is part of being positive. With nothing published all day the
+    ledger has no anchor, so the transition at 12:41 could have been from either end — and a
+    boat that left Earls Cove says nothing about whether the 12:30 is still at Saltery Bay.
+    """
+    seed_deck_space(conn, config, at="12:55", rows={"12:30": None, "16:30": None})
+    seed_tracking(conn, config, [("12:31", "Stopped", ""), ("12:41", "Under Way", "")])
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+
+    assert "not away yet" in body
+
+
 def test_a_sailing_the_board_has_dropped_has_gone(client, conn, config, friday_lunchtime):
     """Not every departure gets a time published against it — some sailings simply scroll
     off the page. Falling off the board is how those finally settle, or the morning would

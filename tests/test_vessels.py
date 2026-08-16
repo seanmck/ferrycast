@@ -1,18 +1,24 @@
 """Vessel tracking — the only departure source for a terminal with no board.
 
-What is pinned here is mostly refusal. The feed reports `In Port` without ever naming the
-port, so the single thing standing between "the ship left Earls Cove" and "the ship left
-Saltery Bay" is its heading once it is moving. Getting that wrong would file the homeward
-sailing's departure against the outbound one, so an ambiguous heading has to mean no answer.
+The feed says the vessel is stopped without ever naming where, so on its own a reading
+cannot tell "the ship left Earls Cove" from "the ship left Saltery Bay". What settles it is
+the shape of the day rather than any single reading: one boat between two ends must arrive
+before it can leave again, so departures alternate, and one departure the board publishes
+names every other one.
+
+So what is pinned here is mostly the seam between that premise and the evidence for it — an
+unanchored sequence names nothing, a missed transition does not invert the rest of the day,
+and a second vessel stops the whole argument rather than quietly breaking it.
 """
 
 from __future__ import annotations
 
 from datetime import date, time, timedelta
 
-from ferrycast.timeutil import combine_local, iso
+from ferrycast.timeutil import combine_local, iso, local
 from ferrycast.vessels import (
     departure_from_tracking,
+    departure_ledger,
     parse_tracking,
     refresh,
     store_readings,
@@ -190,8 +196,10 @@ def _publish_departure(conn, config, day, sailing_hhmm, departed_hhmm, *, termin
     from ferrycast.timeutil import combine_local, iso, parse_hhmm
 
     conn.execute(
-        """INSERT INTO deck_space (route, terminal, observed_at, service_date, sailing_hhmm,
-               departed_hhmm, fetch_status)
+        # OR IGNORE so a test may lay the same anchor down more than once — one scrape of
+        # the board is one row, and re-scraping it is what the real collector does.
+        """INSERT OR IGNORE INTO deck_space (route, terminal, observed_at, service_date,
+               sailing_hhmm, departed_hhmm, fetch_status)
            VALUES (?, ?, ?, ?, ?, ?, 'ok')""",
         (
             config.route.id,
@@ -210,15 +218,117 @@ def _departure(config, hhmm="09:30", day=date(2026, 8, 14)):
     return combine_local(day, time(hour, minute), config.tz)
 
 
+# ------------------------------------------------------------- the day's departures in order
+
+#: About how long the crossing takes. The number matters to these tests because it is what
+#: makes a per-sailing window ambiguous: a window wide enough to catch a late sailing is also
+#: wide enough to contain the vessel arriving at the far end and leaving it again.
+CROSSING = timedelta(minutes=50)
+
+
+def _clock(moment, config):
+    """Local wall clock, which is how a timetable is read and how these tests are written."""
+    return local(moment, config.tz).strftime("%H:%M")
+
+
+def _shuttle(conn, config, departures, day=date(2026, 8, 14)):
+    """Lay down the readings one vessel produces shuttling between the two ends.
+
+    `departures` is the actual departure times in order, whichever end each was from — which
+    is the point: the feed does not say, and these tests are about deriving it. Each leg gets
+    the vessel berthed beforehand, moving as it goes, and berthed again on arrival.
+    """
+    from ferrycast.vessels import VesselReading
+
+    def emit(moment, status):
+        store_readings(
+            conn,
+            config,
+            moment,
+            [
+                VesselReading(
+                    "Malaspina Sky",
+                    status,
+                    "",  # the heading is not read any more; the sequence settles the end
+                    moment.astimezone(config.tz).strftime("%H:%M"),
+                )
+            ],
+        )
+
+    for hhmm in departures:
+        left = _departure(config, hhmm, day)
+        emit(left - timedelta(minutes=10), "Stopped")
+        emit(left, "Under Way")
+        emit(left + CROSSING - timedelta(minutes=10), "Under Way")
+        emit(left + CROSSING, "Stopped")
+
+
+def _anchor(conn, config, hhmm="08:34", sailing="08:30", day=date(2026, 8, 14)):
+    """A Saltery Bay departure the board published *and* the tracker saw go.
+
+    Every ledger needs at least one. Alternation says the ends take turns; it takes a
+    published departure to say which end one of the turns was. Production gets eight a day,
+    so this is the ordinary case rather than a favourable one.
+    """
+    _shuttle(conn, config, [hhmm], day)
+    _publish_departure(conn, config, day, sailing, hhmm, terminal="SLT")
+
+
 def test_a_departure_is_read_from_stopped_then_moving_outbound(conn, config):
     """Earls Cove sailings have no other source of a departure time at all."""
-    departure = _departure(config)
-    _track(conn, config, departure, [(-10, "In Port", "S"), (5, "Under Way", "W"), (20, "Under Way", "NW")])
+    # Saltery Bay's 08:30 went at 08:34 and the board published it; the 09:35 that follows is
+    # therefore the other end's, because the vessel has to cross before it can leave again.
+    _shuttle(conn, config, ["08:34", "09:35"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
 
-    left = departure_from_tracking(conn, config, origin="ERL", departure=departure)
+    left = departure_from_tracking(
+        conn, config, origin="ERL", departure=_departure(config, "09:30")
+    )
 
     # The first moving reading: an upper bound, since it had certainly gone by then.
-    assert left == departure + timedelta(minutes=5)
+    assert left == _departure(config, "09:35")
+
+
+def test_one_published_departure_names_the_whole_day(conn, config):
+    """The premise, stated on its own: a two-point shuttle with one boat alternates ends, so
+    the parity of any single departure is the parity of all of them.
+
+    Only the 08:30 is published here. That is enough to name the 09:35 as Earls Cove's and
+    the 12:34 after it as Saltery Bay's — including, crucially, while the board has not got
+    round to publishing the 12:34 itself."""
+    _shuttle(conn, config, ["08:34", "09:35", "12:34"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+
+    ledger = departure_ledger(conn, config, target_date=date(2026, 8, 14))
+
+    assert [(_clock(d.at, config), d.terminal) for d in ledger.departures] == [
+        ("08:34", "SLT"),
+        ("09:35", "ERL"),
+        ("12:34", "SLT"),
+    ]
+
+
+def test_a_late_sailing_is_not_handed_the_other_ends_departure(conn, config):
+    """The failure that motivated the ledger, and the one a window search cannot avoid here.
+
+    Saltery Bay's 12:30 ran badly late and left at 13:15. Its window opens at 12:10, and the
+    Earls Cove departure at 12:20 — the leg that was still bringing the vessel over — falls
+    inside it and *before* the real one. Taking the earliest transition in the window is
+    therefore wrong, and there is nothing at Saltery Bay to subtract it with: the rule that
+    saves Earls Cove is "a transition the board does not publish belongs to the other end",
+    and the other end from Saltery Bay is the one that publishes nothing at all.
+
+    So a traveller at Saltery Bay would have been told the 12:30 had gone at 12:20, while the
+    vessel was still half an hour from the berth and the queue was still sitting there.
+    """
+    _shuttle(conn, config, ["08:34", "12:20", "13:15"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+
+    left = departure_from_tracking(
+        conn, config, origin="SLT", departure=_departure(config, "12:30")
+    )
+
+    assert left == _departure(config, "13:15")
 
 
 def test_a_crossing_already_under_way_is_not_a_departure(conn, config):
@@ -239,133 +349,142 @@ def test_a_vessel_that_never_left_yields_no_departure(conn, config):
 def test_a_departure_survives_the_vessel_arriving_at_the_other_end(conn, config):
     """The regression that emptied the Earls Cove column.
 
-    The window reaches 75 minutes past the scheduled time so a late sailing is still caught,
-    and the crossing takes about fifty — so for any sailing punctual enough, the window also
-    contains the vessel arriving at Saltery Bay and tying up there. Anchored on the *last*
-    stopped reading, the search found that arrival instead of the departure, and a berthed
-    vessel produces no moving reading after it to return. Every ordinary Earls Cove sailing
-    therefore reported no departure at all, and only one over half an hour late reported
-    anything — the exact inverse of useful.
+    A window reaching 75 minutes past the scheduled time so a late sailing is still caught
+    also contains, on a fifty-minute crossing, the vessel arriving at the far end. Anchored
+    on the *last* stopped reading, the old search found that arrival rather than the
+    departure, and a berthed vessel produces no moving reading after it to return — so every
+    punctual Earls Cove sailing reported nothing at all. The ledger has no such anchor to get
+    wrong: the arrival is not a departure, and the departures are taken in order.
     """
-    departure = _departure(config)
-    _track(
-        conn,
-        config,
-        departure,
-        [
-            (-10, "Stopped", "NW"),   # berthed at Earls Cove
-            (5, "Under Way", "W"),    # away, westbound: this is the answer
-            (25, "Under Way", "W"),
-            (45, "Under Way", "W"),
-            (60, "Stopped", "E"),     # berthed at Saltery Bay, still inside the window
-            (70, "Stopped", "E"),
-        ],
-    )
-
-    left = departure_from_tracking(conn, config, origin="ERL", departure=departure)
-
-    assert left == departure + timedelta(minutes=5)
-
-
-def test_the_far_terminals_departure_is_not_taken_for_this_ones(conn, config):
-    """The same window can hold the vessel turning round and leaving the other end. Both are
-    stopped-then-moving transitions; this terminal's is the earlier one."""
-    departure = _departure(config)
-    _track(
-        conn,
-        config,
-        departure,
-        [
-            (-10, "Stopped", "NW"),
-            (5, "Under Way", "W"),    # left Earls Cove
-            (45, "Under Way", "W"),
-            (60, "Stopped", "E"),     # arrived Saltery Bay
-            (70, "Under Way", "E"),   # and left again, the other way
-        ],
-    )
-
-    assert departure_from_tracking(
-        conn, config, origin="ERL", departure=departure
-    ) == departure + timedelta(minutes=5)
-
-
-def test_the_previous_sailing_still_arriving_does_not_hide_the_departure(conn, config):
-    """At the head of the window the vessel is often still inbound on the leg before this
-    one. That is a crossing, not this terminal's departure, and it must not be mistaken for
-    either — the departure is the first stop-then-move after it."""
-    departure = _departure(config)
-    _track(
-        conn,
-        config,
-        departure,
-        [
-            (-18, "Under Way", "E"),  # inbound to Earls Cove on the previous sailing
-            (-10, "Stopped", "NW"),   # berthed
-            (5, "Under Way", "W"),    # away again
-        ],
-    )
-
-    assert departure_from_tracking(
-        conn, config, origin="ERL", departure=departure
-    ) == departure + timedelta(minutes=5)
-
-
-def test_a_badly_late_sailing_looks_past_the_departure_the_board_claims(conn, config):
-    """Earliest transition, but earliest *unclaimed* — which is what makes earliest safe.
-
-    A sailing late enough opens its own window with the vessel still tied up at Saltery Bay,
-    so the first transition in it is Saltery Bay's departure rather than this terminal's.
-    The board publishes that one, which is exactly how it gets passed over for the next.
-    """
-    departure = _departure(config)
-    _track(
-        conn,
-        config,
-        departure,
-        [
-            (-20, "Stopped", "E"),    # still berthed at Saltery Bay, this sailing already due
-            (-10, "Under Way", "E"),  # away from *there* — the board publishes this one
-            (20, "Under Way", "E"),
-            (35, "Stopped", "NW"),    # berthed at Earls Cove at last
-            (45, "Under Way", "W"),   # and away: this is the answer
-        ],
-    )
-    _publish_departure(conn, config, date(2026, 8, 14), "08:50", "09:20", terminal="SLT")
-
-    assert departure_from_tracking(
-        conn, config, origin="ERL", departure=departure
-    ) == departure + timedelta(minutes=45)
-
-
-def test_the_next_sailings_departure_is_out_of_range(conn, config):
-    """The window stops well short of the tightest headway on this route, so one sailing
-    cannot borrow the next one's departure and call itself very late."""
-    departure = _departure(config)
-    _track(conn, config, departure, [(100, "In Port", "S"), (110, "Under Way", "W")])
-
-    assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
-
-
-def test_a_transition_the_board_already_claims_is_not_this_terminals(conn, config):
-    """The disambiguation, and the whole reason the compass is gone. Saltery Bay publishes
-    its departures; a transition matching one is Saltery Bay's, whatever the vessel happened
-    to be pointing at while it left the berth."""
-    departure = _departure(config)
-    _track(conn, config, departure, [(-10, "Stopped", "S"), (5, "Under Way", "NE")])
-    _publish_departure(conn, config, date(2026, 8, 14), "09:30", "09:35", terminal="SLT")
-
-    assert departure_from_tracking(conn, config, origin="ERL", departure=departure) is None
-
-
-def test_a_transition_no_board_claims_belongs_to_the_silent_terminal(conn, config):
-    departure = _departure(config)
-    _track(conn, config, departure, [(-10, "Stopped", "S"), (5, "Under Way", "NE")])
-    # Saltery Bay's own departure that day was an hour earlier — nothing near this one.
+    _shuttle(conn, config, ["08:34", "09:35"])
     _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
 
     assert departure_from_tracking(
-        conn, config, origin="ERL", departure=departure
-    ) == departure + timedelta(minutes=5)
+        conn, config, origin="ERL", departure=_departure(config, "09:30")
+    ) == _departure(config, "09:35")
+
+
+def test_the_next_sailings_departure_is_not_borrowed(conn, config):
+    """A sailing whose own departure was never tracked is left with nothing rather than
+    handed the next one's. The pairing is exclusive and bounded, so it refuses instead of
+    reaching for whatever is nearest."""
+    _shuttle(conn, config, ["08:34", "12:34"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+
+    # Earls Cove's 09:30 never went; the next tracked departure is Saltery Bay's, an hour
+    # after this sailing's tolerance runs out.
+    assert (
+        departure_from_tracking(
+            conn, config, origin="ERL", departure=_departure(config, "09:30")
+        )
+        is None
+    )
+
+
+def test_a_transition_the_board_claims_is_not_the_other_terminals(conn, config):
+    """The anchor itself. Saltery Bay publishes its departures, so a transition matching one
+    is Saltery Bay's, whatever the vessel happened to be pointing at while it left."""
+    _shuttle(conn, config, ["09:35"])
+    _publish_departure(conn, config, date(2026, 8, 14), "09:30", "09:35", terminal="SLT")
+
+    assert (
+        departure_from_tracking(
+            conn, config, origin="ERL", departure=_departure(config, "09:30")
+        )
+        is None
+    )
+
+
+def test_with_nothing_published_the_ledger_names_no_end(conn, config):
+    """Alternation is only ever as good as the fact it is anchored to. With no published
+    departure anywhere in the day there is no fact — only a pattern, and a pattern that could
+    equally be run off either foot. Naming an end here would be a coin toss dressed as
+    evidence, so the ledger declines and every caller falls back to what it had before."""
+    _shuttle(conn, config, ["08:34", "09:35", "12:34"])
+
+    ledger = departure_ledger(conn, config, target_date=date(2026, 8, 14))
+
+    assert [d.terminal for d in ledger.departures] == [None, None, None]
+    assert not ledger.named_any
+    # The departures themselves are not in doubt — only which end each was from.
+    assert len(ledger.departures) == 3
+
+
+def test_a_missed_transition_does_not_invert_the_rest_of_the_day(conn, config):
+    """The check a window search cannot make, because it has nothing to be inconsistent with.
+
+    The feed went quiet across the whole Earls Cove turnaround, so its 09:35 departure was
+    never seen. Walking alternation naively from the 08:34 would then call the 12:34 Earls
+    Cove's and the 13:40 Saltery Bay's — both exactly wrong, and wrong silently, for the rest
+    of the day.
+
+    Two consecutive departures the board says are *both* Saltery Bay's cannot be one step
+    apart, because the vessel has to go somewhere in between. That contradiction is visible,
+    so the chain is cut at it and re-anchored on the far side, and only the stretch that
+    cannot be walked goes unnamed. The board publishes often enough that a gap costs the
+    departures inside it and nothing beyond.
+    """
+    _shuttle(conn, config, ["08:34"])
+    # 09:35 happened; the tracker was blind across it and stored nothing.
+    _shuttle(conn, config, ["12:34", "13:40"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+    _publish_departure(conn, config, date(2026, 8, 14), "12:30", "12:34", terminal="SLT")
+
+    ledger = departure_ledger(conn, config, target_date=date(2026, 8, 14))
+
+    assert [(_clock(d.at, config), d.terminal) for d in ledger.departures] == [
+        ("08:34", "SLT"),
+        ("12:34", "SLT"),
+        ("13:40", "ERL"),
+    ]
+
+
+def test_two_vessels_stop_the_ledger_entirely(conn, config):
+    """One vessel is a premise, not a detail: two boats interleave their departures into one
+    sequence and alternation stops meaning anything. The feed would report the second without
+    any other sign that the reasoning had stopped holding, so it is asserted rather than
+    assumed."""
+    from ferrycast.vessels import VesselReading
+
+    _shuttle(conn, config, ["08:34", "09:35"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+    moment = _departure(config, "10:00")
+    store_readings(
+        conn,
+        config,
+        moment,
+        [VesselReading("Island Sky", "Under Way", "", moment.astimezone(config.tz).strftime("%H:%M"))],
+    )
+
+    ledger = departure_ledger(conn, config, target_date=date(2026, 8, 14))
+
+    assert ledger.departures == ()
+    # Still a reading, so freshness is unaffected — the tracker is alive, it just cannot be
+    # reasoned about this way any more.
+    assert ledger.observed_at is not None
+
+
+def test_two_departures_too_close_together_cut_the_chain(conn, config):
+    """A step shorter than a crossing plus a turnaround is not the next departure — most
+    likely the vessel stopped mid-crossing and the stop registered as one. The chain is cut
+    there rather than carried across a step that cannot be real."""
+    _shuttle(conn, config, ["08:34"])
+    # Fifteen minutes after leaving, the vessel stops mid-strait and gets under way again.
+    _track(
+        conn,
+        config,
+        _departure(config, "08:49"),
+        [(0, "Stopped", ""), (5, "Under Way", "")],
+    )
+    _shuttle(conn, config, ["09:35"])
+    _publish_departure(conn, config, date(2026, 8, 14), "08:30", "08:34", terminal="SLT")
+
+    ledger = departure_ledger(conn, config, target_date=date(2026, 8, 14))
+
+    named = {_clock(d.at, config): d.terminal for d in ledger.departures}
+    # The anchored departure keeps its end; nothing past the impossible step is named off it.
+    assert named["08:34"] == "SLT"
+    assert named["09:35"] is None
 
 
 # ------------------------------------------------------------------------ into the record
@@ -376,6 +495,7 @@ def test_the_record_carries_the_tracked_departure(conn, config):
     from ferrycast.aggregate import aggregate_day
 
     day = date(2026, 8, 14)
+    _anchor(conn, config, day=day)
     departure = _departure(config, "09:30", day)
     _track(conn, config, departure, [(-10, "In Port", "S"), (6, "Under Way", "W")])
 
@@ -428,6 +548,7 @@ def test_stopped_is_recognised_as_well_as_in_port(conn, config):
     """Route 1 says `In Port`; this route says `Stopped`. Matching only the first meant the
     live tracker never once produced a departure — Earls Cove, whose every departure this
     is the only source of, saw nothing at all for as long as it ran."""
+    _anchor(conn, config)
     departure = _departure(config)
     _track(conn, config, departure, [(-10, "Stopped", "NW"), (5, "Under Way", "W")])
 
@@ -445,6 +566,7 @@ def test_an_unfamiliar_status_falls_back_to_speed(conn, config):
     assert is_moving("Alongside", 12.0) is True
     assert is_moving("Alongside", None) is None
 
+    _anchor(conn, config)
     departure = _departure(config)
     for offset, status, heading, speed in [
         (-10, "Alongside", "NW", 0.0),
@@ -516,6 +638,7 @@ def test_a_late_sailing_reads_as_still_here_not_as_gone(conn, config):
 
 def test_a_sailing_the_tracker_watched_leave_reads_as_gone(conn, config):
     day = date(2026, 8, 14)
+    _anchor(conn, config, "14:34", "14:30", day)
     departure = _departure(config, "15:40", day)
     _track(conn, config, departure, [(-10, "Stopped", "NW"), (6, "Under Way", "W")])
 
@@ -586,6 +709,7 @@ def test_the_heading_no_longer_decides_anything(conn, config):
     for heading in ("NE", "N", "S", "E", ""):
         conn.execute("DELETE FROM vessel_positions")
         conn.commit()
+        _anchor(conn, config)
         _track(conn, config, departure, [(-10, "Stopped", heading), (5, "Under Way", heading)])
         assert departure_from_tracking(
             conn, config, origin="ERL", departure=departure

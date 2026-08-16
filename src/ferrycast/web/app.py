@@ -300,7 +300,15 @@ def _has_sailed(
     if watch is not None:
         if depart_hhmm in watch.departures:
             return True
-        return depart_hhmm not in watch.listed
+        if depart_hhmm not in watch.listed:
+            return True
+        # Still listed, with no departure time against it. That is the board saying nothing
+        # yet, which is not the board saying the vessel is alongside: Saltery Bay published
+        # the 16:55's 17:51 departure at 18:27, and for those thirty-six minutes this told
+        # travellers a boat halfway across the strait had not left, and held the live camera
+        # on its empty berth. Only a positive tracker finding moves it, and only towards
+        # "gone" — the direction that cannot strand anybody.
+        return tracker is not None and depart_hhmm in tracker.departed
     if tracker is not None and depart_hhmm in tracker.not_away:
         return False
     return True
@@ -762,25 +770,28 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
         # Who has actually left, read once and spent twice: the camera panel and the day
         # board both have to tell a boat that has gone from one that is merely late, and
-        # they have to tell it the same way. The published board first; the tracker only
-        # where that board has nothing to say, which at Earls Cove is always.
+        # they have to tell it the same way. The published board decides where it speaks,
+        # because it reports to the minute; the tracker answers where it does not, which at
+        # Earls Cove is always and at Saltery Bay is the half hour it can take to post a
+        # departure it has already made.
+        #
+        # Built at both terminals, therefore, and not only where there is no board at all.
+        # Gating construction on the board's absence made the argument in `_has_sailed`
+        # unreachable at Saltery Bay: `tracker` was always None there, so the board's
+        # silence went unchallenged however plainly the tracker had watched the boat go.
         clock_now = local(now_utc(), config.tz)
         watch = _watch_for(
             conn, config, origin=chosen_origin, service_date=chosen_date, now=clock_now
         )
-        tracker = (
-            None
-            if watch is not None
-            else _tracker_for(
-                conn,
-                config,
-                origin=chosen_origin,
-                service_date=chosen_date,
-                now=clock_now,
-                # The same list `day_board` walks — it iterates `sailing_times` itself — so
-                # the tracker is asked about exactly the sailings the board shows.
-                times=times,
-            )
+        tracker = _tracker_for(
+            conn,
+            config,
+            origin=chosen_origin,
+            service_date=chosen_date,
+            now=clock_now,
+            # The same list `day_board` walks — it iterates `sailing_times` itself — so
+            # the tracker is asked about exactly the sailings the board shows.
+            times=times,
         )
 
         # The live camera, shown only for a sailing you could still catch — the next
