@@ -122,6 +122,21 @@ save(scaled(lockup, 640), "logo.png", colors=128)
 save(on_cream(square(cut.crop(MARK), pad=0.10).resize((180, 180), Image.LANCZOS)),
      "apple-touch-icon.png", colors=128)
 
+# The manifest's icon set. Cream-backed for the same reason as the Web Clip icon above:
+# every install flow composites its own ground behind a transparent PNG, and the one it
+# picks is white rather than the app's paper. 192 and 512 are the two sizes the install
+# sheets actually look for.
+for px in (192, 512):
+    save(on_cream(square(cut.crop(MARK), pad=0.10).resize((px, px), Image.LANCZOS)),
+         f"icon-{px}.png", colors=128)
+
+# `purpose: maskable` is a promise to the launcher that it may crop the icon to whatever
+# shape it likes, and the worst of those is a circle 80% of the width. So this one is the
+# same drawing with more air around it rather than a different drawing: at pad 0.14 the
+# mark spans 78% of the canvas and clears that circle.
+save(on_cream(square(cut.crop(MARK), pad=0.14).resize((512, 512), Image.LANCZOS)),
+     "icon-512-maskable.png", colors=128)
+
 fav = OUT / "favicon.ico"
 mark.resize((48, 48), Image.LANCZOS).save(fav, sizes=[(16, 16), (32, 32), (48, 48)])
 print(f"{'favicon.ico':22} {'16/32/48':10} {fav.stat().st_size / 1024:6.1f} KB")

@@ -72,6 +72,7 @@ IGNORED_PREFIXES = (
     "/healthz",
     "/static/",
     "/favicon.ico",
+    "/manifest.webmanifest",
     "/api/docs",
     "/openapi.json",
 )
