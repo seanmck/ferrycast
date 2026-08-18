@@ -240,3 +240,53 @@ def test_capture_reads_the_frames_it_just_took(conn, config, monkeypatch, tmp_pa
 
     assert read_calls["max_reads"] == scheduler.LANE_READS_PER_RUN
     assert "read 2" in detail
+
+
+def test_capture_aggregates_what_it_just_learned(conn, config, monkeypatch):
+    """Evidence and inference land together. The hourly pass alone left finished sailings
+    sitting classified-but-invisible for most of an hour — the 12:55 on 2026-08-16 missed
+    the run by seconds and read `unknown` until 14:38 — and aggregation costs a second of
+    SQLite, so there is no reason for the record to lag the last frame that decides it."""
+    from datetime import timedelta
+
+    from ferrycast import scheduler
+    from ferrycast.lanes import LaneStats
+
+    monkeypatch.setattr("ferrycast.capture.capture_once", lambda conn, config: [])
+    monkeypatch.setattr(
+        "ferrycast.lanes.extract_pending", lambda conn, config, *, max_reads: LaneStats()
+    )
+    window = {}
+
+    def fake_range(conn, config, start, end):
+        window["span"] = (start, end)
+        return {"boarded": 1, "unknown": 2}
+
+    monkeypatch.setattr("ferrycast.aggregate.aggregate_range", fake_range)
+
+    detail = scheduler._capture(conn, config)
+
+    assert "1 sailing(s) recorded, 2 unknown" in detail
+    assert window["span"][1] - window["span"][0] == timedelta(days=2)
+
+
+def test_a_broken_aggregation_does_not_fail_the_capture(conn, config, monkeypatch):
+    """Capture is the one collector whose failure loses data forever — a frame not taken is
+    gone. An aggregation bug must stay visible in the job detail without sharing that fate;
+    the hourly aggregate job still runs it unguarded and fails loudly on its own."""
+    from ferrycast import scheduler
+    from ferrycast.lanes import LaneStats
+
+    monkeypatch.setattr("ferrycast.capture.capture_once", lambda conn, config: [])
+    monkeypatch.setattr(
+        "ferrycast.lanes.extract_pending", lambda conn, config, *, max_reads: LaneStats()
+    )
+
+    def broken_range(conn, config, start, end):
+        raise RuntimeError("schema drift")
+
+    monkeypatch.setattr("ferrycast.aggregate.aggregate_range", broken_range)
+
+    detail = scheduler._capture(conn, config)
+
+    assert "aggregation failed: schema drift" in detail
