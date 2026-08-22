@@ -401,7 +401,7 @@ def _board(
         # leaves it to the styling.
         if row.n:
             summary = (
-                f"{row.depart_hhmm}, {round(row.boarded_share * 100)}% got on across "
+                f"{row.depart_hhmm}, had room on {round(row.boarded_share * 100)}% of "
                 f"{row.n} comparable sailing{'' if row.n == 1 else 's'}"
             )
             if row.arrive_by:

@@ -145,9 +145,26 @@ def test_each_row_says_what_it_is(client, conn, config):
 
     body = client.get("/?origin=SLT&service_date=2026-08-14&time=12:30").text
 
-    assert "100% got on across 4 comparable sailings" in body
+    assert "had room on 100% of 4 comparable sailings" in body
     assert "12:30, no comparable history yet" not in body
     assert "08:30, no comparable history yet" in body
+
+
+def test_the_column_and_key_say_room_not_made_it(client, conn, config):
+    """The share is of comparable *sailings* that never filled, so the column is "Had room".
+    Under "Made it" a row whose history was all fills read as "0% of people got on" —
+    and because filled was missing from the key, the all-moss bar beside it read as
+    all-boarded. Filled is the commonest outcome this route records, so it is in the key."""
+    for day in fridays(4):
+        seed_record(conn, config, day, "12:30", "filled")
+
+    body = client.get("/?origin=SLT&service_date=2026-08-14").text
+    foot = body[body.index('class="board-foot"') :]
+
+    assert "Had room" in body
+    assert "Made it" not in body
+    assert "had room on 0% of 4 comparable sailings" in body
+    assert '<i class="seg-filled"></i>filled up' in foot
 
 
 @pytest.fixture
@@ -455,7 +472,7 @@ def test_the_board_and_chrome_are_absent_below_the_breakpoint(client):
 
 
 def test_the_board_is_capped_and_the_chrome_shares_the_measure(client):
-    """A row is read across, from the departure to the share that got on, and that reading
+    """A row is read across, from the departure to the share that had room, and that reading
     fails long before a 4K monitor runs out of pixels — stretched full width, a row put its
     own time and its own percentage a metre apart.
 
