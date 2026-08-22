@@ -30,13 +30,17 @@ SAILING_EXPORT_SQL = """
            r.carryover, r.overload, r.cancelled, r.n_frames, r.confidence,
            r.queue_truncated, r.deck_space_min, r.method,
            r.peak_fullness, r.fullness_at_departure, r.residual_fullness,
-           r.queue_started_at, r.cleared_at, r.left_full, r.computed_at
+           r.queue_started_at, r.cleared_at, r.left_full,
+           -- When the vessel was seen to go, and by what. The arrival curve's
+           -- previous-departure mark rests entirely on these two, and without them in the
+           -- export there is no way to check from outside whether the mark is placed right.
+           r.departed_at, r.departed_source, r.computed_at
       FROM sailings s
       LEFT JOIN sailing_records r ON r.sailing_id = s.id
 """
 
 DECK_SPACE_EXPORT_SQL = """
-    SELECT id, route, terminal, observed_at, service_date, sailing_hhmm,
+    SELECT id, route, terminal, observed_at, service_date, sailing_hhmm, departed_hhmm,
            percent_available, vessel, status_text, fetch_status, error
       FROM deck_space
 """
