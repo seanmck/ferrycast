@@ -1108,3 +1108,160 @@ def test_clear_lanes_without_a_seen_departure_stay_unknown(conn, config):
 
     assert row["outcome"] == "unknown"
     assert row["left_behind"] is None
+
+
+# --- the fill mark: a time for "arrive before", from the cameras -------------------------
+#
+# Nothing published on this route says *when* a sailing filled, and that moment is what the
+# "arrive before" advice is made of. The cameras stand in with a conservative mark — every
+# fitted lane taken at Saltery Bay, a tail at all on the Earls Cove highway camera — which
+# falls before the vessel is actually full, so the advice read off it errs early. These pin
+# down when the mark is taken and, as importantly, when it is refused.
+
+
+def _declare_slt_capacity_geometry(config):
+    """Install a Saltery Bay lane calibration stating that every fitted lane taken is the
+    one-vessel line — the maintainer's fact that turns a band into a time."""
+    import json
+    from pathlib import Path
+
+    cal_dir = Path(config.source_path).parent / "calibration"
+    cal_dir.mkdir(exist_ok=True)
+    (cal_dir / "SLT.json").write_text(
+        json.dumps({
+            "terminal": "SLT", "kind": "lanes", "image_size": [320, 240],
+            "lane_spans": {str(n): [] for n in range(3, 13)}, "vanishing_point": [0, 0],
+            "y_ref": 1.0, "mobius": [1, 0, 0], "full_lanes_at_capacity": True,
+        }),
+        encoding="utf-8",
+    )
+
+
+def _capacity_note(conn, config, departure, hhmm="12:30"):
+    """The board's "loading maximum number of vehicles" note, as it appears: on the row's
+    second line once the vessel has gone, and carrying no time of its own."""
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm,
+                status_text, fetch_status)
+           VALUES (?, 'SLT', ?, ?, ?,
+                   'Departed 12:41 pm Peak travel. Loading maximum number of vehicles', 'ok')""",
+        (config.route.id, iso(departure + timedelta(minutes=15)),
+         departure.date().isoformat(), hhmm),
+    )
+    conn.commit()
+
+
+def test_every_lane_taken_is_the_fill_time_where_the_calibration_says_so(conn, config):
+    """The board says the sailing filled and nothing says when. The first frame with all
+    ten fitted lanes occupied is the time — forty minutes out, not the sixty when the
+    compound merely read heavy, and not the twenty when it was still full."""
+    _declare_slt_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(conn, config, departure, [
+        (-60, 6, "heavy"), (-40, 10, "overflowing"), (-20, 10, "overflowing"), (20, 0, "empty"),
+    ])
+    _capacity_note(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["filled"] == 1
+    assert row["filled_at"] == iso(departure - timedelta(minutes=40))
+
+
+def test_without_the_calibration_fact_all_lanes_taken_is_no_time_at_all(conn, config):
+    """A calibration that has not said how its fitted lanes relate to a boatload yields no
+    time rather than a wrong one. The fill itself stands — that is the board's claim."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(conn, config, departure, [(-40, 10, "overflowing"), (20, 0, "empty")])
+    _capacity_note(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["filled"] == 1
+    assert row["filled_at"] is None
+
+
+def test_a_sailing_that_took_everyone_has_no_fill_time_whatever_the_queue_did(conn, config):
+    """The compound stood full at 11:50 and then drained; the board watched the vessel go
+    without a capacity note. That is a busy afternoon, not a cutoff — and writing 11:50 as
+    one would tell the next traveller a sailing that had room for everyone did not."""
+    _declare_slt_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(conn, config, departure, [
+        (-40, 10, "overflowing"), (-5, 0, "empty"), (20, 0, "empty"),
+    ])
+    _board_row(conn, config, day, "12:30", "12:34")
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["outcome"] == "boarded"
+    assert row["filled_at"] is None
+
+
+def test_a_tail_on_the_highway_is_earls_coves_fill_time(conn, config):
+    """Cars do not stand on Highway 101 while there are lanes free, so the first frame the
+    244 camera saw a tail is the mark — seventy minutes out the road was clear, fifty out
+    it was not. Conservative by the maintainer's own count (the first ten to fifteen in
+    view still board), which is the side to be on."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _extent_frames(conn, config, departure, [
+        (-70, None), (-50, "heavy"), (-20, "heavy"), (20, "heavy"),
+    ])
+    _geom_frames(conn, config, departure, [(-15, 2, "heavy")], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["filled"] == 1
+    assert row["filled_at"] == iso(departure - timedelta(minutes=50))
+
+
+def test_a_tail_that_cleared_before_the_going_leaves_no_fill_time(conn, config):
+    """The highway queue an hour out was real, and the vessel took it: the fitted lanes
+    drained before the going and the road was clear after. Nobody says this sailing
+    filled, so it gets no fill time — the mark is for sailings that did."""
+    _declare_erl_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _extent_frames(conn, config, departure, [(-60, "heavy"), (-20, None), (20, None)])
+    _geom_frames(conn, config, departure, [
+        (-30, 2, "heavy"), (-5, 0, "empty"), (25, 0, "empty"),
+    ], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+
+    aggregate_day(conn, config, day)
+    row = _erl_record(conn)
+
+    assert row["outcome"] == "boarded"
+    assert row["filled_at"] is None
+
+
+def test_the_mark_reaches_the_arrive_before_advice(conn, config):
+    """End to end: a Friday's Earls Cove 13:30 filled with the tail first seen at 12:40, and
+    the next Friday's answer for the same sailing says arrive before 12:40. Until this the
+    column was an em dash on every sailing in both directions, because the one source that
+    set `filled_at` is a percentage this route never publishes."""
+    from ferrycast.query import query_distribution
+
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "13:30")
+    _extent_frames(conn, config, departure, [(-50, "heavy"), (20, "heavy")])
+    _geom_frames(conn, config, departure, [(-15, 2, "heavy")], terminal="ERL")
+    _tracked_departure(conn, config, departure)
+    aggregate_day(conn, config, day)
+
+    answer = query_distribution(
+        conn, config, origin="ERL", target_date=date(2026, 8, 21), depart_hhmm="13:30"
+    )
+
+    assert answer.typical_fill_minutes_before == 50
+    assert answer.typical_fill_local == "12:40"

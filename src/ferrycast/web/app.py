@@ -405,7 +405,7 @@ def _board(
                 f"{row.n} comparable sailing{'' if row.n == 1 else 's'}"
             )
             if row.arrive_by:
-                summary += f", typically full by {row.arrive_by}"
+                summary += f", arrive by {row.arrive_by}"
         else:
             summary = f"{row.depart_hhmm}, no comparable history yet"
         if outlook:

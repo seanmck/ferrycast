@@ -95,6 +95,19 @@ class LaneCalibration:
     #: that. Defaults False: a calibration that has not established where the capacity
     #: line sits keeps refusing, which is the safe direction to be wrong in.
     lanes_before_capacity: bool = False
+    #: Whether every fitted lane occupied means the queue has reached the one-vessel line.
+    #:
+    #: The claim it licenses is a *time*. Nothing published on this route says when a
+    #: sailing filled, and that moment is what the "arrive before" advice is made of; the
+    #: first frame with all fitted lanes taken stands in for it (`aggregate`'s
+    #: `_fill_mark_from_geometry`). Stated by the maintainer for Saltery Bay (2026-08-22):
+    #: all of the compound's lanes taken is where a new arrival is at risk, and it comes
+    #: before the vessel is actually full, so an arrive-by read off it errs early — the one
+    #: direction that advice is allowed to be wrong in. Defaults False: a calibration that
+    #: has not established how its fitted lanes relate to a boatload yields no time at
+    #: all rather than a wrong one, and at Earls Cove the fitted lanes sit short of the
+    #: line (`lanes_before_capacity`), so all of them taken is still a healthy queue.
+    full_lanes_at_capacity: bool = False
 
     @property
     def lanes(self) -> list[int]:
@@ -134,6 +147,7 @@ class LaneCalibration:
             fitted_from=raw.get("fitted_from", ""),
             covers_compound=bool(raw.get("covers_compound", True)),
             lanes_before_capacity=bool(raw.get("lanes_before_capacity", False)),
+            full_lanes_at_capacity=bool(raw.get("full_lanes_at_capacity", False)),
         )
 
 
