@@ -700,7 +700,9 @@ class BoardSailing:
     n: int
     counts: dict[str, int]
     shares: dict[str, float]
-    # The board's own two figures: the share that got on, and the share that did not.
+    # The board's own two figures: the share that never filled, and the share that did.
+    # "Had room" on the page, never "made it": a filled sailing took nearly everyone
+    # who turned up, so counting only the clean ones as people-who-boarded misreads it.
     boarded_share: float
     filled_share: float
     sufficient: bool

@@ -268,7 +268,7 @@
 
   @media (min-width: 72rem) {
     /* How wide the whole thing is ever allowed to get. A board row is read across — from
-       the departure on the left to the share that got on and the hour to arrive by on the
+       the departure on the left to the share that had room and the hour to arrive by on the
        right — and that reading breaks down long before a 4K monitor runs out of pixels:
        stretched to the full width of one, a row puts its own time and its own percentage
        a metre apart and they stop looking like the same fact.
@@ -622,7 +622,10 @@
     <span class="label">Sailing</span>
     <span class="label">Usually</span>
     <span class="label">Outcome mix · comparable days</span>
-    <span class="label r">Made it</span>
+    {# "Had room", not "made it": the figure is the share of comparable sailings that never
+       filled, and a filled sailing still took nearly everyone who turned up. Under "made it"
+       a row whose history was all fills read as "0% of people got on", which is absurd. #}
+    <span class="label r">Had room</span>
     <span class="label r">Arrive by</span>
     <span class="label r">N</span>
   </div>
@@ -655,7 +658,12 @@
   {% endfor %}
 
   <div class="board-foot">
-    <span class="key"><i class="seg-boarded"></i>made it</span>
+    <span class="key"><i class="seg-boarded"></i>had room</span>
+    {# Filled is the commonest outcome this route records — the board's "loading maximum"
+       note is what classifies most sailings — and its moss green sits right beside kelp, so
+       leaving it out of the key made an all-filled bar read as an all-boarded one next to
+       a 0%. #}
+    <span class="key"><i class="seg-filled"></i>filled up</span>
     <span class="key"><i class="seg-waited_1"></i>waited one</span>
     <span class="key"><i class="seg-waited_2plus"></i>waited two+</span>
     {% if board_totals.relaxed %}
