@@ -354,8 +354,12 @@ n = 5 comparable sailing(s), match: exact
 
 Note what is *missing* from that answer: any line saying when the sailing typically ran out
 of room. On a route that published a live percentage, the moment it crossed zero would be
-that line. Here nothing free carries a fill time, so the arrival guidance is the last line —
-established by somebody who was in the queue.
+that line. Here no feed carries a fill time. What stands in for it is a conservative mark
+from the cameras — the first frame with every Saltery Bay lane taken, or the first frame a
+tail shows on the Earls Cove highway camera — recorded only on sailings that did fill, and
+deliberately earlier than the moment the vessel was actually full. Where the comparable
+sailings carry that mark the answer gains an "arrive before" line; where they do not, the
+arrival guidance is the last line above — established by somebody who was in the queue.
 
 ### The web UI
 
@@ -789,17 +793,21 @@ publishes here is a departures board at Saltery Bay, and nothing at all at Earls
 | Question | The board | The camera |
 |---|---|---|
 | Did the sailing fill up? | ✅ via the capacity note | ❌ — it cannot see the deck |
-| **When** did it fill — how late could I arrive? | ❌ — the note carries no time | ❌ — it shows only when the compound began backing up |
+| **When** did it fill — how late could I arrive? | ❌ — the note carries no time | ⚠️ — a conservative mark: every lane taken, or a tail on the highway |
 | Was anyone left standing on the tarmac? | ❌ | ✅ |
 | Does it work at night and in fog? | ✅ | ❌ |
 | Does it work at Earls Cove? | ❌ — there is no board | ✅ once it is calibrated |
 
-Two rows there deserve more than a tick. **Nothing free currently establishes when a sailing
-filled**, because the only source that could — a percentage crossing zero — is the one this
-route never publishes; the capacity note appears after the vessel has gone and says nothing
-about the moment the queue closed. So the "arrive before" advice on this route comes from
-people who were in the line, which is why the pooled report bounds below are not a
-nice-to-have but the primary arrival guidance.
+Two rows there deserve more than a tick. **No feed establishes when a sailing filled**: the
+only source that could — a percentage crossing zero — is the one this route never
+publishes, and the capacity note appears after the vessel has gone and says nothing about
+the moment the queue closed. The cameras stand in with a mark that is earlier than the fill
+by construction — every fitted lane at Saltery Bay taken, or the queue first showing on the
+highway camera at Earls Cove, where the maintainer's own count is that the first ten to
+fifteen vehicles in view still board — and that mark, taken only from sailings that did
+fill, is what the "arrive before" advice is made of. It errs early, which is the only way
+that advice is allowed to err. The pooled report bounds below are the other half: a person
+turned away at 11:50 is proof that 11:50 was too late, whatever the cameras saw.
 
 And **Earls Cove has no free evidence of any kind** beyond the fact that a sailing went. The
 camera is not a refinement there; it is the only automatic source that direction will ever
@@ -1009,11 +1017,12 @@ see [brand/README.md](brand/README.md).
   not transfer. The vessel tracker establishes that a sailing *went*; nothing free yet
   establishes whether it filled. Until something does, that direction leans on first-hand
   reports and on paid extraction.
-- **Nothing free says *when* a sailing filled, in either direction.** The capacity note
-  arrives after the vessel has gone and carries no time, and the percentage that would carry
-  one is never published here. So "arrive before" rests entirely on people reporting from
-  the line — which makes those reports the highest-value thing anyone can contribute, and
-  worth designing further around.
+- **No feed says *when* a sailing filled, in either direction.** The capacity note arrives
+  after the vessel has gone and carries no time, and the percentage that would carry one is
+  never published here. "Arrive before" therefore rests on the cameras' conservative mark —
+  all lanes taken, or a tail on the highway — which is earlier than the true cutoff by an
+  amount nobody measures, plus people reporting from the line, whose "turned away at" is the
+  one transferable proof of too-late and still the highest-value thing anyone can contribute.
 - **Night sailings** — flagged `unknown` rather than guessed, and geometry does not rescue
   them: a differenced frame in the dark is refused, not read optimistically. The board keeps
   publishing whatever the light, so Saltery Bay still gets a record. Once you have a season

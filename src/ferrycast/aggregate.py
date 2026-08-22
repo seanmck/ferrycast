@@ -38,6 +38,7 @@ from .db import JobRun
 from .deckspace import notice_says_full, status_says_departed
 from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
 from .lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
+from .lanes import LaneCalibration
 from .lanes import load_for as load_lane_calibration
 from .reports import fetch_reports, outcome_from_reports, report_confidence
 from .schedule import Sailing, load_schedule_cached, sailings_for_day
@@ -461,6 +462,48 @@ def _cleared_at(observations: list[_Obs], settle_from: datetime) -> str | None:
     return None
 
 
+def _fill_mark_from_geometry(
+    observations: list[_Obs], lane_cal: LaneCalibration | None
+) -> str | None:
+    """The first frame at which the queue had provably reached this terminal's capacity mark.
+
+    A fill *time* is what the "arrive before" advice is made of, and nothing published on
+    this route carries one: the board's capacity note appears after the vessel has gone and
+    the percentage that would cross zero is never published. The cameras can supply a
+    conservative stand-in. Each free reader has one reading that means "from here on, a new
+    arrival is at risk":
+
+    * the highway camera seeing a tail at all — cars do not stand on Highway 101 while there
+      are lanes free, so a tail is the compound full (`extent`'s premise);
+    * every fitted lane of a compound camera occupied, where the calibration states that all
+      of them taken is the one-vessel line (`full_lanes_at_capacity`).
+
+    Both marks fall *before* the vessel is actually full — the maintainer's count is that the
+    first ten to fifteen vehicles visible on the highway still board — so an arrive-by read
+    off them errs early, which is the one direction that advice is allowed to be wrong in.
+    Deliberately not the model's bands: a judged "overflowing" is the reading that once
+    called a compound clear with a queue standing in the unpainted lanes, and a time taken
+    from here is told to the next traveller as a fact.
+
+    Only ever a stand-in, and only for a sailing that did fill: where a feed states the
+    moment the deck closed that wins, and a queue reaching the mark on a sailing that then
+    took everyone is a busy afternoon, not a cutoff. The first frame of the window may
+    already carry the mark — the tail the previous sailing left behind is this one's queue —
+    in which case the true crossing was earlier still, and the bound stays on the safe side.
+    """
+    for o in observations:
+        if o.source == EXTENT_PROMPT_VERSION and o.fullness == "heavy":
+            return iso(o.at)
+        if (
+            o.source == LANE_PROMPT_VERSION
+            and o.fullness == "overflowing"
+            and lane_cal is not None
+            and lane_cal.full_lanes_at_capacity
+        ):
+            return iso(o.at)
+    return None
+
+
 def classify_from_bands(
     *,
     residual_fullness: str | None,
@@ -850,6 +893,12 @@ def compute_record(
     if cancelled:
         filled = left_behind = None
         waited = None
+
+    # When it ran out of room, where no feed said. The cameras' conservative mark stands
+    # in, and only fills a gap: a published percentage crossing zero is the real time and
+    # keeps it, and a sailing nobody says filled has no such moment whatever the queue did.
+    if filled and filled_at is None:
+        filled_at = _fill_mark_from_geometry(before, lane_cal)
 
     outcome = outcome_from_axes(
         filled=filled, left_behind=left_behind, cancelled=cancelled, waited=waited

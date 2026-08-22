@@ -883,8 +883,11 @@
       <p class="label">Arrive before</p>
       <div class="arrive">
         <span class="time">{{ d.typical_fill_local }}</span>
-        <span class="qual">{{ d.typical_fill_minutes_before }} min before departure — when
-          these sailings typically ran out of room</span>
+        {# "By then" rather than "when they ran out of room": on this route the time is
+           the cameras' conservative mark (all lanes taken; a tail on the highway), which
+           falls before the vessel is actually full. What it promises is the safe side. #}
+        <span class="qual">{{ d.typical_fill_minutes_before }} min before departure —
+          arrivals by then typically still got on these sailings</span>
       </div>
       <hr class="rule">
     {% endif %}

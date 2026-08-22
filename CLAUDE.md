@@ -78,13 +78,15 @@ A sailing record carries **two orthogonal, three-valued claims**, not one word:
 
 **Do not assume deck space is the history source.** Route 7's conditions page has never
 published a deck-space percentage (2,368 rows scraped, zero), so `classify_from_deck_space`'s
-numeric path never fires here and `filled_at` is never set — no free source gives a fill
-*time*. What actually classifies a sailing is `_classify_from_departures_board`: the
-operator's "loading maximum number of vehicles" note sets `filled`, and a departed sailing
-that stayed noteless for `DEPARTED_NOTE_WAIT` reads as `boarded` at low confidence. Earls
-Cove has no board at all, so that direction has only the vessel tracker (departure time
-only), reports, and geometry — the compound camera's lanes plus the highway camera's
-overflow. ERL's geometry rests on the maintainer's own capacity facts
+numeric path never fires here. No feed gives a fill *time*; `filled_at` is instead the
+cameras' conservative mark (`_fill_mark_from_geometry`: every SLT fitted lane taken, per
+`full_lanes_at_capacity` in `SLT.json`, or a tail on ERL's highway camera), set only on a
+sailing that did fill, and it errs early by construction. What actually classifies a
+sailing is `_classify_from_departures_board`: the operator's "loading maximum number of
+vehicles" note sets `filled`, and a departed sailing that stayed noteless for
+`DEPARTED_NOTE_WAIT` reads as `boarded` at low confidence. Earls Cove has no board at all,
+so that direction has only the vessel tracker (departure time only), reports, and geometry
+— the compound camera's lanes plus the highway camera's overflow. ERL's geometry rests on the maintainer's own capacity facts
 (`lanes_before_capacity` in `ERL.json`): the fitted lanes sit short of the one-vessel
 line, so bare fitted lanes at a *tracked* departure are an affirmative `boarded`, while
 occupied lanes or a highway tail cap at `heavy` — a healthy queue, provably a fill only
