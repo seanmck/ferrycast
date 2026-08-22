@@ -1916,11 +1916,19 @@
         }
 
         // Geometry. x runs from the earliest bucket on the left to departure on the right.
-        // The bottom band is reserved for the time axis, and the top strip for the cutline
-        // label — the two annotations used to share the floor and could overlap there.
+        // The bottom band is reserved for the time axis, and the top strip for the cutline and
+        // previous-sailing labels — the annotations used to share the floor and overlap there.
         const W = 342, H = 198, PAD_L = 10, PAD_R = 10, PAD_T = 20, PAD_B = 32;
         const BASE = H - PAD_B;                     // the x axis, and the zero of the y scale
-        const first = pts[0].minutes_before;
+        const BUCKET = pts.length > 1 ? pts[0].minutes_before - pts[1].minutes_before : 15;
+        // The previous sailing's departure, when the server could place one. It lands at or
+        // beyond the left edge — the window is two hours and this route's headways run from
+        // 110 minutes to nearly three — so the domain stretches to reach it, but only two
+        // buckets' worth. Past that the blank left margin costs the curve more width than
+        // the mark is worth, and the caption says it in words instead.
+        const PREV = data.previous_departure_minutes;
+        const inFrame = PREV != null && PREV - pts[0].minutes_before <= 2 * BUCKET;
+        const first = inFrame ? Math.max(pts[0].minutes_before, PREV) : pts[0].minutes_before;
         const hi = Math.max(1, ...pts.map(p => Math.max(p.median, p.p75, p.p25)));
         const x = m => PAD_L + (1 - m / (first || 1)) * (W - PAD_L - PAD_R);
         const y = v => PAD_T + (1 - v / hi) * (BASE - PAD_T);
@@ -1966,8 +1974,12 @@
                        fill="var(--label)" font-family="IBM Plex Mono, monospace"
                        font-size="11">min</text>`
               : '';
-            return `<line x1="${tx}" y1="${PAD_T}" x2="${tx}" y2="${BASE}"
-                          stroke="var(${m === 0 ? '--line-strong' : '--line'})"></line>` +
+            // The previous-sailing rule stands on this tick, so its gridline is dropped —
+            // two lines on one x reads as two events. The tick and its number stay.
+            const grid = inFrame && m === PREV ? '' :
+              `<line x1="${tx}" y1="${PAD_T}" x2="${tx}" y2="${BASE}"
+                     stroke="var(${m === 0 ? '--line-strong' : '--line'})"></line>`;
+            return grid +
                    `<line x1="${tx}" y1="${BASE}" x2="${tx}" y2="${BASE + 4}"
                           stroke="var(--line-strong)"></line>` +
                    `<text x="${tx}" y="${BASE + 16}" text-anchor="${at}"
@@ -1975,32 +1987,72 @@
                           font-size="11">${label}</text>` + unit;
           }).join('');
 
-        let cut = '';
+        // Both top-strip labels are mono at font-size 10, which advances 0.6em, so where one
+        // starts and ends is arithmetic rather than measurement. A centred label reaches half
+        // its width to the left of its own rule, so the gap between the two rules says nothing
+        // about whether the two labels touch.
+        const span = (px, text, at) => {
+          const w = text.length * 6;
+          const x0 = at === 'end' ? px - w : at === 'middle' ? px - w / 2 : px;
+          return { x0: x0 - 2, x1: x0 + w + 2 };   // two px of air, or they read as one string
+        };
+
+        // The cutline is built first so the previous-sailing mark can ask whether its own
+        // label would land underneath this one.
+        let cut = '', cutLabel = null;
         if (CUTLINE !== null && CUTLINE <= first) {
-          const px = x(CUTLINE), cx = px.toFixed(1);
+          const px = x(CUTLINE), cx = px.toFixed(1), text = `−${CUTLINE} cutline`;
+          cutLabel = span(px, text, anchor(px));
           cut =
             `<line x1="${cx}" y1="${PAD_T - 5}" x2="${cx}" y2="${BASE}"
                    stroke="var(--cedar)" stroke-width="1.5" stroke-dasharray="4 4"></line>` +
             `<text x="${cx}" y="${PAD_T - 9}" text-anchor="${anchor(px)}" fill="var(--cedar)"
-                   font-family="IBM Plex Mono, monospace" font-size="10">−${CUTLINE} cutline</text>`;
+                   font-family="IBM Plex Mono, monospace" font-size="10">${text}</text>`;
+        }
+
+        // Quieter than the cutline in both weight and colour: the cutline is advice, this only
+        // says what you are looking at. Cedar is reserved for the thing to act on.
+        let prev = '';
+        if (inFrame) {
+          const px = x(PREV), pxs = px.toFixed(1), text = 'previous sailing', at = anchor(px);
+          // The label is dropped, not nudged, when the cutline's would sit on it. The rule
+          // still marks the spot and the caption still names it, whereas two mono strings
+          // printed over each other leave neither readable — and moving this one off its rule
+          // would only point it at the wrong minute.
+          const mine = span(px, text, at);
+          const clash = cutLabel && mine.x0 < cutLabel.x1 && cutLabel.x0 < mine.x1;
+          prev =
+            `<line x1="${pxs}" y1="${PAD_T - 5}" x2="${pxs}" y2="${BASE}"
+                   stroke="var(--label)" stroke-dasharray="2 3"></line>` +
+            (clash ? '' :
+            `<text x="${pxs}" y="${PAD_T - 9}" text-anchor="${at}" fill="var(--label)"
+                   font-family="IBM Plex Mono, monospace" font-size="10">${text}</text>`);
         }
 
         const caption = data.source === 'deck_space'
           ? `Typical ${data.unit} across ${data.sailings} comparable sailings — where it reaches zero is the point you would no longer have got on.`
           : `Typical ${data.unit} (median) across ${data.sailings} comparable sailings.`;
+        // The mark alone leaves the reader to infer why the line can fall before it climbs,
+        // and off the left edge there is no mark to infer from. Either way this states the
+        // departure rather than naming a dip: a busy slot climbs straight through, and a
+        // caption that promised a dip there would be describing another chart.
+        const shape = PREV == null ? ''
+          : inFrame
+            ? ` The dashed mark is when the sailing before this one left; a queue just after it is that sailing's tail, not yours.`
+            : ` The sailing before this one left ${PREV} minutes ahead, just off the left of the chart; a queue at that end is its tail, not yours.`;
 
         body.innerHTML =
           `<div class="curve-wrap">
              <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block"
-                  role="img" aria-label="${caption}">
+                  role="img" aria-label="${caption}${shape}">
                <g stroke-width="1">${gridlines}${axis}</g>
                <path d="${band}" fill="var(--buoy)" fill-opacity="0.18"></path>
                <path d="${median}" fill="none" stroke="var(--buoy)" stroke-width="2.5"
                      stroke-linecap="round" stroke-linejoin="round"></path>
-               ${cut}
+               ${prev}${cut}
              </svg>
            </div>
-           <p class="note">${caption} Shaded band is P25–P75.</p>`;
+           <p class="note">${caption}${shape} Shaded band is P25–P75.</p>`;
       } catch (err) {
         body.innerHTML = '<p class="note">Could not load the arrival curve.</p>';
       }

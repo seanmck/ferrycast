@@ -337,7 +337,11 @@ def test_arrival_curve_endpoint(client):
         "/api/arrival-curve", params={"origin": "SLT", "time": "12:30"}
     )
     assert response.status_code == 200
-    assert "points" in response.json()
+    payload = response.json()
+    assert "points" in payload
+    # The chart widens its x domain to reach this and captions itself from it, so a rename
+    # here does not fail loudly — it just quietly stops explaining the dip on the left.
+    assert "previous_departure_minutes" in payload
 
 
 def test_health_page_renders(client):

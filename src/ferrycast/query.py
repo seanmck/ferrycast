@@ -778,6 +778,69 @@ def day_board(
     return board
 
 
+def _previous_departure_offset(
+    config: Config,
+    relevant: list,
+    *,
+    origin: str,
+    bucket_minutes: int,
+) -> int | None:
+    """How far back the *previous* sailing left, in minutes before this one.
+
+    The lookback window is two hours and this route's headways start at 110 minutes, so the
+    left-hand end of the curve sits on, or just after, the sailing before the one being
+    asked about. The fall there is that ferry loading and leaving, not the queue for this
+    one thinning — unmarked, the chart reads as though arriving three hours early finds a
+    shorter line than arriving two.
+
+    Returned only when the pooled sailings agree on where it falls. The time tolerance
+    admits neighbouring departures, so their predecessors need not share an offset, and one
+    line drawn through a smeared event would claim a precision the pool does not have.
+
+    The cutoff is the window plus `post_window_minutes`, which is already this project's
+    answer to how long a departure goes on mattering — `compute_record` watches that long
+    after one. A predecessor further back than that finished draining before the chart
+    starts, and marking it would attach the explanation to a rise that is only the queue
+    building. A nearer one is worth naming even when it falls off the left edge: on this
+    route most headways are wider than the two-hour window, and the sailings whose charts
+    fall hardest on the left are the ones whose predecessor left just before it opened.
+    """
+    blocks = load_schedule_cached(config.schedule_path)
+    route = config.route
+    times_by_date: dict[str, list[int]] = {}
+    gaps: list[int] = []
+    for row in relevant:
+        service_date = row["service_date"]
+        if service_date not in times_by_date:
+            times_by_date[service_date] = [
+                _hhmm_to_minutes(s.depart_hhmm)
+                for s in sailings_for_day(
+                    blocks,
+                    date.fromisoformat(service_date),
+                    route.id,
+                    route.destinations,
+                    config.tz,
+                    origin=origin,
+                )
+            ]
+        minutes = _hhmm_to_minutes(row["depart_hhmm"])
+        earlier = [m for m in times_by_date[service_date] if m < minutes]
+        if earlier:
+            gaps.append(minutes - max(earlier))
+
+    # First sailing of the day has no predecessor, and neither does a date the current
+    # timetable no longer covers. Either way the marker is only honest if most of the pool
+    # backs it, so a mixed pool of first-of-day and mid-day sailings draws nothing.
+    if len(gaps) * 2 < len(relevant) or not gaps:
+        return None
+    if max(gaps) - min(gaps) > bucket_minutes:
+        return None
+    gaps.sort()
+    offset = int(_percentile(gaps, 0.5))
+    horizon = config.aggregate.lookback_minutes + config.aggregate.post_window_minutes
+    return offset if offset < horizon else None
+
+
 def arrival_curve(
     conn: sqlite3.Connection,
     config: Config,
@@ -919,6 +982,12 @@ def arrival_curve(
         "unit": unit,
         # Deck space drains toward zero, so the pessimistic case is the low quartile.
         "pessimistic_is_low": descending,
+        # Where the sailing before this one left, so the chart can say that the early dip
+        # is that ferry going rather than this queue shrinking. None when the pool does
+        # not agree on one offset — see _previous_departure_offset.
+        "previous_departure_minutes": _previous_departure_offset(
+            config, relevant, origin=origin, bucket_minutes=bucket_minutes
+        ),
         "points": points,
     }
 
