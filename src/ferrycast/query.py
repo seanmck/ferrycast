@@ -778,41 +778,64 @@ def day_board(
     return board
 
 
-def _previous_departure_offset(
+def _previous_departure(
+    conn: sqlite3.Connection,
     config: Config,
     relevant: list,
     *,
     origin: str,
-    bucket_minutes: int,
-) -> int | None:
-    """How far back the *previous* sailing left, in minutes before this one.
+) -> dict | None:
+    """When the *previous* sailing actually left, in minutes before this one's scheduled time.
 
     The lookback window is two hours and this route's headways start at 110 minutes, so the
-    left-hand end of the curve sits on, or just after, the sailing before the one being
-    asked about. The fall there is that ferry loading and leaving, not the queue for this
-    one thinning — unmarked, the chart reads as though arriving three hours early finds a
-    shorter line than arriving two.
+    left-hand end of the curve sits on the sailing before the one being asked about. The fall
+    there is that ferry loading and leaving, not the queue for this one thinning — unmarked,
+    the chart reads as though arriving three hours early finds a shorter line than arriving
+    two.
 
-    Returned only when the pooled sailings agree on where it falls. The time tolerance
-    admits neighbouring departures, so their predecessors need not share an offset, and one
-    line drawn through a smeared event would claim a precision the pool does not have.
+    Read from `sailing_records.departed_at`, never from the timetable. `schema.sql` already
+    says why, and this route proves it: over twelve days of board scrapes the median SLT
+    sailing left 24 minutes late and lateness compounded through the day, so the timetable
+    put the 21:00's predecessor at −115 when it really went at −71. Marking the scheduled
+    time would have pointed at empty minutes and left the real drain unexplained. Where no
+    departure was witnessed there is no fallback to the schedule: a scheduled time is not a
+    departure, which is the whole point.
 
-    The cutoff is the window plus `post_window_minutes`, which is already this project's
-    answer to how long a departure goes on mattering — `compute_record` watches that long
-    after one. A predecessor further back than that finished draining before the chart
-    starts, and marking it would attach the explanation to a rise that is only the queue
-    building. A nearer one is worth naming even when it falls off the left edge: on this
-    route most headways are wider than the two-hour window, and the sailings whose charts
-    fall hardest on the left are the ones whose predecessor left just before it opened.
+    The offsets are returned as a spread rather than a point. Lateness varies day to day, so
+    across a pool the previous departure genuinely lands in a range — an interquartile 3 to
+    26 minutes wide on this route — and one line through it would claim a precision the pool
+    does not have. The chart draws the middle half as a band and the median as its rule.
     """
     blocks = load_schedule_cached(config.schedule_path)
     route = config.route
+    dates = sorted({row["service_date"] for row in relevant})
+    if not dates:
+        return None
+
+    # Every witnessed departure for this origin across the pooled dates, so the predecessor
+    # of each pooled sailing can be looked up by the time it was scheduled for.
+    placeholders = ",".join("?" for _ in dates)
+    witnessed = {
+        (row["service_date"], row["depart_hhmm"]): row
+        for row in conn.execute(
+            f"""SELECT s.service_date, s.depart_hhmm, r.departed_at, r.departed_source
+                  FROM sailings s
+                  JOIN sailing_records r ON r.sailing_id = s.id
+                 WHERE s.route = ? AND s.origin = ? AND r.departed_at IS NOT NULL
+                   AND s.service_date IN ({placeholders})""",
+            (route.id, origin, *dates),
+        ).fetchall()
+    }
+    if not witnessed:
+        return None
+
     times_by_date: dict[str, list[int]] = {}
-    gaps: list[int] = []
+    offsets: list[int] = []
+    sources: set[str] = set()
     for row in relevant:
         service_date = row["service_date"]
         if service_date not in times_by_date:
-            times_by_date[service_date] = [
+            times_by_date[service_date] = sorted(
                 _hhmm_to_minutes(s.depart_hhmm)
                 for s in sailings_for_day(
                     blocks,
@@ -822,23 +845,50 @@ def _previous_departure_offset(
                     config.tz,
                     origin=origin,
                 )
-            ]
+            )
         minutes = _hhmm_to_minutes(row["depart_hhmm"])
         earlier = [m for m in times_by_date[service_date] if m < minutes]
-        if earlier:
-            gaps.append(minutes - max(earlier))
+        if not earlier:
+            continue  # first sailing of the day: nothing ran before it to drain the compound
+        previous = "{:02d}:{:02d}".format(*divmod(max(earlier), 60))
+        seen = witnessed.get((service_date, previous))
+        if seen is None:
+            continue
+        departure = datetime.fromisoformat(row["scheduled_departure"])
+        offset = int((departure - parse_iso(seen["departed_at"])).total_seconds() // 60)
+        # A predecessor that left after this sailing was due is a timetable or matching fault,
+        # not a drain worth drawing.
+        if offset <= 0:
+            continue
+        offsets.append(offset)
+        if seen["departed_source"]:
+            sources.add(seen["departed_source"])
 
-    # First sailing of the day has no predecessor, and neither does a date the current
-    # timetable no longer covers. Either way the marker is only honest if most of the pool
-    # backs it, so a mixed pool of first-of-day and mid-day sailings draws nothing.
-    if len(gaps) * 2 < len(relevant) or not gaps:
+    # The mark is only honest if most of the pool backs it. A mixed pool — some sailings
+    # first-of-day, some with an unwitnessed predecessor — draws nothing rather than
+    # generalising from the two days that happened to be watched.
+    if not offsets or len(offsets) * 2 < len(relevant):
         return None
-    if max(gaps) - min(gaps) > bucket_minutes:
+
+    offsets.sort()
+    median = int(_percentile(offsets, 0.5))
+    # Past the window plus `post_window_minutes` the predecessor finished draining before the
+    # chart starts; `post_window_minutes` is already this project's answer to how long a
+    # departure goes on mattering, since `compute_record` watches exactly that long after one.
+    if median >= config.aggregate.lookback_minutes + config.aggregate.post_window_minutes:
         return None
-    gaps.sort()
-    offset = int(_percentile(gaps, 0.5))
-    horizon = config.aggregate.lookback_minutes + config.aggregate.post_window_minutes
-    return offset if offset < horizon else None
+
+    return {
+        "median": median,
+        # Named for which end of the axis they sit on rather than for their percentile:
+        # further back is a larger minutes-before, so the earlier edge is the upper quartile.
+        "earlier": int(_percentile(offsets, 0.75)),
+        "later": int(_percentile(offsets, 0.25)),
+        "n": len(offsets),
+        # The board is good to the minute and the tracker to about five, so which one saw it
+        # go travels with the number.
+        "source": sources.pop() if len(sources) == 1 else "mixed",
+    }
 
 
 def arrival_curve(
@@ -982,12 +1032,10 @@ def arrival_curve(
         "unit": unit,
         # Deck space drains toward zero, so the pessimistic case is the low quartile.
         "pessimistic_is_low": descending,
-        # Where the sailing before this one left, so the chart can say that the early dip
-        # is that ferry going rather than this queue shrinking. None when the pool does
-        # not agree on one offset — see _previous_departure_offset.
-        "previous_departure_minutes": _previous_departure_offset(
-            config, relevant, origin=origin, bucket_minutes=bucket_minutes
-        ),
+        # When the sailing before this one actually left, so the chart can say that the
+        # early fall is that ferry going rather than this queue shrinking. None when too
+        # little of the pool was witnessed — see _previous_departure.
+        "previous_departure": _previous_departure(conn, config, relevant, origin=origin),
         "points": points,
     }
 
