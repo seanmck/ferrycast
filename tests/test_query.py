@@ -9,7 +9,7 @@ from ferrycast.query import (
     upcoming_sailings,
 )
 from ferrycast.schedule import day_type, season
-from ferrycast.timeutil import combine_local, parse_hhmm
+from ferrycast.timeutil import combine_local, iso, parse_hhmm
 
 from .conftest import add_observation
 
@@ -47,8 +47,8 @@ def seed_record(conn, config, service_date: date, hhmm: str, outcome: str, origi
         """INSERT OR REPLACE INTO sailing_records
                (sailing_id, outcome, filled, left_behind, left_full, method,
                 peak_queue, carryover, n_frames, confidence,
-                queue_truncated, computed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 8, 0.9, 0, '2026-01-01T00:00:00Z')""",
+                queue_truncated, departed_at, departed_source, computed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 8, 0.9, 0, ?, ?, '2026-01-01T00:00:00Z')""",
         (
             sailing_id,
             outcome,
@@ -58,6 +58,10 @@ def seed_record(conn, config, service_date: date, hhmm: str, outcome: str, origi
             kw.get("method"),
             kw.get("peak_queue", 50),
             kw.get("carryover"),
+            # Left NULL unless a test says the vessel was seen to go, which is also the shape
+            # of a sailing no source witnessed.
+            kw.get("departed_at"),
+            kw.get("departed_source"),
         ),
     )
     conn.commit()
@@ -505,13 +509,17 @@ def test_the_arrival_curve_is_drawn_from_lanes_in_use(conn, config):
     assert all(p["n"] == 4 for p in curve["points"])
 
 
-# ---- Where the previous sailing left ----------------------------------------------------
+# ---- When the previous sailing actually left ---------------------------------------------
 #
-# The lookback window is two hours; Route 7's headways run from 110 minutes to nearly three.
-# So the left-hand end of the arrival curve often sits on the sailing *before* the one being
-# asked about. The queue falls there because that ferry loaded and left, not because this
-# one's line thinned, and a chart that does not say so reads as though arriving earlier
-# finds a shorter wait.
+# The lookback window is two hours and Route 7's headways start at 110 minutes, so the
+# left-hand end of the arrival curve sits on the sailing *before* the one being asked about.
+# The queue falls there because that ferry loaded and left, not because this one's line
+# thinned, and a chart that does not say so reads as though arriving earlier finds a shorter
+# wait.
+#
+# The times come from `sailing_records.departed_at`, never the timetable. Twelve days of
+# board scrapes put the median SLT sailing 24 minutes late, compounding through the day, so
+# the schedule placed the 21:00's predecessor at −115 when it really went at −71.
 
 
 def _config_with_schedule(tmp_path, schedule: str):
@@ -526,103 +534,115 @@ def _config_with_schedule(tmp_path, schedule: str):
     return load_config(config_dir / "ferrycast.toml")
 
 
-def _seeded_curve(conn, config, hhmm: str, origin: str = "SLT", days=None):
-    for day in days or fridays(3):
+def _witness(config, day: date, hhmm: str) -> str:
+    """The UTC timestamp a vessel left, given the local time it was seen to go."""
+    return iso(combine_local(day, parse_hhmm(hhmm), config.tz))
+
+
+def _pool(conn, config, hhmm, *, origin="SLT", previous=None, left_at=None,
+          source="board", days=None):
+    """Seed a pool of comparable sailings, each with its predecessor's departure witnessed.
+
+    `left_at` is a list of local HH:MM strings, one per day, so a test can vary how late the
+    previous ferry actually ran.
+    """
+    days = days or fridays(3)
+    for i, day in enumerate(days):
         seed_record(conn, config, day, hhmm, "boarded", origin=origin)
+        if previous is None:
+            continue
+        went = left_at[i % len(left_at)] if left_at else previous
+        seed_record(
+            conn, config, day, previous, "boarded", origin=origin,
+            departed_at=_witness(config, day, went), departed_source=source,
+        )
     return arrival_curve(
         conn, config, origin=origin, target_date=PLAIN_FRIDAY, depart_hhmm=hhmm
     )
 
 
-def test_the_curve_says_where_the_previous_sailing_left(conn, config):
-    # ERL runs 13:30 then 15:25 in the fixture: 115 minutes back, inside the two-hour window.
-    curve = _seeded_curve(conn, config, "15:25", origin="ERL")
-    assert curve["previous_departure_minutes"] == 115
+def test_the_mark_is_when_the_ferry_went_not_when_it_was_due(conn, config):
+    """ERL runs 13:30 then 15:25 in the fixture — 115 minutes by the timetable. The 13:30
+    actually left at 13:50 on each of these days, so the compound drained 95 minutes before
+    the 15:25, not 115. Reading the schedule would point the mark at twenty minutes in which
+    the previous sailing was still sitting there loading."""
+    curve = _pool(conn, config, "15:25", origin="ERL", previous="13:30", left_at=["13:50"])
+    assert curve["previous_departure"]["median"] == 95
+    assert curve["previous_departure"]["n"] == 3
 
 
-def test_a_predecessor_just_outside_the_window_is_still_named(tmp_path):
-    """The window is two hours and most of this route's headways are longer, so the strictest
-    reading — mark it only if it falls inside the chart — stays silent on exactly the charts
-    that fall hardest on the left. A ferry that left 20 minutes before the window opened was
-    still unloading the compound inside it."""
-    from ferrycast.db import init_db
-
-    config = _config_with_schedule(
-        tmp_path,
-        """
-[[block]]
-terminal = "SLT"
-effective_from = 2020-01-01
-effective_to = 2030-12-31
-days = "all"
-departures = ["10:20", "12:30", "16:30"]
-
-[[block]]
-terminal = "ERL"
-effective_from = 2020-01-01
-effective_to = 2030-12-31
-days = "all"
-departures = ["09:30", "13:30", "15:25"]
-""",
+def test_an_unwitnessed_departure_does_not_fall_back_to_the_timetable(conn, config):
+    """Nothing saw the 13:30 go, so nothing is claimed about when it went. Substituting the
+    scheduled time here is the exact mistake this function exists to avoid — a scheduled time
+    is not a departure, and on this route it is routinely half an hour out."""
+    curve = _pool(conn, config, "15:25", origin="ERL", previous="13:30", left_at=None,
+                  source=None)
+    # `left_at=None` still seeds the predecessor, but `_witness` is never called for it.
+    assert curve["previous_departure"] is not None  # sanity: the helper does witness it
+    # Now the same pool with no record at all for the predecessor.
+    conn.execute("DELETE FROM sailing_records WHERE departed_at IS NOT NULL")
+    conn.commit()
+    curve = arrival_curve(
+        conn, config, origin="ERL", target_date=PLAIN_FRIDAY, depart_hhmm="15:25"
     )
-    conn = init_db(config.db_path)
-    try:
-        curve = _seeded_curve(conn, config, "12:30")
-        assert curve["previous_departure_minutes"] == 130
-    finally:
-        conn.close()
+    assert curve["previous_departure"] is None
 
 
-def test_a_predecessor_that_finished_draining_first_is_not_marked(conn, config):
-    """SLT's fixture headway is four hours — past the window and past the 45 minutes the
-    aggregator allows a departure to go on mattering. Whatever that chart does on the left is
-    the queue building, and hanging a departure on it would explain the wrong thing."""
-    curve = _seeded_curve(conn, config, "12:30")
-    assert curve["previous_departure_minutes"] is None
+def test_the_mark_carries_the_spread_not_just_a_median(conn, config):
+    """Lateness varies day to day, so across a pool the previous departure lands in a range —
+    an interquartile 3 to 26 minutes wide on this route. One line through that claims a
+    precision the pool does not have, so the middle half travels with the median."""
+    curve = _pool(
+        conn, config, "15:25", origin="ERL", previous="13:30",
+        left_at=["13:30", "13:45", "14:00", "14:15", "14:30"], days=fridays(5),
+    )
+    mark = curve["previous_departure"]
+    # Offsets 115, 100, 85, 70, 55. `_percentile` is nearest-rank, so the quartiles are the
+    # second and fourth of the five rather than an interpolation.
+    assert mark["median"] == 85
+    assert mark["earlier"] == 100
+    assert mark["later"] == 70
+    assert mark["earlier"] > mark["median"] > mark["later"]
+    assert mark["n"] == 5
 
 
 def test_the_first_sailing_of_the_day_has_nothing_before_it(conn, config):
-    curve = _seeded_curve(conn, config, "08:30")
-    assert curve["previous_departure_minutes"] is None
+    curve = _pool(conn, config, "08:30")
+    assert curve["previous_departure"] is None
 
 
-def test_a_timetable_change_mid_history_leaves_the_mark_off(tmp_path):
-    """The pool spans dates, and a schedule that changed across them puts the previous
-    departure in two places at once. One rule through a smeared event claims a precision the
-    pool does not have, so nothing is drawn and the caption stays quiet about it."""
-    from ferrycast.db import init_db
+def test_a_predecessor_that_finished_draining_first_is_not_marked(conn, config):
+    """SLT's fixture headway is four hours, and even leaving late the 08:30 was gone well
+    before the 12:30's chart opens — past the window and past the 45 minutes the aggregator
+    allows a departure to go on mattering. Whatever that chart does on the left is the queue
+    building, and hanging a departure on it would explain the wrong thing."""
+    curve = _pool(conn, config, "12:30", previous="08:30", left_at=["08:45"])
+    assert curve["previous_departure"] is None
 
-    # 15:25 keeps its time throughout; what moves is the sailing in front of it — 115 minutes
-    # ahead on the older Fridays, 85 on the newer ones.
-    config = _config_with_schedule(
-        tmp_path,
-        """
-[[block]]
-terminal = "SLT"
-effective_from = 2020-01-01
-effective_to = 2030-12-31
-days = "all"
-departures = ["08:30", "12:30", "16:30"]
 
-[[block]]
-terminal = "ERL"
-effective_from = 2020-01-01
-effective_to = 2026-07-15
-days = "all"
-departures = ["09:30", "13:30", "15:25"]
-
-[[block]]
-terminal = "ERL"
-effective_from = 2026-07-16
-effective_to = 2030-12-31
-days = "all"
-departures = ["09:30", "14:00", "15:25"]
-""",
+def test_a_departure_seen_only_on_some_days_does_not_speak_for_the_pool(conn, config):
+    """Two witnessed days out of five is not the pool's behaviour, it is those two days.
+    Generalising from them puts a confident mark on a chart built mostly from sailings whose
+    predecessor nobody saw leave."""
+    days = fridays(5)
+    for i, day in enumerate(days):
+        seed_record(conn, config, day, "15:25", "boarded", origin="ERL")
+        if i < 2:
+            seed_record(
+                conn, config, day, "13:30", "boarded", origin="ERL",
+                departed_at=_witness(config, day, "13:50"), departed_source="board",
+            )
+    curve = arrival_curve(
+        conn, config, origin="ERL", target_date=PLAIN_FRIDAY, depart_hhmm="15:25"
     )
-    conn = init_db(config.db_path)
-    try:
-        curve = _seeded_curve(conn, config, "15:25", origin="ERL", days=fridays(4))
-        assert curve["sailings"] == 4
-        assert curve["previous_departure_minutes"] is None
-    finally:
-        conn.close()
+    assert curve["sailings"] == 5
+    assert curve["previous_departure"] is None
+
+
+def test_which_source_saw_it_go_travels_with_the_mark(conn, config):
+    """The board is good to the minute and the tracker to about five. ERL has no board at
+    all, so that direction's marks rest on the tracker, and the payload has to say so rather
+    than let a five-minute reading pass for a one-minute one."""
+    curve = _pool(conn, config, "15:25", origin="ERL", previous="13:30",
+                  left_at=["13:50"], source="tracking")
+    assert curve["previous_departure"]["source"] == "tracking"
