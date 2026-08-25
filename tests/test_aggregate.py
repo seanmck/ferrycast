@@ -1265,3 +1265,86 @@ def test_the_mark_reaches_the_arrive_before_advice(conn, config):
 
     assert answer.typical_fill_minutes_before == 50
     assert answer.typical_fill_local == "12:40"
+
+
+# --- the fill mark runs on the ship's clock ----------------------------------------------
+#
+# Departures here run half an hour late as a matter of routine, and the mark search used
+# the timetable's clock at both ends. Front edge: frames of the previous vessel still
+# loading — every lane full of cars about to drive aboard it — were read as the *next*
+# sailing's fill, and on 2026-08-22 that published "arrive by 14:56" for the 16:55 off the
+# 14:30's loading queue. Back edge: a sailing that filled between its scheduled time and
+# its actual going (that day's 09:25 — full at 09:31, away at 09:49) got no mark at all.
+
+
+def _note_with_departure(conn, config, departure, hhmm, departed_hhmm):
+    """A capacity note on a row that also states when the vessel actually left."""
+    conn.execute(
+        """INSERT INTO deck_space
+               (route, terminal, observed_at, service_date, sailing_hhmm, departed_hhmm,
+                status_text, fetch_status)
+           VALUES (?, 'SLT', ?, ?, ?, ?,
+                   'Departed Peak travel. Loading maximum number of vehicles', 'ok')""",
+        (config.route.id, iso(departure + timedelta(minutes=45)),
+         departure.date().isoformat(), hhmm, departed_hhmm),
+    )
+    conn.commit()
+
+
+def test_the_previous_vessels_loading_queue_is_not_this_sailings_fill(conn, config):
+    """All ten lanes full at 14:35 while the hours-late 12:30 is still loading says
+    nothing about the 16:30 — some of those cars are about to drive aboard it. The first
+    frame the mark may trust comes after the 12:30 has gone and the settle has passed:
+    whatever still stands then provably did not fit."""
+    _declare_slt_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "16:30")
+    _board_row(conn, config, day, "12:30", "14:40")
+    _geom_frames(conn, config, departure, [
+        (-115, 10, "overflowing"), (-90, 10, "overflowing"), (30, 0, "empty"),
+    ])
+    _note_with_departure(conn, config, departure, "16:30", "16:41")
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn, "16:30")
+
+    assert row["filled"] == 1
+    # 14:35 was the 12:30's loading queue; 15:00 — past 14:40 + settle — is the mark.
+    assert row["filled_at"] == iso(departure - timedelta(minutes=90))
+
+
+def test_without_a_seen_previous_departure_the_scheduled_window_stands(conn, config):
+    """Nothing saw the 12:30 go, so there is no ship's clock to move the bound onto and
+    the search keeps the timetable's — the honest fallback, still on the early side."""
+    _declare_slt_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "16:30")
+    _geom_frames(conn, config, departure, [
+        (-115, 10, "overflowing"), (-90, 10, "overflowing"), (30, 0, "empty"),
+    ])
+    _note_with_departure(conn, config, departure, "16:30", "16:41")
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn, "16:30")
+
+    assert row["filled_at"] == iso(departure - timedelta(minutes=115))
+
+
+def test_a_fill_during_this_sailings_own_late_loading_is_still_a_fill_time(conn, config):
+    """The 12:30 filled at 12:40 and went at 12:55. A bound at the timetable read that
+    fill as never having happened; the ship's clock keeps it. Its gap is negative and the
+    query layer clamps it to zero — arrive by the scheduled time, which is the safe
+    reading of a fill that happened during loading."""
+    _declare_slt_capacity_geometry(config)
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _geom_frames(conn, config, departure, [
+        (-30, 6, "heavy"), (10, 10, "overflowing"), (40, 0, "empty"),
+    ])
+    _note_with_departure(conn, config, departure, "12:30", "12:55")
+
+    aggregate_day(conn, config, day)
+    row = _record_for(conn)
+
+    assert row["filled"] == 1
+    assert row["filled_at"] == iso(departure + timedelta(minutes=10))
