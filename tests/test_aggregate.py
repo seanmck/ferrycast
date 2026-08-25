@@ -335,7 +335,9 @@ def _board_row(conn, config, day, hhmm, departed, origin="SLT"):
         (
             config.route.id,
             origin,
-            combine_local(day, parse_hhmm(hhmm), config.tz).isoformat(),
+            # Read a minute after the boat left: the board cannot report a departure
+            # before it has happened, and `_board_departure` refuses one that claims to.
+            iso(combine_local(day, parse_hhmm(departed), config.tz) + timedelta(minutes=1)),
             day.isoformat(),
             hhmm,
             departed,

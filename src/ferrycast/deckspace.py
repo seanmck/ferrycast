@@ -15,12 +15,12 @@ import re
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from .config import Config
 from .db import JobRun
 from .fetching import fetch
-from .timeutil import iso, local, now_utc
+from .timeutil import combine_local, iso, local, now_utc, parse_hhmm
 
 TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE)
 PERCENT_RE = re.compile(r"(\d{1,3})\s*%")
@@ -50,6 +50,24 @@ FOOTER_RE = re.compile(r"Last updated:|Refresh details|Ferry tracking", re.IGNOR
 # published wording rather than an inference: it says how they loaded, which is a different
 # claim from "somebody was turned away", and only the second is an overload.
 FULL_NOTE_RE = re.compile(r"loading maximum number of vehicles", re.IGNORECASE)
+
+# The board is a day's board, but it does not turn over on the stroke of midnight: for a
+# few minutes past 00:00 it still lists yesterday's sailings, every one of them
+# "Departed", and it can show tomorrow's first sailing before the day ends. Two tolerances
+# tell those rows from today's, one for each direction.
+#
+# A departure can only be announced a few minutes before its timetable slot — the boat
+# left early — never an hour before it. So a "Departed" row whose slot sits more than this
+# far ahead of the scrape's clock departed *yesterday*, and the page it is on is
+# yesterday's board. Half a day, the obvious tolerance, is wrong here: at 00:00 yesterday's
+# 07:25 is only seven hours ahead.
+EARLY_DEPARTURE_GRACE = timedelta(hours=1)
+# The other way round a sailing may be hours late and still "Upcoming", so the row that
+# proves tomorrow's board has started to show has to be half a day behind the clock — as
+# tomorrow's 05:35 is at 23:50 — before it is filed forward. Only a row the board itself
+# calls upcoming: a lingering row with no status at all is its page's, whatever the clock.
+HALF_DAY = timedelta(hours=12)
+UPCOMING_RE = re.compile(r"\bupcoming\b", re.IGNORECASE)
 
 # How much of an unrecognised page to keep for diagnosis. Enough to see the structure,
 # bounded so a redesigned site cannot fill the volume one scrape at a time.
@@ -265,6 +283,54 @@ def _dedupe(rows: list[DeckSpaceRow]) -> list[DeckSpaceRow]:
     return [merged[key] for key in order]
 
 
+def board_day(observed_local: datetime, rows: list[DeckSpaceRow]) -> date:
+    """Which service day the page describes.
+
+    Usually the scrape's own local date — but the page is filed by the day its *sailings*
+    belong to, not the day it was read, because the two disagree at the edge of the day.
+    The scrape at 00:00:07 on 2026-08-24 found the whole of the 23rd still up: seven
+    sailings, every one "Departed", all stamped with the 24th. For the rest of the day
+    each of the 24th's sailings therefore carried the 23rd's departure time and the
+    23rd's "loading maximum" note as its latest board reading, and the 21:00 was shown as
+    having left at 22:06 while it was still 21:16.
+
+    The proof is a departed row that could not have departed today: its slot is still
+    more than `EARLY_DEPARTURE_GRACE` ahead. One such row dates the whole page, because
+    the board describes one day and the rows without a departure time (a lingering
+    "ETA", an all-day cancellation) cannot speak for themselves. A page with no departed
+    row at all is taken at its date — a board of nothing but cancellations lingering past
+    midnight cannot be told from tomorrow's cancellations announced early, and guessing
+    would be worse than the rare wrong day.
+    """
+    day = observed_local.date()
+    for row in rows:
+        if row.sailing_hhmm is None or row.departed_hhmm is None:
+            continue
+        scheduled = combine_local(day, parse_hhmm(row.sailing_hhmm), observed_local.tzinfo)
+        if scheduled - observed_local > EARLY_DEPARTURE_GRACE:
+            return day - timedelta(days=1)
+    return day
+
+
+def service_date_for(board: date, observed_local: datetime, row: DeckSpaceRow) -> date:
+    """Which service date one row belongs to, given the day its page describes.
+
+    The one row that can belong to a different day from the rest of its page is
+    tomorrow's first sailing, which the board starts showing before the day ends: an
+    "Upcoming" row whose slot is already half a day behind the clock is tomorrow's.
+    Every other row is its page's; the direction rule in `board_day` has already placed
+    it, and a row with no status of its own has nothing to say against that.
+    """
+    if row.sailing_hhmm is None or row.departed_hhmm is not None:
+        return board
+    if not UPCOMING_RE.search(row.status_text or ""):
+        return board
+    scheduled = combine_local(board, parse_hhmm(row.sailing_hhmm), observed_local.tzinfo)
+    if observed_local - scheduled > HALF_DAY:
+        return board + timedelta(days=1)
+    return board
+
+
 def store_rows(
     conn: sqlite3.Connection,
     config: Config,
@@ -272,7 +338,8 @@ def store_rows(
     observed_at: datetime,
     rows: list[DeckSpaceRow],
 ) -> int:
-    service_date = local(observed_at, config.tz).date().isoformat()
+    observed_local = local(observed_at, config.tz)
+    board = board_day(observed_local, rows)
     stored = 0
     for row in rows:
         cur = conn.execute(
@@ -284,7 +351,7 @@ def store_rows(
                 config.route.id,
                 terminal,
                 iso(observed_at),
-                service_date,
+                service_date_for(board, observed_local, row).isoformat(),
                 row.sailing_hhmm,
                 row.percent_available,
                 row.vessel,
