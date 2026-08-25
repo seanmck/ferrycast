@@ -16,7 +16,7 @@ from .timeutil import iso, now_utc
 
 # Bump when schema.sql changes in a way existing databases must be migrated through, and
 # add the migration to MIGRATIONS below. Recorded in SQLite's `PRAGMA user_version`.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -210,6 +210,76 @@ def _add_camera(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA foreign_keys = {'ON' if enforced else 'OFF'}")
 
 
+def _refile_midnight_board_rows(conn: sqlite3.Connection) -> None:
+    """v10 -> v11: give yesterday's board back to yesterday.
+
+    `deckspace.store_rows` used to stamp every row on a page with the scrape's local
+    date. The board does not turn over on the stroke of midnight, so a scrape in the
+    first minutes of a day could find the whole of yesterday still listed — every
+    sailing "Departed" — and file it under today. The store now dates a page by its
+    sailings (`deckspace.board_day`); this refiles the pages written before it did.
+
+    No timezone is to hand in a migration, so the misfile is recognised by its shape
+    rather than by the clock. A page is yesterday's if it holds a departed reading that
+    (a) repeats, within the hour, a reading the previous service date already holds for
+    the same sailing at the same departed minute — the same board, read across the day
+    boundary — and (b) is followed on its own service date by a reading of that sailing
+    with no departure, which no genuine departure is: a boat that has gone does not come
+    back to "Upcoming". Both are required. (a) alone would move an on-time sailing that
+    happened to leave at the same minute two days running; (b) alone would move a board
+    glitch onto a day it never described. One such row dates its whole scrape, as in
+    `board_day`, bar a row the board was showing ahead of its day — an "Upcoming" one.
+    """
+    # Two steps rather than one correlated UPDATE, and an index of its own for the first:
+    # the join finds each departed reading's twin on the day before by sailing and
+    # departed minute, which the lookup index does not cover, and matching every row back
+    # to its scrape afterwards is by `observed_at`, which nothing indexes. Done as one
+    # correlated UPDATE this re-scanned the table once per row — 30 s over a season of
+    # readings, which is the whole of the deploy healthcheck's patience. With the index
+    # the search is instant; it is dropped again because nothing else needs it.
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_deck_space_refile
+            ON deck_space (route, terminal, sailing_hhmm, service_date, departed_hhmm,
+                           observed_at)"""
+    )
+    conn.execute(
+        """CREATE TEMP TABLE misfiled_scrapes AS
+            SELECT DISTINCT d.route, d.terminal, d.observed_at, d.service_date
+              FROM deck_space d
+              JOIN deck_space p
+                ON p.route = d.route AND p.terminal = d.terminal
+               AND p.sailing_hhmm = d.sailing_hhmm
+               AND p.service_date = date(d.service_date, '-1 day')
+               AND p.departed_hhmm = d.departed_hhmm
+               AND p.fetch_status = 'ok'
+               AND p.observed_at < d.observed_at
+               AND julianday(d.observed_at) - julianday(p.observed_at) < 1.0 / 24
+             WHERE d.fetch_status = 'ok' AND d.departed_hhmm IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM deck_space u
+                    WHERE u.route = d.route AND u.terminal = d.terminal
+                      AND u.service_date = d.service_date
+                      AND u.sailing_hhmm = d.sailing_hhmm
+                      AND u.fetch_status = 'ok' AND u.departed_hhmm IS NULL
+                      AND u.observed_at > d.observed_at)"""
+    )
+    try:
+        conn.execute(
+            """UPDATE deck_space SET service_date = date(service_date, '-1 day')
+                WHERE fetch_status = 'ok'
+                  AND (departed_hhmm IS NOT NULL OR status_text IS NULL
+                       OR status_text NOT LIKE '%upcoming%')
+                  AND EXISTS (
+                      SELECT 1 FROM misfiled_scrapes m
+                       WHERE m.route = deck_space.route AND m.terminal = deck_space.terminal
+                         AND m.observed_at = deck_space.observed_at
+                         AND m.service_date = deck_space.service_date)"""
+        )
+    finally:
+        conn.execute("DROP TABLE misfiled_scrapes")
+        conn.execute("DROP INDEX IF EXISTS idx_deck_space_refile")
+
+
 # Maps the version being upgraded *from* to the step that moves it forward one version.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _add_filled_at,
@@ -221,6 +291,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     7: _add_claim_axes,
     8: _add_vessel_tracking,
     9: _add_camera,
+    10: _refile_midnight_board_rows,
 }
 
 

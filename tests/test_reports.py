@@ -72,7 +72,8 @@ def board_says_departed(conn, config, departed: str, *, hhmm="12:30", origin="SL
         (
             config.route.id,
             origin,
-            f"{SAILED.isoformat()}T20:00:00Z",
+            # Read a minute after the boat left — a departure cannot be attested before it.
+            iso(combine_local(SAILED, parse_hhmm(departed), config.tz) + timedelta(minutes=1)),
             SAILED.isoformat(),
             hhmm,
             departed,

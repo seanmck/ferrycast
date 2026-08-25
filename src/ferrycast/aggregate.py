@@ -230,26 +230,35 @@ def _board_departure(
 
     The latest reading wins: the board fills the time in once the vessel has gone, so the
     most recent scrape is the one that has it.
+
+    A reading is only believed if the scrape that took it happened *after* the departure
+    it reports. The board cannot attest a departure that has not happened yet, so a row
+    that claims one belongs to a different day's sailing — the midnight scrape that
+    found yesterday's board still up, filed under today (`deckspace.board_day` now
+    files it correctly, and the v11 migration refiled the rows already stored). This
+    guard means the header never again reports a 21:00 boat gone at 22:06 while it is
+    still 21:16, whatever else goes wrong upstream.
     """
-    row = conn.execute(
-        """SELECT departed_hhmm FROM deck_space
-            WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
-              AND departed_hhmm IS NOT NULL AND fetch_status = 'ok'
-            ORDER BY observed_at DESC
-            LIMIT 1""",
-        (route, terminal, service_date, hhmm),
-    ).fetchone()
-    if row is None:
-        return None
     from .timeutil import combine_local, parse_hhmm
 
-    departed = combine_local(date.fromisoformat(service_date), parse_hhmm(row[0]), config.tz)
-    # A sailing scheduled at 23:50 that leaves at 00:05 belongs to the previous service
-    # date. Without this the "actual" departure lands 24 hours early.
-    scheduled = combine_local(date.fromisoformat(service_date), parse_hhmm(hhmm), config.tz)
-    if departed < scheduled - timedelta(hours=12):
-        departed += timedelta(days=1)
-    return departed
+    day = date.fromisoformat(service_date)
+    scheduled = combine_local(day, parse_hhmm(hhmm), config.tz)
+    rows = conn.execute(
+        """SELECT departed_hhmm, observed_at FROM deck_space
+            WHERE route = ? AND terminal = ? AND service_date = ? AND sailing_hhmm = ?
+              AND departed_hhmm IS NOT NULL AND fetch_status = 'ok'
+            ORDER BY observed_at DESC""",
+        (route, terminal, service_date, hhmm),
+    ).fetchall()
+    for row in rows:
+        departed = combine_local(day, parse_hhmm(row[0]), config.tz)
+        # A sailing scheduled at 23:50 that leaves at 00:05 belongs to the previous service
+        # date. Without this the "actual" departure lands 24 hours early.
+        if departed < scheduled - timedelta(hours=12):
+            departed += timedelta(days=1)
+        if departed <= parse_iso(row[1]):
+            return departed
+    return None
 
 
 def _deck_space_series(
