@@ -487,9 +487,13 @@ def _fill_mark_from_geometry(
 
     Only ever a stand-in, and only for a sailing that did fill: where a feed states the
     moment the deck closed that wins, and a queue reaching the mark on a sailing that then
-    took everyone is a busy afternoon, not a cutoff. The first frame of the window may
-    already carry the mark — the tail the previous sailing left behind is this one's queue —
-    in which case the true crossing was earlier still, and the bound stays on the safe side.
+    took everyone is a busy afternoon, not a cutoff. The caller bounds `observations` by
+    the ship's clock — from the previous sailing's actual going plus settle, to this one's
+    own going — so the mark can never be read off a compound that was still loading
+    somebody else's boat. The first frame of that span may already carry the mark — a
+    residual the previous vessel left standing is this sailing's queue, already at the
+    line — in which case the true crossing was earlier still, and the bound stays on the
+    safe side.
     """
     for o in observations:
         if o.source == EXTENT_PROMPT_VERSION and o.fullness == "heavy":
@@ -628,6 +632,7 @@ def compute_record(
     *,
     previous_departure: datetime | None,
     next_departure: datetime | None,
+    previous_departed_at: datetime | None = None,
 ) -> SailingRecord:
     cfg = config.aggregate
     departure = datetime.fromisoformat(sailing_row["scheduled_departure"])
@@ -897,8 +902,29 @@ def compute_record(
     # When it ran out of room, where no feed said. The cameras' conservative mark stands
     # in, and only fills a gap: a published percentage crossing zero is the real time and
     # keeps it, and a sailing nobody says filled has no such moment whatever the queue did.
+    #
+    # Both bounds run on the ship's clock, not the timetable's, because departures here run
+    # half an hour late as a matter of routine. A full compound while the *previous* vessel
+    # is still loading is unattributable — some of those cars are about to drive aboard it —
+    # so the search may not start until that vessel has gone and the settle has passed:
+    # whatever still stands then provably did not fit, and is this sailing's queue. On
+    # 2026-08-22 the timetable bound read the 14:30's loading queue (away at 15:03) as the
+    # 16:55's fill and published "arrive by 14:56" for it. The far end is the same rule in
+    # the other direction: a compound that reaches the mark between this sailing's scheduled
+    # time and its actual going filled *for this sailing* — that day's 09:25 was full at
+    # 09:31 and away at 09:49, and a bound at the timetable read that fill as never having
+    # happened. A mark in that interval yields a gap the query layer clamps to zero:
+    # "arrive by the scheduled time", the safe reading of a fill during loading.
     if filled and filled_at is None:
-        filled_at = _fill_mark_from_geometry(before, lane_cal)
+        mark_from = window_start
+        if previous_departed_at is not None:
+            mark_from = max(
+                mark_from, previous_departed_at + timedelta(minutes=cfg.settle_minutes)
+            )
+        mark_until = departed_at or left_at or departure
+        filled_at = _fill_mark_from_geometry(
+            [o for o in observations if mark_from <= o.at <= mark_until], lane_cal
+        )
 
     outcome = outcome_from_axes(
         filled=filled, left_behind=left_behind, cancelled=cancelled, waited=waited
@@ -997,6 +1023,10 @@ def aggregate_day(conn: sqlite3.Connection, config: Config, day: date) -> dict[s
 
     counts = dict.fromkeys(OUTCOMES, 0)
     for origin_rows in by_origin.values():
+        # The previous *record*, not just the previous timetable slot: its `departed_at`
+        # is the resolved actual going (board or tracker), computed one iteration earlier
+        # at no extra cost, and it is what lets the fill mark start on the ship's clock.
+        previous_record: SailingRecord | None = None
         for index, row in enumerate(origin_rows):
             previous = (
                 datetime.fromisoformat(origin_rows[index - 1]["scheduled_departure"])
@@ -1009,10 +1039,20 @@ def aggregate_day(conn: sqlite3.Connection, config: Config, day: date) -> dict[s
                 else None
             )
             record = compute_record(
-                conn, config, row, previous_departure=previous, next_departure=following
+                conn,
+                config,
+                row,
+                previous_departure=previous,
+                next_departure=following,
+                previous_departed_at=(
+                    parse_iso(previous_record.departed_at)
+                    if previous_record and previous_record.departed_at
+                    else None
+                ),
             )
             store_record(conn, record)
             counts[record.outcome] += 1
+            previous_record = record
     return counts
 
 
