@@ -878,6 +878,14 @@ def _serve(args, *, with_scheduler: bool) -> int:
         port=port,
         reload=getattr(args, "reload", False),
         log_level="info",
+        # Behind the host's proxy, X-Forwarded-* is the only place the visitor's scheme
+        # and address survive; uvicorn honours those headers by default but trusts them
+        # only from 127.0.0.1, and the proxy connects from a private mesh address. Left
+        # untrusted, every request logs the proxy's address and request.url says http://,
+        # which analytics then records as the page URL. Trusting everyone is fine here:
+        # in production only the proxy can reach the port, and a forged header elsewhere
+        # can misreport only the log line and the analytics URL, neither load-bearing.
+        forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "*"),
     )
     return 0
 
