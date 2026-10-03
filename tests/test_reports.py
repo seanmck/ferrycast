@@ -25,6 +25,8 @@ from ferrycast.reports import (
 from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm
 from ferrycast.web.app import create_app
 
+from .conftest import build_sailing_frames
+
 # A Friday that has been and gone, with a 12:30 sailing from Saltery Bay in the timetable.
 SAILED = date(2026, 7, 3)
 NOW = datetime(2026, 8, 10, 17, 0, tzinfo=UTC)
@@ -271,6 +273,37 @@ def test_getting_on_does_not_un_fill_a_sailing_the_board_watched_fill(conn, conf
     assert record["left_behind"] == 0
     assert record["outcome"] == "filled"
     assert record["overload"] == 0
+
+
+def test_a_report_that_settled_nothing_is_not_named_as_the_evidence(conn, config):
+    """The record's method says which witness its claims rest on, and so does its confidence.
+
+    On 2026-10-02 the 11:45 from Saltery Bay read `filled`, left-behind, `method: report`,
+    confidence 0.85 — every claim on it from the camera's residual, and the one report a
+    person who got on, which by design changes neither axis once the camera has spoken.
+    Naming the report as the basis credited a person with a claim they had contradicted.
+    """
+    departure = combine_local(SAILED, parse_hhmm("12:30"), config.tz)
+    build_sailing_frames(conn, config, departure, before=[20, 55], after=[40])
+    aggregate_day(conn, config, SAILED)
+    camera = conn.execute(
+        """SELECT r.method, r.confidence FROM sailing_records r
+             JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.service_date = ? AND s.depart_hhmm = '12:30'""",
+        (SAILED.isoformat(),),
+    ).fetchone()
+    assert camera["method"].startswith("frames:")
+
+    file_report(conn, config, boarded=True)
+
+    record = conn.execute(
+        """SELECT r.method, r.confidence, r.left_behind FROM sailing_records r
+             JOIN sailings s ON s.id = r.sailing_id
+            WHERE s.origin = 'SLT' AND s.service_date = ? AND s.depart_hhmm = '12:30'""",
+        (SAILED.isoformat(),),
+    ).fetchone()
+    assert record["left_behind"] == 1
+    assert (record["method"], record["confidence"]) == (camera["method"], camera["confidence"])
 
 
 def test_getting_on_lifts_a_sailing_nothing_else_could_classify(conn, config):

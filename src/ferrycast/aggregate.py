@@ -888,6 +888,7 @@ def compute_record(
     )
     reported = outcome_from_reports(reports)
     if reported:
+        before_report = (filled, left_behind, waited, cancelled)
         # Whoever filed it was standing there, so the sailing ran.
         cancelled = False
         if reported == "boarded":
@@ -899,8 +900,13 @@ def compute_record(
         else:
             filled, left_behind = True, True
             waited = reported if reported in ("waited_1", "waited_2plus") else None
-        confidence = report_confidence(reports)
-        method = "report"
+        # The method names the witness the claims rest on, so the report takes it only when
+        # it settled something. A "got on" under a camera that already saw people left
+        # behind changes neither axis; labelling that record `report` credited the person
+        # with a claim they had contradicted (2026-10-02, the 11:45 from Saltery Bay).
+        if (filled, left_behind, waited, cancelled) != before_report:
+            confidence = report_confidence(reports)
+            method = "report"
 
     # A cancelled sailing has no deck to fill and no line to turn away. Leaving stale axes
     # on it would put it in both the cancelled column and the filled one.
