@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta
 
 from ferrycast.aggregate import aggregate_day, classify, classify_from_bands
+from ferrycast.lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm, parse_iso
 
 from .conftest import add_observation, build_sailing_frames
@@ -687,8 +688,8 @@ def _geom_frames(conn, config, departure, readings, *, terminal="SLT"):
             """INSERT INTO observations
                    (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
                     fullness, ferry_at_dock, visibility, confidence, usable, created_at)
-               VALUES (?, 'geom-v1', 'lane-geometry', NULL, ?, ?, 0, 'clear', 0.8, 1, ?)""",
-            (cur.lastrowid, lanes, band, iso(now_utc())),
+               VALUES (?, ?, 'lane-geometry', NULL, ?, ?, 0, 'clear', 0.8, 1, ?)""",
+            (cur.lastrowid, LANE_PROMPT_VERSION, lanes, band, iso(now_utc())),
         )
     conn.commit()
 
@@ -709,7 +710,7 @@ def test_geometric_readings_reach_aggregation(conn, config):
     row = _record_for(conn)
     assert row["outcome"] == "boarded"
     assert row["peak_fullness"] == "heavy"
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
@@ -734,7 +735,7 @@ def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
     row = _record_for(conn)
 
     assert row["peak_fullness"] == "heavy"  # not the model's "empty"
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_a_capacity_notice_alone_is_enough_to_say_a_sailing_filled(conn, config):
@@ -1014,7 +1015,7 @@ def test_the_compound_and_highway_cameras_witness_one_sailing_together(conn, con
     row = _erl_record(conn)
 
     assert row["outcome"] == "filled"
-    assert row["method"] == "frames:extent-v1+geom-v1"
+    assert row["method"] == f"frames:extent-v1+{LANE_PROMPT_VERSION}"
 
 
 # --- the licensed clear: fitted lanes known to sit short of the capacity line ------------
@@ -1054,7 +1055,7 @@ def test_clear_fitted_lanes_at_a_tracked_departure_read_boarded(conn, config):
 
     assert row["outcome"] == "boarded"
     assert row["left_behind"] == 0
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_a_queue_standing_through_the_going_is_an_overload(conn, config):
