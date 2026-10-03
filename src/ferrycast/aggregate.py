@@ -428,6 +428,31 @@ def _peak_band(observations: list[_Obs]) -> str | None:
     return FULLNESS_LEVELS[max(ranked)] if ranked else None
 
 
+#: How many consecutive frames speak for the compound at a moment that decides an outcome.
+SETTLED_FRAMES = 3
+
+
+def _settled_band(observations: list[_Obs]) -> str | None:
+    """The middle band of up to `SETTLED_FRAMES` frames: what the compound held, not one look.
+
+    Both moments the band path turns on — whether the compound was bare when the vessel
+    left, and what still stood once it had gone — used to be a single frame, so one misread
+    decided the outcome either way. On 2026-09-07 a lone frame read bare while cars stood at
+    the dock end, between frames reading them, and the 11:45 became "took everyone" — the
+    one direction this app may not be wrong in. Lone `light` readings in afternoon tree
+    shadow did the opposite and invented people left behind (#112). The middle of three is
+    symmetric: a single wrong frame is outvoted whichever way it errs, and a real change
+    still shows within two frames. Given only two, the fuller wins — a false clear is the
+    worse mistake.
+    """
+    ranked = sorted(
+        FULLNESS_LEVELS.index(o.fullness)
+        for o in observations
+        if o.fullness in FULLNESS_LEVELS
+    )
+    return FULLNESS_LEVELS[ranked[len(ranked) // 2]] if ranked else None
+
+
 def _first_occupied_at(observations: list[_Obs]) -> str | None:
     """When a queue first appeared.
 
@@ -686,7 +711,7 @@ def compute_record(
     fullness_at_departure = banded_at_departure[-1].fullness if banded_at_departure else None
 
     residual = after[0].vehicle_count if after else None
-    residual_fullness = banded_after[0].fullness if banded_after else None
+    residual_fullness = _settled_band(banded_after[:SETTLED_FRAMES])
 
     # What the board said about the deck. It speaks to `filled` and never to `left_behind`:
     # "we loaded as many as would fit" and "somebody was left standing on the tarmac" are
@@ -752,7 +777,7 @@ def compute_record(
         banded_after = [
             o for o in observations if o.at >= settle_from and o.fullness is not None
         ]
-        residual_fullness = banded_after[0].fullness if banded_after else None
+        residual_fullness = _settled_band(banded_after[:SETTLED_FRAMES])
 
     departure_seen = left_at is not None or deck_min is not None
     berth_visible = config.route.terminal(sailing_row["origin"]).camera_sees_berth
@@ -776,9 +801,7 @@ def compute_record(
     banded_before_settle = [
         o for o in observations if o.fullness is not None and grace_from <= o.at <= settle_from
     ]
-    empty_when_it_left = (
-        bool(banded_before_settle) and banded_before_settle[-1].fullness == "empty"
-    )
+    empty_when_it_left = _settled_band(banded_before_settle[-SETTLED_FRAMES:]) == "empty"
 
     # Whether this terminal's "empty" band is bare tarmac or a licensed inference. The
     # reader owns that distinction through its calibration (`lanes_before_capacity`), so

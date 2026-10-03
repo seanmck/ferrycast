@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta
 
 from ferrycast.aggregate import aggregate_day, classify, classify_from_bands
+from ferrycast.lanes import PROMPT_VERSION as LANE_PROMPT_VERSION
 from ferrycast.timeutil import combine_local, iso, now_utc, parse_hhmm, parse_iso
 
 from .conftest import add_observation, build_sailing_frames
@@ -459,6 +460,60 @@ def test_a_compound_that_empties_means_everyone_boarded(conn, config):
     assert row["residual_fullness"] == "empty"
 
 
+def test_one_bare_frame_as_the_vessel_leaves_is_not_a_clear(conn, config):
+    """2026-09-07, the 11:45: cars stood at the dock end before and after the vessel went,
+    and one frame between them read bare. Taken alone, that frame made the sailing "took
+    everyone" — the false clear this app may never give. Three frames speak for the
+    moment, and the middle one says the queue was still there."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-15, "overflowing"), (0, "moderate"), (5, "light"), (10, "empty"),
+         (15, "moderate"), (20, "moderate"), (25, "moderate")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert (row["filled"], row["left_behind"]) == (1, 1)
+    assert row["residual_fullness"] == "moderate"
+
+
+def test_one_shadowed_frame_after_departure_is_not_a_residual(conn, config):
+    """Dappled afternoon shadow can make one bare frame read as a lane in use. Taken alone,
+    that frame invented people left behind on a compound that cleared (#112)."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-15, "heavy"), (0, "moderate"), (15, "light"), (20, "empty"), (25, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["left_behind"] == 0
+
+
+def test_two_frames_that_disagree_resolve_toward_the_queue(conn, config):
+    """With only two frames to go on, a false clear is the worse mistake to make."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure, [(-15, "heavy"), (15, "empty"), (20, "light")]
+    )
+
+    aggregate_day(conn, config, day)
+
+    assert _record_for(conn)["residual_fullness"] == "light"
+
+
 def test_a_compound_still_occupied_after_departure_is_filled_not_waited(conn, config):
     """A band says somebody was left behind. It cannot say for how many sailings.
 
@@ -687,8 +742,8 @@ def _geom_frames(conn, config, departure, readings, *, terminal="SLT"):
             """INSERT INTO observations
                    (frame_id, prompt_version, model, vehicle_count, lanes_occupied,
                     fullness, ferry_at_dock, visibility, confidence, usable, created_at)
-               VALUES (?, 'geom-v1', 'lane-geometry', NULL, ?, ?, 0, 'clear', 0.8, 1, ?)""",
-            (cur.lastrowid, lanes, band, iso(now_utc())),
+               VALUES (?, ?, 'lane-geometry', NULL, ?, ?, 0, 'clear', 0.8, 1, ?)""",
+            (cur.lastrowid, LANE_PROMPT_VERSION, lanes, band, iso(now_utc())),
         )
     conn.commit()
 
@@ -709,7 +764,7 @@ def test_geometric_readings_reach_aggregation(conn, config):
     row = _record_for(conn)
     assert row["outcome"] == "boarded"
     assert row["peak_fullness"] == "heavy"
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
@@ -734,7 +789,7 @@ def test_geometry_is_preferred_over_the_model_for_the_same_frame(conn, config):
     row = _record_for(conn)
 
     assert row["peak_fullness"] == "heavy"  # not the model's "empty"
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_a_capacity_notice_alone_is_enough_to_say_a_sailing_filled(conn, config):
@@ -1014,7 +1069,7 @@ def test_the_compound_and_highway_cameras_witness_one_sailing_together(conn, con
     row = _erl_record(conn)
 
     assert row["outcome"] == "filled"
-    assert row["method"] == "frames:extent-v1+geom-v1"
+    assert row["method"] == f"frames:extent-v1+{LANE_PROMPT_VERSION}"
 
 
 # --- the licensed clear: fitted lanes known to sit short of the capacity line ------------
@@ -1054,7 +1109,7 @@ def test_clear_fitted_lanes_at_a_tracked_departure_read_boarded(conn, config):
 
     assert row["outcome"] == "boarded"
     assert row["left_behind"] == 0
-    assert row["method"] == "frames:geom-v1"
+    assert row["method"] == f"frames:{LANE_PROMPT_VERSION}"
 
 
 def test_a_queue_standing_through_the_going_is_an_overload(conn, config):

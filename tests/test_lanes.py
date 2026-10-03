@@ -310,6 +310,110 @@ def test_a_packed_daylight_compound_still_reads(cal):
     assert out["fullness"] == "overflowing"
 
 
+# --- the normalised reader (#112) -------------------------------------------------------
+
+
+def _png(img) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _bare_image():
+    return Image.new("RGB", (320, 240), (180, 178, 176))
+
+
+def test_each_camera_names_the_reader_it_was_validated_on(cal):
+    assert cal.reader == "normalised"
+    assert cal.occupied_share > 0
+
+
+@erl_only
+def test_earls_cove_stays_on_luma_until_its_blind_spot_is_answered(erl):
+    """Validated there, the normalised reader cleared hundreds of shadow and rain false
+    readings and missed four large pale vehicles standing close to the camera — in the
+    lanes that fill last, where a vehicle is exactly what a false clear would hide."""
+    assert erl.reader == "luma"
+
+
+def test_an_unknown_reader_is_refused(tmp_path):
+    raw = json.loads(SLT_CAL.read_text(encoding="utf-8"))
+    raw["reader"] = "guesswork"
+    path = tmp_path / "SLT.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(CalibrationError, match="guesswork"):
+        LaneCalibration.load(path)
+
+
+def test_light_that_changes_across_the_compound_is_not_a_queue(cal):
+    """The failure that opened #112. On an overcast 2026-10-02 the compound was bare after
+    the 11:45 left, and the luma reader, comparing against references medianed mostly from
+    sunny days, read lanes 3-12 occupied: brightness had shifted *regionally* — glare on the
+    far apron, the sky's gradient — and one global factor cannot undo that. A frame darkening
+    smoothly toward the far end stands in for it, inside the illumination gate throughout."""
+    from dataclasses import replace
+
+    reference = _bare_image()
+    frame = _bare_image()
+    pixels = frame.load()
+    for y in range(240):
+        k = 0.78 + 0.32 * (y / 239)
+        for x in range(320):
+            r, g, b = pixels[x, y]
+            pixels[x, y] = (int(r * k), int(g * k), int(b * k))
+
+    luma = replace(cal, reader="luma")
+    assert occupied_lanes(
+        occupancy(_png(frame), _png(reference), luma), cutoff=luma.occupied_share
+    ) == cal.lanes
+    shares = occupancy(_png(frame), _png(reference), cal)
+    assert occupied_lanes(shares, cutoff=cal.occupied_share) == []
+    assert fullness_from_lanes(shares, cal) == "empty"
+
+
+def test_a_short_queue_at_the_dock_end_is_seen(cal):
+    """Every queue starts at the far end of the lanes, where a car is a few pixels wide. On
+    2026-09-16 six cars stood there after the 11:45 had gone — vehicles left behind — and
+    counted as pixels they were a few percent of their lanes. Weighted by how much ground
+    each row covers, a quarter of a lane's length is a quarter, wherever it lies."""
+    from dataclasses import replace
+
+    frame = _bare_image()
+    draw = ImageDraw.Draw(frame)
+    rows = sorted(cal.lane_spans[6])
+    for i, (y, x0, x1) in enumerate(rows[: len(rows) // 4]):
+        if i % 4 < 3:
+            draw.line([(x0, y), (x1 - 1, y)], fill=(40, 40, 45))
+
+    luma = replace(cal, reader="luma")
+    luma_shares = occupancy(_png(frame), _png(_bare_image()), luma)
+    assert 6 not in occupied_lanes(luma_shares, cutoff=luma.occupied_share)
+    shares = occupancy(_png(frame), _png(_bare_image()), cal)
+    assert occupied_lanes(shares, cutoff=cal.occupied_share) == [6]
+
+
+def test_a_large_uniform_vehicle_close_to_the_camera_shows_only_its_outline(cal):
+    """The normalised reader's documented blind spot, pinned so it is not rediscovered by
+    surprise. Inside a vehicle much larger than the normalising radius, the local mean is
+    the vehicle itself, so only its edges differ from the reference. Real vehicles carry
+    windows, wheels and shadow, and no queue in the September validation went unseen at
+    Saltery Bay; but four pale vans and campers close to the Earls Cove camera did, which is
+    why that camera stays on luma (`LaneCalibration.reader`)."""
+    from dataclasses import replace
+
+    frame = _bare_image()
+    draw = ImageDraw.Draw(frame)
+    rows = sorted(cal.lane_spans[11])
+    for y, x0, x1 in rows[-len(rows) // 3 :]:
+        draw.line([(x0, y), (x1 - 1, y)], fill=(235, 235, 235))
+
+    luma = replace(cal, reader="luma")
+    luma_shares = occupancy(_png(frame), _png(_bare_image()), luma)
+    assert 11 in occupied_lanes(luma_shares, cutoff=luma.occupied_share)
+    shares = occupancy(_png(frame), _png(_bare_image()), cal)
+    assert 11 not in occupied_lanes(shares, cutoff=cal.occupied_share)
+
+
 # --- rolling backgrounds ----------------------------------------------------------------
 
 

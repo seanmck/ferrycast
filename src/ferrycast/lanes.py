@@ -30,19 +30,48 @@ lines against the fitted ones and callers are expected to check it.
 from __future__ import annotations
 
 import json
+from array import array
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
 from .config import MAIN_CAMERA
 
-#: A lane counts as occupied when this share of its visible pavement differs from the
-#: empty reference. Well clear of both the noise floor (~0.06 on a bare compound) and the
-#: level a single vehicle produces in the smallest lanes (~0.13).
+#: Under the luma reader, a lane counts as occupied when this share of its visible pavement
+#: differs from the empty reference. Well clear of both the noise floor (~0.06 on a bare
+#: compound) and the level a single vehicle produces in the smallest lanes (~0.13).
 OCCUPIED_SHARE = 0.15
 
-#: Per-pixel luma difference that counts as "not the same as the empty compound".
+#: Per-pixel luma difference that counts as "not the same as the empty compound" (luma
+#: reader only).
 DIFF_THRESHOLD = 22
+
+#: Under the normalised reader, a lane counts as occupied when this share of it differs —
+#: by length or by area, whichever is larger (`_normalised_occupancy`). Length is what lets
+#: the far end speak: a pixel count let the near end, a quarter of the frame and the last
+#: pavement a queue reaches, outvote the dock end where every queue starts, so six cars left
+#: standing there on 2026-09-16 were a few percent of their lanes' pixels. Area is what keeps
+#: one large vehicle close to the camera, a single vehicle-length of a long lane, from going
+#: unseen. Tuned on 470 hand-labelled September frames (#112).
+NORMALISED_OCCUPIED_SHARE = 0.20
+
+#: A lane row counts towards the occupied length when this share of its pixels changed.
+#: A vehicle at the far end fills a narrow row nearly edge to edge; scattered speckle in an
+#: otherwise matching row does not.
+ROW_SHARE = 0.30
+
+#: Radius of the local mean each frame is divided by before comparing (`_normalised`).
+NORMALISE_RADIUS = 8
+
+#: A normalised pixel differs from the reference when it is outside the reference's own
+#: neighbourhood by more than this ratio of the local mean.
+CHANGE_RATIO = 0.12
+
+#: Half-width of the reference neighbourhood a pixel may match anywhere within.
+JITTER_PX = 1
+
+#: How a calibration's frames are compared with its reference. See `occupancy`.
+READERS = ("luma", "normalised")
 
 #: Fitted lane lines this far from the painted ones mean the camera has moved and the
 #: calibration can no longer be trusted.
@@ -108,6 +137,21 @@ class LaneCalibration:
     #: all rather than a wrong one, and at Earls Cove the fitted lanes sit short of the
     #: line (`lanes_before_capacity`), so all of them taken is still a healthy queue.
     full_lanes_at_capacity: bool = False
+    #: How frames are compared with the reference — one of `READERS`.
+    #:
+    #: Per camera because the evidence is per camera. The normalised reader was validated on
+    #: Saltery Bay (#112), and at Earls Cove it cleared roughly 300 shadow and night-rain
+    #: false readings in a September sample but missed four large pale vehicles standing
+    #: close to that camera — inside one, the local mean is the vehicle itself. A vehicle in
+    #: the lanes that fill last is exactly what a false clear there would hide, so that
+    #: camera stays on luma until the blind spot is answered. Defaults to luma, the reader
+    #: every calibration was fitted against.
+    reader: str = "luma"
+
+    @property
+    def occupied_share(self) -> float:
+        """The share at which this calibration's reader calls a lane occupied."""
+        return NORMALISED_OCCUPIED_SHARE if self.reader == "normalised" else OCCUPIED_SHARE
 
     @property
     def lanes(self) -> list[int]:
@@ -137,6 +181,9 @@ class LaneCalibration:
             int(k): [(int(r[0]), int(r[1]), int(r[2])) for r in v]
             for k, v in raw["lane_spans"].items()
         }
+        reader = raw.get("reader", "luma")
+        if reader not in READERS:
+            raise CalibrationError(f"{path} asks for reader {reader!r}; known: {READERS}")
         return cls(
             terminal=raw["terminal"],
             image_size=tuple(raw["image_size"]),
@@ -148,6 +195,7 @@ class LaneCalibration:
             covers_compound=bool(raw.get("covers_compound", True)),
             lanes_before_capacity=bool(raw.get("lanes_before_capacity", False)),
             full_lanes_at_capacity=bool(raw.get("full_lanes_at_capacity", False)),
+            reader=reader,
         )
 
 
@@ -166,40 +214,51 @@ def occupancy(
     frame: str | Path | bytes,
     background: str | Path | bytes,
     cal: LaneCalibration,
-    *,
-    threshold: int = DIFF_THRESHOLD,
 ) -> dict[int, float]:
-    """Share of each lane's visible pavement that differs from the empty reference.
+    """Share of each lane that differs from the empty reference, by the calibration's reader.
 
     `background` must be a frame of the *same* camera with the compound empty and in
     comparable light. Differencing across very different illumination — a night frame against
-    a midday reference — is not something this has been shown to survive.
+    a midday reference — is not something this has been shown to survive. A lane is occupied
+    above `cal.occupied_share`, which belongs to the reader.
     """
-    fg, fw, fh = _luma(frame)
-    bg, bw, bh = _luma(background)
-    if (fw, fh) != (bw, bh):
-        raise CalibrationError(f"frame is {fw}x{fh} but background is {bw}x{bh}")
-    if (fw, fh) != tuple(cal.image_size):
+    fg = _grey(frame)
+    bg = _grey(background)
+    if fg.size != bg.size:
         raise CalibrationError(
-            f"frame is {fw}x{fh} but {cal.terminal} was calibrated at "
+            f"frame is {fg.width}x{fg.height} but background is {bg.width}x{bg.height}"
+        )
+    if fg.size != tuple(cal.image_size):
+        raise CalibrationError(
+            f"frame is {fg.width}x{fg.height} but {cal.terminal} was calibrated at "
             f"{cal.image_size[0]}x{cal.image_size[1]}"
         )
+    if cal.reader == "normalised":
+        return _normalised_occupancy(fg, bg, cal)
+    return _luma_occupancy(fg, bg, cal)
+
+
+def _luma_occupancy(fg, bg, cal: LaneCalibration) -> dict[int, float]:
+    """Share of each lane's visible pavement whose luma differs from the reference."""
+    width = fg.width
+    fg = list(fg.tobytes())
+    bg = list(bg.tobytes())
 
     # Match the frame's overall brightness to the reference before comparing. Gating on
     # illumination is not enough: two frames can pass the gate and still sit far enough apart
     # that ordinary asphalt crosses the threshold everywhere, which shows up as a haze of
     # "changed" pixels over lanes that are visibly bare. Scaling removes the offset and
     # leaves only differences in what is actually standing on the ground.
-    scale = _brightness_scale(fg, bg, cal, fw)
+    scale = _brightness_scale(fg, bg, cal, width)
 
     out: dict[int, float] = {}
     for lane, spans in cal.lane_spans.items():
         changed = total = 0
         for y, x0, x1 in spans:
-            base = y * fw
+            base = y * width
             for i in range(base + x0, base + x1):
                 total += 1
-                if abs(min(255, int(fg[i] * scale)) - bg[i]) > threshold:
+                if abs(min(255, int(fg[i] * scale)) - bg[i]) > DIFF_THRESHOLD:
                     changed += 1
         out[lane] = (changed / total) if total else 0.0
     return out
@@ -217,6 +276,141 @@ def _brightness_scale(fg, bg, cal: LaneCalibration, width: int) -> float:
         return 1.0
     k = int(0.90 * (len(f) - 1))
     return (b[k] / f[k]) if f[k] else 1.0
+
+
+def _normalised_occupancy(fg, bg, cal: LaneCalibration) -> dict[int, float]:
+    """Share of each lane, by length or by area, whose structure differs from the reference.
+
+    The luma reader compares brightness under one global factor, and on September's Saltery
+    Bay frames it read bare tarmac as occupied after 56 of 152 departures — 51 sailing records
+    claimed vehicles left behind on the strength of an empty compound (#112). Four failures,
+    each answered by one step here:
+
+    * Overcast against a reference medianed mostly from sunny days. Glare on the far apron
+      and the sky's gradient change brightness *regionally*, which no single factor undoes.
+      Dividing each image by its own local mean (`_normalised`) keeps what stands on the
+      ground and discards the light falling on it.
+    * The painted lines and numbers. The reference is a median, slightly softer and shifted
+      against any one frame, so every paint edge differed. A pixel now matches if it matches
+      anything in the reference's 3x3 neighbourhood.
+    * Ghosts of the queue in a busy hour's reference, and dappled tree shadow in the
+      afternoon. Both are low-contrast against the local mean; the ratio threshold sits above
+      them and well below a vehicle.
+    * Counting pixels (see `NORMALISED_OCCUPIED_SHARE`). It was speckle across the whole lane
+      that used to let a small residual at the far end read as occupied; with the speckle
+      gone, the length weighting is what keeps those residuals visible.
+
+    Measured on 470 hand-labelled September frames (the first after each departure, and one
+    from the build-up before it): bare frames read `empty` 146 times in 173 rather than 107,
+    bare frames reading `moderate` or worse fell from 45 to 5, and no frame with a queue in
+    it read `empty` — the luma reader missed one. Night frames, which the illumination gate
+    already pairs with night references, held up as well as day ones.
+
+    What it cannot see well is a large, evenly coloured vehicle close to the camera: inside
+    one, the local mean is the vehicle itself and only its outline differs. The area share is
+    there for that, and it is why Earls Cove, where such vehicles stand in the lanes that
+    fill last, has not been moved onto this reader (see `LaneCalibration.reader`).
+    """
+    from PIL import ImageFilter
+
+    reference = _normalised(bg)
+    size = 2 * JITTER_PX + 1
+    low = _floats(reference.filter(ImageFilter.MinFilter(size)))
+    high = _floats(reference.filter(ImageFilter.MaxFilter(size)))
+
+    # Twice, because a dark vehicle drags down the local mean around it and the bare
+    # pavement beside it then reads as brighter than the reference — a halo that spilt a
+    # queue in one lane into its neighbours. The second pass takes the local mean over the
+    # pixels the first found unchanged, so vehicles no longer set the light they are judged by.
+    changed = _differs(_floats(_normalised(fg)), low, high)
+    changed = _differs(_floats(_normalised(fg, ignore=changed)), low, high)
+
+    width = fg.width
+    weights = _row_weights(cal)
+    out: dict[int, float] = {}
+    for lane, spans in cal.lane_spans.items():
+        reached = length = 0.0
+        pixels = differing = 0
+        for y, x0, x1 in spans:
+            weight = weights[y]
+            length += weight
+            in_row = sum(changed[y * width + x0 : y * width + x1])
+            pixels += x1 - x0
+            differing += in_row
+            if in_row > ROW_SHARE * (x1 - x0):
+                reached += weight
+        by_length = (reached / length) if length else 0.0
+        by_area = (differing / pixels) if pixels else 0.0
+        out[lane] = max(by_length, by_area)
+    return out
+
+
+#: Share of the neighbourhood that must be unchanged pavement for the second pass to trust a
+#: local mean taken over it. Below this — inside a large vehicle, or a packed compound — the
+#: plain local mean is used, which is what the first pass already judged it by.
+_MASKED_MEAN_SUPPORT = 0.2
+
+
+def _grey(path_or_bytes):
+    from io import BytesIO
+
+    from PIL import Image
+
+    src = BytesIO(path_or_bytes) if isinstance(path_or_bytes, bytes) else path_or_bytes
+    with Image.open(src) as img:
+        return img.convert("L")
+
+
+def _floats(image) -> array:
+    return array("f", image.tobytes())
+
+
+def _differs(seen: array, low: array, high: array) -> list[bool]:
+    """Per pixel: outside the reference's neighbourhood by more than `CHANGE_RATIO`."""
+    return [
+        s < lo - CHANGE_RATIO or s > hi + CHANGE_RATIO
+        for s, lo, hi in zip(seen, low, high, strict=True)
+    ]
+
+
+def _normalised(grey, ignore: list[bool] | None = None):
+    """Luma divided by its local mean: what is on the ground, not the light falling on it.
+
+    With `ignore`, the local mean is taken over the other pixels only. Returned as a float
+    image so the neighbourhood filters that follow run in C.
+    """
+    from PIL import Image, ImageChops, ImageFilter
+
+    blur = ImageFilter.GaussianBlur(NORMALISE_RADIUS)
+    plain = grey.filter(blur).tobytes()
+    if ignore is None:
+        local = plain
+    else:
+        keep = Image.frombytes("L", grey.size, bytes(0 if c else 255 for c in ignore))
+        kept = ImageChops.multiply(grey, keep).filter(blur).tobytes()
+        support = keep.filter(blur).tobytes()
+        floor = _MASKED_MEAN_SUPPORT * 255
+        local = [
+            k * 255.0 / s if s > floor else p
+            for k, s, p in zip(kept, support, plain, strict=True)
+        ]
+    values = array("f", (v / (m + 1.0) for v, m in zip(grey.tobytes(), local, strict=True)))
+    return Image.frombytes("F", grey.size, values.tobytes())
+
+
+def _row_weights(cal: LaneCalibration) -> dict[int, float]:
+    """How much ground each image row stands for, relative to the others.
+
+    On flat ground the rows close in towards the vanishing point, so a row near the far end
+    covers far more of a lane's length than one at the bottom of the frame. Exact
+    perspective weighs by the inverse square of the distance to the vanishing row; that
+    amplified the far rows so much that noise there — night reflections, flare, shadow —
+    read as queues, so this takes the inverse distance, which keeps the far end from being
+    outvoted without handing it the decision.
+    """
+    vanishing_row = cal.vanishing_point[1]
+    rows = {y for spans in cal.lane_spans.values() for y, _, _ in spans}
+    return {y: 1.0 / max(1.0, y - vanishing_row) for y in rows}
 
 
 def _lane_percentile(frame: str | Path | bytes, cal: LaneCalibration, q: float) -> float:
@@ -274,7 +468,7 @@ def fullness_from_lanes(shares: dict[int, float], cal: LaneCalibration) -> str |
     it, and the band path reads an overflowing departure with a residual as a fill.
     """
     lanes = cal.lanes
-    used = len(occupied_lanes(shares))
+    used = len(occupied_lanes(shares, cutoff=cal.occupied_share))
     if not cal.covers_compound:
         if not lanes:
             return None
@@ -303,7 +497,7 @@ def queue_reaches_last_visible_lane(shares: dict[int, float], cal: LaneCalibrati
     anything stands in the nearest lane.
     """
     lanes = cal.lanes
-    return bool(lanes) and shares.get(lanes[0], 0.0) > OCCUPIED_SHARE
+    return bool(lanes) and shares.get(lanes[0], 0.0) > cal.occupied_share
 
 
 def drift_px(frame: str | Path | bytes, cal: LaneCalibration, *, search: int = 6) -> float:
@@ -390,7 +584,10 @@ def cameras_with_calibration(config_dir: str | Path, terminal) -> list[str]:
     return found
 
 
-PROMPT_VERSION = "geom-v1"
+#: Bumped whenever a reading of the same frame would come out differently, so the sweep
+#: re-reads the archive into a new generation and never rewrites the old one. geom-v2 is the
+#: locally normalised, length-weighted reader (#112).
+PROMPT_VERSION = "geom-v2"
 MODEL = "lane-geometry"
 
 
@@ -476,7 +673,7 @@ def read_frame(
         }
 
     shares = occupancy(frame, background, cal)
-    occupied = occupied_lanes(shares)
+    occupied = occupied_lanes(shares, cutoff=cal.occupied_share)
     if occupied:
         notes = f"lanes {occupied} of {cal.lanes} occupied"
         if not cal.covers_compound:
@@ -506,6 +703,7 @@ def read_frame(
         "drift_px": round(drift, 2),
         "illumination_ratio": round(lit, 3),
         "lane_shares": {str(k): round(v, 3) for k, v in sorted(shares.items())},
+        "reader": cal.reader,
     }
 
 
