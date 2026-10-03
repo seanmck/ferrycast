@@ -460,6 +460,60 @@ def test_a_compound_that_empties_means_everyone_boarded(conn, config):
     assert row["residual_fullness"] == "empty"
 
 
+def test_one_bare_frame_as_the_vessel_leaves_is_not_a_clear(conn, config):
+    """2026-09-07, the 11:45: cars stood at the dock end before and after the vessel went,
+    and one frame between them read bare. Taken alone, that frame made the sailing "took
+    everyone" — the false clear this app may never give. Three frames speak for the
+    moment, and the middle one says the queue was still there."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-15, "overflowing"), (0, "moderate"), (5, "light"), (10, "empty"),
+         (15, "moderate"), (20, "moderate"), (25, "moderate")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert (row["filled"], row["left_behind"]) == (1, 1)
+    assert row["residual_fullness"] == "moderate"
+
+
+def test_one_shadowed_frame_after_departure_is_not_a_residual(conn, config):
+    """Dappled afternoon shadow can make one bare frame read as a lane in use. Taken alone,
+    that frame invented people left behind on a compound that cleared (#112)."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn,
+        config,
+        departure,
+        [(-15, "heavy"), (0, "moderate"), (15, "light"), (20, "empty"), (25, "empty")],
+    )
+
+    aggregate_day(conn, config, day)
+
+    row = _record_for(conn)
+    assert row["outcome"] == "boarded"
+    assert row["left_behind"] == 0
+
+
+def test_two_frames_that_disagree_resolve_toward_the_queue(conn, config):
+    """With only two frames to go on, a false clear is the worse mistake to make."""
+    day = date(2026, 8, 14)
+    departure = _departure(config, day, "12:30")
+    _band_frames(
+        conn, config, departure, [(-15, "heavy"), (15, "empty"), (20, "light")]
+    )
+
+    aggregate_day(conn, config, day)
+
+    assert _record_for(conn)["residual_fullness"] == "light"
+
+
 def test_a_compound_still_occupied_after_departure_is_filled_not_waited(conn, config):
     """A band says somebody was left behind. It cannot say for how many sailings.
 
