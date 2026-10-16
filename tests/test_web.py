@@ -326,6 +326,10 @@ def test_export_endpoint_serves_csv(client, conn, config):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
     assert "waited_1" in response.text
+    # The arrival curve's previous-departure mark rests entirely on these two, so leaving
+    # them out of the export makes the mark unauditable from outside the container.
+    header = response.text.splitlines()[0]
+    assert "departed_at" in header and "departed_source" in header
 
 
 def test_export_endpoint_rejects_an_unknown_dataset(client):
@@ -340,8 +344,8 @@ def test_arrival_curve_endpoint(client):
     payload = response.json()
     assert "points" in payload
     # The chart widens its x domain to reach this and captions itself from it, so a rename
-    # here does not fail loudly — it just quietly stops explaining the dip on the left.
-    assert "previous_departure_minutes" in payload
+    # here does not fail loudly — it just quietly stops explaining the fall on the left.
+    assert "previous_departure" in payload
 
 
 def test_health_page_renders(client):
