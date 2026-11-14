@@ -142,6 +142,29 @@ class MarineArea:
 
 
 @dataclass(frozen=True)
+class TimetableFeed:
+    """Where the operator publishes this route's timetable in GTFS, for checking ours.
+
+    Read only by `ferrycast timetable-check`, never by the running app: the schedule file
+    stays the timetable, verified by a person, and the feed is what it is compared with.
+    """
+
+    url: str
+    # The feed's own `route_id` for this crossing.
+    route_id: str
+    # The feed's departure `stop_id` for each terminal code. A trip leaving from a stop
+    # that is not listed is an error rather than something to skip — an unrecognised stop
+    # is how a renumbered feed would otherwise read as "no sailings".
+    # Pairs rather than a dict so the route stays hashable like the rest of the config.
+    stops: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def terminal_by_stop(self) -> dict[str, str]:
+        """feed stop_id -> terminal code."""
+        return {stop: code for code, stop in self.stops}
+
+
+@dataclass(frozen=True)
 class Route:
     id: str
     name: str
@@ -153,6 +176,9 @@ class Route:
     # where a terminal has no departures board of its own — it is the sole source of a
     # departure time for such a direction, and it can say nothing else.
     vessel_tracking_url: str = ""
+    # Optional: without it the timetable can still be checked against a feed named on the
+    # command line, and the scheduled check simply has nothing to compare with.
+    timetable_feed: TimetableFeed | None = None
 
     def terminal(self, code: str) -> Terminal:
         for t in self.terminals:
@@ -463,12 +489,27 @@ def _parse_route(raw: dict) -> Route:
             raise ConfigError("[route.marine] needs a `site` (the ECCC marine area code)")
         marine = _dataclass_from(MarineArea, marine_raw, "route.marine")
 
+    feed_raw = raw.get("timetable_feed")
+    feed = None
+    if feed_raw:
+        for required in ("url", "route_id", "stops"):
+            if not feed_raw.get(required):
+                raise ConfigError(f"[route.timetable_feed] needs `{required}`")
+        stops = tuple(sorted((str(code), str(stop)) for code, stop in feed_raw["stops"].items()))
+        if {code for code, _ in stops} != codes:
+            raise ConfigError(
+                "[route.timetable_feed] `stops` must name a stop for each terminal "
+                f"({', '.join(sorted(codes))}) and nothing else"
+            )
+        feed = TimetableFeed(url=feed_raw["url"], route_id=str(feed_raw["route_id"]), stops=stops)
+
     return Route(
         id=raw.get("id", "route"),
         name=raw.get("name", raw.get("id", "route")),
         terminals=tuple(terminals),
         marine=marine,
         vessel_tracking_url=raw.get("vessel_tracking_url", ""),
+        timetable_feed=feed,
     )
 
 

@@ -16,7 +16,12 @@ from .config import MAIN_CAMERA, Config
 from .db import JobRun, scalar
 from .extent import PROMPT_VERSION as EXTENT_PROMPT_VERSION
 from .marine import _table_exists as marine_table_exists
-from .schedule import load_schedule_cached, sailings_for_day
+from .schedule import (
+    coverage_problem,
+    covered_through,
+    load_schedule_cached,
+    sailings_for_day,
+)
 from .shore import _table_exists as shore_table_exists
 from .timeutil import iso, local, now_utc, parse_iso
 from .vision import month_to_date_cost
@@ -230,6 +235,10 @@ class HealthReport:
     marine_issued_at: str | None = None
     # The same for the weather ashore, which is a separate feed and fails separately.
     shore_issued_at: str | None = None
+    # The last local date the timetable still covers for both terminals, or None when it
+    # does not even cover today. Reported as a date and not only as a problem so that "how
+    # long have we got" can be read off at any time, not just in the last month.
+    schedule_covered_through: str | None = None
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -419,6 +428,20 @@ def health_report(
         elif now - parse_iso(shore_issued) > timedelta(hours=12):
             problems.append(f"the shore forecast is stale — last issued {shore_issued}")
 
+    # First in the list when it fires: with no timetable every number above is measuring a
+    # schedule with nothing in it, and coverage, scrape and record counts all go wrong as
+    # symptoms of this one cause. A schedule that cannot be read is doctor's to report.
+    through = None
+    try:
+        blocks = load_schedule_cached(config.schedule_path)
+        today = local(now, config.tz).date()
+        through = covered_through(blocks, config.route.id, config.route.codes, today)
+        lapse = coverage_problem(blocks, config.route.id, config.route.codes, today)
+        if lapse:
+            problems.insert(0, lapse)
+    except Exception:
+        pass
+
     return HealthReport(
         window_days=window_days,
         expected_captures=expected,
@@ -434,6 +457,7 @@ def health_report(
         month_to_date_cost=round(spend, 4),
         budget=config.vision.monthly_budget_usd,
         last_capture_at=last_capture,
+        schedule_covered_through=through.isoformat() if through else None,
         marine_issued_at=marine_issued,
         shore_issued_at=shore_issued,
         problems=problems,

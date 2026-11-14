@@ -105,6 +105,15 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
     replay_index_url  = "https://www.drivebc.ca/api/webcams/244/replayTheDay/"
     replay_frame_url  = "https://www.drivebc.ca/images/replaytheday/244/{timestamp}.jpg"
 
+  # The operator's published timetable as a GTFS feed. Nothing in the running app reads
+  # it: `ferrycast timetable-check` (run weekly by .github/workflows/timetable.yml)
+  # compares it with config/schedule.toml and says where the two disagree or where the
+  # schedule is about to run out. `stops` maps each terminal code to the feed's departure
+  # stop_id for it.
+  [route.timetable_feed]
+  url      = "https://data.trilliumtransit.com/gtfs/bcferries-bc-ca/bcferries-bc-ca.zip"
+  route_id = "12395"
+  stops    = { SLT = "2505937", ERL = "2505794" }
 
   # The ECCC marine forecast for the water this crossing makes. Wind is the one condition
   # that cancels a sailing outright, and the only one FerryCast does not observe for itself.

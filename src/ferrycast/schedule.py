@@ -190,6 +190,77 @@ def day_tags(day: date) -> list[str]:
     return tags
 
 
+# How far ahead of the last block the gap starts being called a problem. A month is long
+# enough to find and check the next published timetable, and short enough that the warning
+# is not standing noise for the whole life of a block.
+COVERAGE_WARNING_DAYS = 30
+
+
+def in_timetable(
+    blocks: tuple[ScheduleBlock, ...], day: date, route_id: str, origin: str
+) -> bool:
+    """Whether the timetable reaches `day` for this terminal at all.
+
+    Not the same question as "does anything sail": a Sunday inside a weekday-only block
+    is a day the timetable knows about and schedules nothing on, while a day past the last
+    block is one it knows nothing about. Only the first is a fact about the ferry. The
+    second is a fact about this file, and has to be said as one — an empty schedule once
+    read as "no departures" for a month in which every sailing ran.
+    """
+    return any(
+        b.applies_to(route_id)
+        and b.terminal == origin
+        and b.effective_from <= day <= b.effective_to
+        for b in blocks
+    )
+
+
+def covered_through(
+    blocks: tuple[ScheduleBlock, ...], route_id: str, terminals: tuple[str, ...], today: date
+) -> date | None:
+    """The last day, counting forward from today, that every terminal still has a block.
+
+    Walked day by day rather than read off the latest `effective_to`, because a gap
+    between two blocks ends the coverage just as surely as the last block does and the
+    latest date would sail straight over it. None means today itself is uncovered.
+    """
+    horizon = max((b.effective_to for b in blocks if b.applies_to(route_id)), default=None)
+    if horizon is None:
+        return None
+    last = None
+    day = today
+    while day <= horizon and all(in_timetable(blocks, day, route_id, t) for t in terminals):
+        last = day
+        day += timedelta(days=1)
+    return last
+
+
+def coverage_problem(
+    blocks: tuple[ScheduleBlock, ...],
+    route_id: str,
+    terminals: tuple[str, ...],
+    today: date,
+    *,
+    warning_days: int = COVERAGE_WARNING_DAYS,
+) -> str | None:
+    """A sentence for the operator when the timetable has run out or is about to."""
+    through = covered_through(blocks, route_id, terminals, today)
+    if through is None:
+        return (
+            "the timetable has no block covering today: nothing is scheduled, so nothing "
+            "is being recorded and the site cannot take a report — add the current "
+            "published timetable to the schedule file"
+        )
+    remaining = (through - today).days
+    if remaining < warning_days:
+        return (
+            f"the timetable runs out after {through.isoformat()} "
+            f"({remaining} day{'' if remaining == 1 else 's'} away) — add the next "
+            "published timetable before then, or the schedule goes empty"
+        )
+    return None
+
+
 def sailings_for_day(
     blocks: tuple[ScheduleBlock, ...],
     day: date,

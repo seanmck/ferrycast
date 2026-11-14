@@ -57,7 +57,7 @@ from ..reports import (
     parse_clock,
     submit_report,
 )
-from ..schedule import day_type, season
+from ..schedule import day_type, in_timetable, load_schedule_cached, season
 from ..shore import summary as shore_summary
 from ..timeutil import combine_local, local, local_date, now_utc, parse_hhmm
 from ..vessels import TrackerWatch, tracker_watch
@@ -857,6 +857,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "origin": chosen_origin,
                 "service_date": chosen_date.isoformat(),
                 "times": times,
+                "outside_timetable": not in_timetable(
+                    load_schedule_cached(config.schedule_path),
+                    chosen_date,
+                    config.route.id,
+                    chosen_origin,
+                ),
                 "selected_time": chosen_time,
                 "distribution": distribution,
                 "labels": OUTCOME_LABELS,
