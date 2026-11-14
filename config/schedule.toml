@@ -1,8 +1,8 @@
 # Sailing timetable for the Saltery Bay – Earls Cove route.
 #
 # ⚠️  THIS FILE IS WHAT GETS DEPLOYED. The times below are copied from the published
-#     BC Ferries timetable for Route 7, but they cover the summer range only — the
-#     schedule goes empty on Oct 13 2026 (see the foot of this file). Re-check them
+#     BC Ferries timetable for Route 7, and they run out on Mar 31 2027 — the schedule
+#     goes empty on Apr 1 2027 (see the foot of this file). Re-check them
 #     whenever BC Ferries changes the timetable, and never add a time you have not
 #     confirmed: a wrong departure silently mis-windows every observation around it, the
 #     collector runs happily and records the wrong thing, and correcting the times later
@@ -50,14 +50,186 @@ departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05",
 # mistyped or omitted time would break the chain.
 
 # ────────────────────────────────────────────────────────────────────────────────────────
-# STILL MISSING: the off-season timetable, Oct 13 2026 – May 13 2027. The blocks above
-# cover only the summer range, so the schedule goes empty on Oct 13 until it is added. Add
-# it as its own [[block]], matching the form above.
+# OFF-SEASON, Oct 13 2026 – Mar 31 2027.
 #
-# Do not assume the off-season week is uniform just because the summer one is. Get the
-# published times. A departure time that is merely plausible mis-windows every observation
-# around it, silently: the collector runs happily and records the wrong thing, and
-# correcting the times later does not repair sailings already aggregated against them.
+# VERIFIED — from BC Ferries' official GTFS feed (data.trilliumtransit.com/gtfs/
+# bcferries-bc-ca, feed version 11-Nov-2026, valid Nov 11 2026 – Mar 31 2027), route
+# "Sechelt - Powell River (Earls Cove-Saltery Bay)". The feed was expanded date by date
+# and these blocks reproduce it exactly for all 170 days in both directions; the Saltery
+# Bay times for Sat Nov 14 were also read off the live departures board and agree.
+# (The feed's stated validity opens on Nov 11, but its service calendar reaches back to
+# Oct 13, the day after the summer blocks end, with the same winter times — which is
+# what the first range below rests on.)
+#
+# Two sets of times alternate through the winter, which is why this is ten ranges rather
+# than one:
+#   - the winter times (afternoon round trips 15–20 minutes earlier than summer), and
+#   - the summer times again over Christmas (Dec 17 – Jan 3) and for three weeks in
+#     February (Feb 3 – 23).
+# In both, the first round trip of the day (05:35 from Saltery Bay, 06:30 back) does not
+# run on Sundays. Over Christmas it also does not run on Fridays — Dec 25 and Jan 1 are
+# the holidays, and the feed drops it on Fri Dec 18 as well; that one is copied as
+# published rather than second-guessed. Statutory holidays that fall on other days
+# (Family Day Feb 15, Good Friday Mar 26, Easter Monday Mar 29) run the full weekday
+# timetable in the feed, so they need no blocks of their own.
+# ────────────────────────────────────────────────────────────────────────────────────────
+
+# Winter times, Oct 13 – Dec 16.
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-10-13
+effective_to   = 2026-12-16
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-10-13
+effective_to   = 2026-12-16
+days           = ["sun"]
+departures     = ["07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-10-13
+effective_to   = 2026-12-16
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-10-13
+effective_to   = 2026-12-16
+days           = ["sun"]
+departures     = ["08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+# Christmas: the summer times, Dec 17 – Jan 3. No first round trip on Fridays or Sundays.
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-12-17
+effective_to   = 2027-01-03
+days           = ["mon", "tue", "wed", "thu", "sat"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2026-12-17
+effective_to   = 2027-01-03
+days           = ["fri", "sun"]
+departures     = ["07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-12-17
+effective_to   = 2027-01-03
+days           = ["mon", "tue", "wed", "thu", "sat"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2026-12-17
+effective_to   = 2027-01-03
+days           = ["fri", "sun"]
+departures     = ["08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
+
+# Winter times, Jan 4 – Feb 2.
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-01-04
+effective_to   = 2027-02-02
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-01-04
+effective_to   = 2027-02-02
+days           = ["sun"]
+departures     = ["07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-01-04
+effective_to   = 2027-02-02
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-01-04
+effective_to   = 2027-02-02
+days           = ["sun"]
+departures     = ["08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+# The summer times again, Feb 3 – Feb 23.
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-02-03
+effective_to   = 2027-02-23
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-02-03
+effective_to   = 2027-02-23
+days           = ["sun"]
+departures     = ["07:25", "09:25", "11:45", "14:30", "16:55", "19:05", "21:00"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-02-03
+effective_to   = 2027-02-23
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-02-03
+effective_to   = 2027-02-23
+days           = ["sun"]
+departures     = ["08:20", "10:35", "12:55", "15:40", "18:00", "20:05", "22:00"]
+
+# Winter times, Feb 24 – Mar 31.
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-02-24
+effective_to   = 2027-03-31
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["05:35", "07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "SLT"
+effective_from = 2027-02-24
+effective_to   = 2027-03-31
+days           = ["sun"]
+departures     = ["07:25", "09:25", "11:45", "14:15", "16:35", "18:45", "20:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-02-24
+effective_to   = 2027-03-31
+days           = ["mon", "tue", "wed", "thu", "fri", "sat"]
+departures     = ["06:30", "08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+[[block]]
+terminal       = "ERL"
+effective_from = 2027-02-24
+effective_to   = 2027-03-31
+days           = ["sun"]
+departures     = ["08:20", "10:35", "12:55", "15:25", "17:40", "19:45", "21:40"]
+
+# ────────────────────────────────────────────────────────────────────────────────────────
+# STILL MISSING: Apr 1 2027 onwards. The blocks above stop where the published feed
+# stops, so the schedule goes empty on Apr 1 2027 until the next timetable is added —
+# and when it is empty the site says "no sailings scheduled", takes no reports, and the
+# board scraper records every fetch as `unparsed`. Add the next range as its own
+# [[block]]s, matching the form above.
+#
+# Do not assume the next range is uniform or repeats this one. Get the published times.
+# A departure time that is merely plausible mis-windows every observation around it,
+# silently: the collector runs happily and records the wrong thing, and correcting the
+# times later does not repair sailings already aggregated against them.
 #
 # Keep preferring wider `days` lists over duplicated blocks: same times in one place, not
 # seven copies to keep in sync.
