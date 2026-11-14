@@ -1016,3 +1016,25 @@ def test_apple_touch_icon_survives_alongside_the_manifest(client):
 
     assert '<link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">' in html
     assert client.get("/static/brand/apple-touch-icon.png").status_code == 200
+
+
+def test_a_date_past_the_timetable_is_not_reported_as_a_day_without_sailings(client):
+    # The schedule file is a copy kept by hand. Past its last block the page knows nothing
+    # about the crossing, and must not say that nothing departs.
+    response = client.get("/", params={"origin": "SLT", "service_date": "2031-06-02"})
+    assert response.status_code == 200
+    assert "No timetable for this date" in response.text
+    assert "No sailings scheduled" not in response.text
+
+
+def test_a_day_the_timetable_covers_but_schedules_nothing_on_still_says_so(client, config):
+    config.schedule_path.write_text(
+        "".join(
+            f'[[block]]\nterminal = "{code}"\neffective_from = 2020-01-01\n'
+            f'effective_to = 2030-12-31\ndays = ["mon"]\ndepartures = ["09:30"]\n\n'
+            for code in config.route.codes
+        )
+    )
+    response = client.get("/", params={"origin": "SLT", "service_date": "2028-06-06"})  # a Tuesday
+    assert "No sailings scheduled" in response.text
+    assert "No timetable for this date" not in response.text

@@ -1,0 +1,82 @@
+name: Timetable check
+
+# config/schedule.toml is kept by hand, and when its last block ends the site has nothing
+# to schedule: it says so on every date, takes no reports and writes no records. That
+# happened for a month in autumn 2026 with nothing to notice it. This compares the file
+# with the operator's published GTFS feed once a week and opens an issue when they
+# disagree or when the file is within a month of running out.
+#
+# It never edits the timetable. The feed has its own mistakes, and which side is right is
+# for a person to decide.
+
+on:
+  schedule:
+    - cron: "17 15 * * 1" # Mondays, 07:17 or 08:17 Pacific
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Compare the schedule with the published feed
+        id: check
+        env:
+          FERRYCAST_CONFIG: config/ferrycast.toml
+        run: |
+          set +e
+          ferrycast timetable-check > report.txt 2>&1
+          code=$?
+          cat report.txt
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 0 agrees, 1 the timetable differs or is running out, 2 the check could not
+          # run. Anything else is a crash, and is reported like a check that could not run.
+          exit 0
+
+      - name: Open or update the issue
+        if: steps.check.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODE: ${{ steps.check.outputs.code }}
+        run: |
+          if [ "$CODE" = "1" ]; then
+            title="The timetable differs from the published feed, or is running out"
+          else
+            title="The timetable check could not run"
+          fi
+          {
+            echo "The weekly \`ferrycast timetable-check\` reported:"
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > body.md
+          # One open issue per kind of finding, commented on each week it still stands,
+          # rather than a new issue every Monday.
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "in:title \"$title\"" --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file body.md
+          fi
+
+      - name: Fail the run so the finding shows on the Actions page too
+        if: steps.check.outputs.code != '0'
+        run: exit 1

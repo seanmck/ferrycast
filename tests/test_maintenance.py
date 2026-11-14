@@ -204,3 +204,35 @@ def test_a_genuine_parse_failure_still_shows(conn, config):
     _add_deck_rows(conn, config, ["ok", "unparsed", "not_published"])
 
     assert health_report(conn, config).deckspace_success_rate == 0.5
+
+
+def _write_schedule(config, start, end):
+    config.schedule_path.write_text(
+        "".join(
+            f'[[block]]\nterminal = "{code}"\neffective_from = {start}\n'
+            f'effective_to = {end}\ndays = "all"\ndepartures = ["09:30"]\n\n'
+            for code in config.route.codes
+        )
+    )
+
+
+def test_health_says_how_long_the_timetable_has_left(conn, config):
+    report = health_report(conn, config)
+    assert report.schedule_covered_through == "2030-12-31"
+    assert not any("timetable" in p for p in report.problems)
+
+
+def test_health_warns_before_the_timetable_runs_out(conn, config):
+    today = date.today()
+    _write_schedule(config, today - timedelta(days=30), today + timedelta(days=10))
+    report = health_report(conn, config)
+    assert report.problems[0].startswith("the timetable runs out after")
+
+
+def test_health_leads_with_a_timetable_that_has_already_run_out(conn, config):
+    # The outage this guards against: every collector healthy, and nothing scheduled.
+    today = date.today()
+    _write_schedule(config, today - timedelta(days=60), today - timedelta(days=30))
+    report = health_report(conn, config)
+    assert report.schedule_covered_through is None
+    assert "no block covering today" in report.problems[0]

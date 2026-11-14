@@ -66,6 +66,16 @@ vessel_tracking_url = "https://ccimg.bcferries.com/cc/support/vessels/route29.ht
   weather_site     = "s0000316"   # "Sunshine Coast - Gibsons to Earls Cove"
   weather_province = "BC"
 
+  # The operator's published timetable as a GTFS feed. Nothing in the running app reads
+  # it: `ferrycast timetable-check` (run weekly by .github/workflows/timetable.yml)
+  # compares it with config/schedule.toml and says where the two disagree or where the
+  # schedule is about to run out. `stops` maps each terminal code to the feed's departure
+  # stop_id for it.
+  [route.timetable_feed]
+  url      = "https://data.trilliumtransit.com/gtfs/bcferries-bc-ca/bcferries-bc-ca.zip"
+  route_id = "12395"
+  stops    = { SLT = "2505937", ERL = "2505794" }
+
     # Optional. Extra cameras at this terminal, beyond the one `webcam_url` names — because
     # one view does not answer everything. The terminal camera overlooks the marshalling
     # lanes; a highway camera down the approach road sees the overflow, which only happens

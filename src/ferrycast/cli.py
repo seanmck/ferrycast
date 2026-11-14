@@ -85,6 +85,24 @@ def cmd_doctor(args) -> int:
         blocks = load_schedule(config.schedule_path)
         departures = sum(len(b.departures) for b in blocks)
         print(f"ok    schedule: {len(blocks)} block(s), {departures} departure times")
+        # Loading is not the same as being current. Every block can parse and the
+        # timetable still have nothing to say about today, which is the failure that
+        # looks most like health: the collectors run, and record an empty schedule.
+        from .schedule import coverage_problem, covered_through
+        from .timeutil import local, now_utc
+
+        today = local(now_utc(), config.tz).date()
+        through = covered_through(blocks, config.route.id, config.route.codes, today)
+        lapse = coverage_problem(blocks, config.route.id, config.route.codes, today)
+        if through is None:
+            problems.append(f"schedule: {lapse}")
+            print(f"FAIL  schedule: {lapse}")
+        elif lapse:
+            # A warning and not a failure: the install works today, and a doctor that
+            # failed for the last month of every timetable would be run less.
+            print(f"warn  schedule: {lapse}")
+        else:
+            print(f"ok    schedule: covers through {through.isoformat()}")
     except ConfigError as exc:
         problems.append(f"schedule: {exc}")
         print(f"FAIL  schedule: {exc}")
@@ -449,6 +467,78 @@ def cmd_aggregate(args) -> int:
     for outcome, count in counts.items():
         print(f"  {outcome:<13} {count}")
     return 0
+
+
+def cmd_timetable_check(args) -> int:
+    """Compare the schedule file with the published feed. 0 agrees, 1 findings, 2 no check.
+
+    Three exit codes because the caller is CI and "could not look" must not pass for
+    "looked and found nothing" — nor be mistaken for a timetable that changed.
+    """
+    from .fetching import fetch
+    from .schedule import coverage_problem, covered_through, load_schedule
+    from .timetable_feed import FeedError, compare, read_feed
+    from .timeutil import local, now_utc
+
+    config = _config(args)
+    route = config.route
+    feed_config = route.timetable_feed
+    if feed_config is None:
+        print("no [route.timetable_feed] is configured, so there is nothing to compare with")
+        return 2
+    blocks = load_schedule(config.schedule_path)
+    today = local(now_utc(), config.tz).date()
+
+    source = args.feed or feed_config.url
+    if args.feed and Path(args.feed).exists():
+        content = Path(args.feed).read_bytes()
+    else:
+        result = fetch(source, user_agent=config.capture.user_agent, timeout=60.0)
+        if not result.ok or not result.content:
+            print(f"could not fetch the feed at {source}: {result.error}")
+            return 2
+        content = result.content
+    try:
+        feed = read_feed(content, feed_config.route_id, feed_config.terminal_by_stop)
+    except FeedError as exc:
+        print(f"could not read the feed at {source}: {exc}")
+        return 2
+
+    findings: list[str] = []
+    through = covered_through(blocks, route.id, route.codes, today)
+    lapse = coverage_problem(blocks, route.id, route.codes, today, warning_days=args.warn_days)
+    if lapse:
+        findings.append(lapse[0].upper() + lapse[1:] + ".")
+
+    horizon = today + timedelta(days=args.days)
+    differences = compare(blocks, feed, route.id, route.codes, today, horizon)
+    compared_to = min(horizon, feed.last_date)
+    for difference in differences:
+        findings.append(difference.describe())
+
+    print(f"schedule: {config.schedule_path}")
+    print(f"  covers through {through.isoformat() if through else 'nothing — not even today'}")
+    print(f"feed: {source}")
+    print(f"  published through {feed.last_date.isoformat()}")
+    if compared_to < today:
+        # Not a disagreement, but not a pass either: a feed that stopped being published
+        # would otherwise report "no differences" for ever.
+        print("  the feed ends before today, so there was nothing to compare")
+        return 2
+    print(f"compared {today.isoformat()} to {compared_to.isoformat()}")
+    if not findings:
+        print("the schedule agrees with the published feed")
+        return 0
+    print()
+    for finding in findings:
+        print(f"- {finding}")
+    if differences:
+        print()
+        print(
+            "The feed is not automatically right. Check each difference against the "
+            "operator's published timetable before changing the schedule file."
+        )
+    return 1
 
 
 def cmd_query(args) -> int:
@@ -1015,6 +1105,22 @@ def build_parser() -> argparse.ArgumentParser:
     nxt.add_argument("--origin")
     nxt.add_argument("--limit", type=int, default=6)
     nxt.set_defaults(func=cmd_next)
+
+    timetable = sub.add_parser(
+        "timetable-check",
+        help="compare the schedule file with the operator's published GTFS feed",
+    )
+    timetable.add_argument("--feed", help="a feed URL or local zip (default: the configured one)")
+    timetable.add_argument(
+        "--days", type=int, default=60, help="how far ahead to compare (default: 60)"
+    )
+    timetable.add_argument(
+        "--warn-days",
+        type=int,
+        default=30,
+        help="report the schedule running out when it has fewer days left than this",
+    )
+    timetable.set_defaults(func=cmd_timetable_check)
 
     exporter = sub.add_parser("export", help="export raw observations")
     # Kept in step with `export.DATASETS` — the web route and the export layer have always

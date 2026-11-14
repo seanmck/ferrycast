@@ -66,6 +66,7 @@ to be *visible in the data*, never fatal to the job or to the other terminal.
 | `backfill.py` | On-demand extraction for one slot's comparable sailings. |
 | `web/app.py` | FastAPI + Jinja2, server-rendered, three templates. |
 | `web/analytics.py` | Server-side PostHog, off unless `FERRYCAST_POSTHOG_KEY` is set. No browser tag: the collectors' remotes are the server's business, and the camera stays the only third party the visitor's browser contacts. Never allowed to raise. |
+| `timetable_feed.py` | Compares the hand-kept schedule file with the operator's GTFS feed (`ferrycast timetable-check`, run weekly by `.github/workflows/timetable.yml`, which opens an issue). Reports differences and never writes a departure time; nothing in the running app reads the feed. |
 | `scheduler.py` | In-process cron replacement for container hosts; due-ness read from `job_runs`. |
 
 ### The claim model (aggregate.py)

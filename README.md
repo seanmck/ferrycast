@@ -670,6 +670,7 @@ way a dead camera degrades to an `error` frame rather than a failed job.
 | `ferrycast aggregate` | Roll evidence up into sailing records (R4) |
 | `ferrycast query` | The day-like-today distribution (R5) |
 | `ferrycast next` | Upcoming scheduled sailings |
+| `ferrycast timetable-check` | Compare `config/schedule.toml` with the operator's published GTFS feed; exits 1 where they differ or the schedule is within a month of running out |
 | `ferrycast serve` | Run the web UI |
 | `ferrycast run` | Web UI **and** scheduler in one process (containers) |
 | `ferrycast schedule` | Show the job plan, or `--once` to run what is due |

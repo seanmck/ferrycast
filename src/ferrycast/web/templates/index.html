@@ -1150,6 +1150,16 @@
         sailings, not a forecast.</p>
     {% endif %}
   </section>
+{% elif outside_timetable %}
+  {# Not "no sailings". The timetable here is a copy kept by hand, and a date past its last
+     block is one it knows nothing about — the ferry very probably runs. Saying nothing
+     departs would be a claim about the crossing made from the absence of a config block. #}
+  <section class="card">
+    <p class="label">No timetable for this date</p>
+    <p class="note">FerryCast’s copy of the timetable does not reach this date, so it cannot
+      say what sails or take a report for it. That says nothing about the ferry: check the
+      operator’s current schedule for departures.</p>
+  </section>
 {% else %}
   <section class="card">
     <p class="label">No sailings scheduled</p>
